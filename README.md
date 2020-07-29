@@ -1,2 +1,3 @@
 # value-rpc
-Fast RPC on golang
+
+vRPC on golang
