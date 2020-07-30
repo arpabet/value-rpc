@@ -37,7 +37,6 @@ const (
 
 type function struct {
 	name      string
-	numArgs   int
 	ft        functionType
 	singleFn  Function
 	outStream OutgoingStream
@@ -52,14 +51,13 @@ func (t *rpcServer) hasFunction(name string) bool {
 	return false
 }
 
-func (t *rpcServer) AddFunction(name string, numArgs int, cb Function) error {
+func (t *rpcServer) AddFunction(name string, cb Function) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
 
 	fn := &function{
 		name:     name,
-		numArgs:  numArgs,
 		ft:       singleFunction,
 		singleFn: cb,
 	}
@@ -69,14 +67,13 @@ func (t *rpcServer) AddFunction(name string, numArgs int, cb Function) error {
 }
 
 // GET for client
-func (t *rpcServer) AddOutgoingStream(name string, numArgs int, cb OutgoingStream) error {
+func (t *rpcServer) AddOutgoingStream(name string, cb OutgoingStream) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
 
 	fn := &function{
 		name:      name,
-		numArgs:   numArgs,
 		ft:        outgoingStream,
 		outStream: cb,
 	}
@@ -86,14 +83,13 @@ func (t *rpcServer) AddOutgoingStream(name string, numArgs int, cb OutgoingStrea
 }
 
 // PUT for client
-func (t *rpcServer) AddIncomingStream(name string, numArgs int, cb IncomingStream) error {
+func (t *rpcServer) AddIncomingStream(name string, cb IncomingStream) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
 
 	fn := &function{
 		name:     name,
-		numArgs:  numArgs,
 		ft:       incomingStream,
 		inStream: cb,
 	}
@@ -102,16 +98,15 @@ func (t *rpcServer) AddIncomingStream(name string, numArgs int, cb IncomingStrea
 	return nil
 }
 
-func (t *rpcServer) AddChat(name string, numArgs int, cb Chat) error {
+func (t *rpcServer) AddChat(name string, cb Chat) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
 
 	fn := &function{
-		name:    name,
-		numArgs: numArgs,
-		ft:      chat,
-		chat:    cb,
+		name: name,
+		ft:   chat,
+		chat: cb,
 	}
 
 	t.functionMap.Store(name, fn)

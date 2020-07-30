@@ -62,6 +62,13 @@ func NewServingClient(clientId int64, conn rpc.MsgConn, functionMap *sync.Map, l
 }
 
 func (t *servingClient) Close() {
+
+	t.requestMap.Range(func(key, value interface{}) bool {
+		sr := value.(*servingRequest)
+		sr.Close()
+		return true
+	})
+
 	close(t.outgoingQueue)
 }
 
@@ -191,10 +198,6 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 	args := req.GetList(rpc.ArgumentsField)
 	if args == nil {
 		args = value.EmptyList()
-	}
-
-	if fn.numArgs != args.Len() {
-		return FunctionError(reqId, "function wrong number of args %s, expected %d, actual %d", name.String(), fn.numArgs, args.Len())
 	}
 
 	if fn.ft != ft {

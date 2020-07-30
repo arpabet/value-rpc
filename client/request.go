@@ -72,7 +72,9 @@ func (t *rpcRequestCtx) Elapsed() int64 {
 }
 
 func (t *rpcRequestCtx) notifyResult(res value.Value) {
-	t.resultCh <- res
+	if t.IsGetOpen() {
+		t.resultCh <- res
+	}
 }
 
 func (t *rpcRequestCtx) Close() {

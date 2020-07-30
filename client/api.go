@@ -51,13 +51,13 @@ type Client interface {
 
 	CancelRequest(requestId int64)
 
-	CallFunction(name string, args value.List) (value.Value, error)
+	CallFunction(name string, args value.Value) (value.Value, error)
 
-	GetStream(name string, args value.List, receiveCap int) (<-chan value.Value, int64, error)
+	GetStream(name string, args value.Value, receiveCap int) (<-chan value.Value, int64, error)
 
-	PutStream(name string, args value.List, putCh <-chan value.Value) error
+	PutStream(name string, args value.Value, putCh <-chan value.Value) error
 
-	Chat(name string, args value.List, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error)
+	Chat(name string, args value.Value, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error)
 
 	Close() error
 }

@@ -321,7 +321,7 @@ func (t *rpcClient) CancelRequest(requestId int64) {
 	t.sendSystemRequest(requestId, rpc.CancelRequest)
 }
 
-func (t *rpcClient) CallFunction(name string, args value.List) (value.Value, error) {
+func (t *rpcClient) CallFunction(name string, args value.Value) (value.Value, error) {
 
 	req := t.constructRequest(rpc.FunctionRequest, name, args, t.timeoutMls.Load())
 
@@ -341,7 +341,7 @@ func (t *rpcClient) CallFunction(name string, args value.List) (value.Value, err
 	return res, err
 }
 
-func (t *rpcClient) GetStream(name string, args value.List, receiveCap int) (<-chan value.Value, int64, error) {
+func (t *rpcClient) GetStream(name string, args value.Value, receiveCap int) (<-chan value.Value, int64, error) {
 
 	req := t.constructRequest(rpc.GetStreamRequest, name, args, t.timeoutMls.Load())
 
@@ -361,7 +361,7 @@ func (t *rpcClient) GetStream(name string, args value.List, receiveCap int) (<-c
 	return requestCtx.MultiResp(), requestCtx.requestId, err
 }
 
-func (t *rpcClient) PutStream(name string, args value.List, putCh <-chan value.Value) error {
+func (t *rpcClient) PutStream(name string, args value.Value, putCh <-chan value.Value) error {
 
 	req := t.constructRequest(rpc.PutStreamRequest, name, args, t.timeoutMls.Load())
 
@@ -378,12 +378,12 @@ func (t *rpcClient) PutStream(name string, args value.List, putCh <-chan value.V
 		return err
 	}
 
-	go t.streamOut(req, requestCtx, putCh)
+	go t.streamOut(requestCtx, putCh)
 
 	return nil
 }
 
-func (t *rpcClient) Chat(name string, args value.List, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error) {
+func (t *rpcClient) Chat(name string, args value.Value, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error) {
 
 	req := t.constructRequest(rpc.ChatRequest, name, args, t.timeoutMls.Load())
 
@@ -400,12 +400,12 @@ func (t *rpcClient) Chat(name string, args value.List, receiveCap int, putCh <-c
 		return nil, 0, err
 	}
 
-	go t.streamOut(req, requestCtx, putCh)
+	go t.streamOut(requestCtx, putCh)
 
 	return requestCtx.MultiResp(), requestCtx.requestId, nil
 }
 
-func (t *rpcClient) streamOut(req value.Map, requestCtx *rpcRequestCtx, putCh <-chan value.Value) {
+func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Value) {
 
 	for requestCtx.IsPutOpen() {
 
@@ -438,7 +438,7 @@ func (t *rpcClient) streamOut(req value.Map, requestCtx *rpcRequestCtx, putCh <-
 
 }
 
-func (t *rpcClient) constructRequest(mt rpc.MessageType, name string, args value.List, timeout int64) value.Map {
+func (t *rpcClient) constructRequest(mt rpc.MessageType, name string, args value.Value, timeout int64) value.Map {
 
 	req := value.EmptyMap().
 		Put(rpc.MessageTypeField, mt.Long()).

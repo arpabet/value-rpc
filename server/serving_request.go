@@ -36,7 +36,7 @@ type servingRequest struct {
 	ft               functionType
 	requestId        value.Number
 	inC              chan value.Value
-	canceled         atomic.Bool
+	closed           atomic.Bool
 	throttleOutgoing atomic.Int64
 }
 
@@ -55,9 +55,10 @@ func NewServingRequest(ft functionType, requestId value.Number) *servingRequest 
 }
 
 func (t *servingRequest) Close() {
-	if t.inC != nil {
-		close(t.inC)
-		t.inC = nil
+	if t.closed.CAS(false, true) {
+		if t.inC != nil {
+			close(t.inC)
+		}
 	}
 }
 
@@ -116,7 +117,6 @@ func (t *servingRequest) incomingStreamEnd(req value.Map, cli *servingClient) er
 }
 
 func (t *servingRequest) closeRequest(cli *servingClient) error {
-	t.canceled.Store(true)
 	cli.deleteRequest(t.requestId)
 	t.Close()
 	return nil
@@ -126,10 +126,10 @@ func (t *servingRequest) outgoingStreamer(outC <-chan value.Value, cli *servingC
 
 	cli.send(StreamReady(t.requestId))
 
-	for !t.canceled.Load() {
+	for {
 
 		val, ok := <-outC
-		if !ok {
+		if !ok || t.closed.Load() {
 			cli.send(StreamEnd(t.requestId, val))
 			if t.ft == outgoingStream {
 				t.closeRequest(cli)

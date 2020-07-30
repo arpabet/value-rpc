@@ -24,22 +24,22 @@ import "github.com/consensusdb/value"
 @author Alex Shvid
 */
 
-type Function func(args value.List) (value.Value, error)
-type OutgoingStream func(args value.List) (<-chan value.Value, error)
-type IncomingStream func(args value.List, inC <-chan value.Value) error
-type Chat func(args value.List, inC <-chan value.Value) (<-chan value.Value, error)
+type Function func(args value.Value) (value.Value, error)
+type OutgoingStream func(args value.Value) (<-chan value.Value, error)
+type IncomingStream func(args value.Value, inC <-chan value.Value) error
+type Chat func(args value.Value, inC <-chan value.Value) (<-chan value.Value, error)
 
 type Server interface {
-	AddFunction(name string, numArgs int, cb Function) error
+	AddFunction(name string, cb Function) error
 
 	// GET for client
-	AddOutgoingStream(name string, numArgs int, cb OutgoingStream) error
+	AddOutgoingStream(name string, cb OutgoingStream) error
 
 	// PUT for client
-	AddIncomingStream(name string, numArgs int, cb IncomingStream) error
+	AddIncomingStream(name string, cb IncomingStream) error
 
 	// Dual channel chat
-	AddChat(name string, numArgs int, cb Chat) error
+	AddChat(name string, cb Chat) error
 
 	Run() error
 

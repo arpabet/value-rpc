@@ -25,6 +25,7 @@ import (
 	"github.com/consensusdb/value-rpc/server"
 	"github.com/pkg/errors"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -37,53 +38,59 @@ var testAddress = "localhost:9999"
 var firstName = ""
 var lastName = ""
 
-func setName(args value.List) (value.Value, error) {
-	if args.GetAt(0) != nil {
-		firstName = args.GetAt(0).String()
+func setName(args value.Value) (value.Value, error) {
+
+	if args.Kind() != value.LIST {
+		return nil, errors.New("wrong args")
 	}
-	if args.GetAt(1) != nil {
-		lastName = args.GetAt(1).String()
+
+	listArgs := args.(value.List)
+	if listArgs.Len() != 2 {
+		return nil, errors.New("wrong args len")
+	}
+
+	if listArgs.GetAt(0) != nil {
+		firstName = listArgs.GetAt(0).String()
+	}
+	if listArgs.GetAt(1) != nil {
+		lastName = listArgs.GetAt(1).String()
 	}
 	return nil, nil
 }
 
-func getName(args value.List) (value.Value, error) {
+func getName(args value.Value) (value.Value, error) {
 	return value.Utf8(firstName + " " + lastName), nil
 }
 
-func scanNames(args value.List) (<-chan value.Value, error) {
-
-	if args.Len() != 0 {
-		return nil, errors.New("wrong args")
-	}
+func scanNames(args value.Value) (<-chan value.Value, error) {
 
 	outC := make(chan value.Value, 2)
 
 	go func() {
-		time.Sleep(time.Second)
-		outC <- value.Utf8("scan:" + firstName)
-		outC <- value.Utf8("scan:" + lastName)
+		fmt.Println("Scan server: <START>")
+		fmt.Println("Scan server: Alex")
+		outC <- value.Utf8("Alex")
+		fmt.Println("Scan server: Bob")
+		outC <- value.Utf8("Bob")
 		close(outC)
+		fmt.Println("Scan server: <END>")
 	}()
 
 	return outC, nil
 }
 
-func uploadNames(args value.List, inC <-chan value.Value) error {
-
-	if args.Len() != 0 {
-		return errors.New("wrong args")
-	}
+func uploadNames(args value.Value, inC <-chan value.Value) error {
 
 	go func() {
 
+		fmt.Println("Upload server: <START>")
 		for {
 			name, ok := <-inC
 			if !ok {
-				fmt.Println("Uploaded END")
+				fmt.Println("Upload server: <END>")
 				break
 			}
-			fmt.Printf("Uploaded name: %s\n", name.String())
+			fmt.Printf("Upload server: %s\n", name.String())
 		}
 
 	}()
@@ -91,19 +98,31 @@ func uploadNames(args value.List, inC <-chan value.Value) error {
 	return nil
 }
 
-func echoChat(args value.List, inC <-chan value.Value) (<-chan value.Value, error) {
+func reverse(s string) string {
+	runes := []rune(s)
+	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+		runes[i], runes[j] = runes[j], runes[i]
+	}
+	return string(runes)
+}
+
+func echoChat(args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
 
 	outC := make(chan value.Value, 20)
 
 	go func() {
-
+		fmt.Println("Chat server: <START>")
 		for {
 			msg, ok := <-inC
 			if !ok {
-				fmt.Println("Chat END")
+				close(outC)
+				fmt.Println("Chat server: <END>")
 				break
 			}
-			outC <- msg
+			utterance := msg.String()
+			answer := value.Utf8(reverse(utterance))
+			fmt.Printf("Chat server echo: %s -> %s\n", utterance, answer.String())
+			outC <- answer
 		}
 
 	}()
@@ -119,19 +138,25 @@ func run() error {
 	}
 	defer srv.Close()
 
-	srv.AddFunction("setName", 2, setName)
-	srv.AddFunction("getName", 0, getName)
-	srv.AddOutgoingStream("scanNames", 0, scanNames)
-	srv.AddIncomingStream("uploadNames", 0, uploadNames)
-	srv.AddChat("echoChat", 0, echoChat)
+	srv.AddFunction("setName", setName)
+	srv.AddFunction("getName", getName)
+	srv.AddOutgoingStream("scanNames", scanNames)
+	srv.AddIncomingStream("uploadNames", uploadNames)
+	srv.AddChat("echoChat", echoChat)
 
 	go srv.Run()
+
+	var wg sync.WaitGroup
 
 	cli := client.NewClient(testAddress, "")
 	err = cli.Connect()
 	if err != nil {
 		return err
 	}
+
+	/**
+	Simple call example
+	*/
 
 	nothing, err := cli.CallFunction("setName", value.Tuple(
 		value.Utf8("Alex"),
@@ -142,23 +167,46 @@ func run() error {
 		return errors.Errorf("something wrong, %v", err)
 	}
 
+	/**
+	Simple call example with timeout
+	*/
+
+	cli.SetTimeout(0)
 	name, err := cli.CallFunction("getName", nil)
-	fmt.Println(name)
+	if err == client.ErrTimeoutError {
+		fmt.Println("TImeout received")
+	} else {
+		fmt.Println(name)
+	}
+	cli.SetTimeout(1000)
+
+	/**
+	Get stream example
+	*/
 
 	readC, requestId, err := cli.GetStream("scanNames", nil, 100)
-	if err == nil {
-		fmt.Printf("Scan requestId=%d\n", requestId)
+	if err != nil {
+		return errors.Errorf("get stream failed, %v", err)
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fmt.Printf("Scan client: <START> %d\n", requestId)
 		for {
 			name, ok := <-readC
 			if !ok {
-				fmt.Println("Received END")
+				fmt.Println("Scan client: <END>")
 				break
 			}
-			fmt.Println("Received name: " + name.String())
+			fmt.Println("Scan client: " + name.String())
 		}
-	} else {
-		return errors.Errorf("get stream failed, %v", err)
-	}
+
+	}()
+
+	/**
+	Put stream example
+	*/
 
 	uploadCh := make(chan value.Value, 2)
 	err = cli.PutStream("uploadNames", nil, uploadCh)
@@ -166,36 +214,55 @@ func run() error {
 		return errors.Errorf("put stream failed, %v", err)
 	}
 
+	fmt.Println("Upload client: <START>")
+	fmt.Println("Upload client: Bob")
 	uploadCh <- value.Utf8("Bob")
+
+	fmt.Println("Upload client: Marley")
 	uploadCh <- value.Utf8("Marley")
+
 	close(uploadCh)
+	fmt.Println("Upload client <END>")
+
+	/**
+	Chat example
+	*/
 
 	sendCh := make(chan value.Value, 10)
 	readC, requestId, err = cli.Chat("echoChat", nil, 100, sendCh)
 	if err != nil {
 		return errors.Errorf("chat request failed, %v", err)
 	}
-	fmt.Printf("Chat requestId=%d\n", requestId)
 
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
+		fmt.Printf("Chat client response: <START> %d\n", requestId)
 		for {
 			msg, ok := <-readC
 			if !ok {
-				fmt.Println("Chat END")
+				fmt.Println("Chat client response: <END>")
 				break
 			}
-			fmt.Println("Chat response: " + msg.String())
+			fmt.Println("Chat client response: " + msg.String())
 		}
 	}()
 
+	fmt.Println("Chat client send: <START>")
+	fmt.Println("Chat client send: Hi")
 	sendCh <- value.Utf8("Hi")
-	sendCh <- value.Utf8("This is chat!")
+	fmt.Println("Chat client send: How do you do?")
+	sendCh <- value.Utf8("How do you do?")
+	fmt.Println("Chat client send: Bye")
 	sendCh <- value.Utf8("Bye")
 	close(sendCh)
+	fmt.Println("Chat client send: <END>")
 
-	fmt.Println("Client END")
+	wg.Wait()
+	fmt.Println("Client <END>")
 
-	time.Sleep(time.Second * 5)
+	// wait while server free session and see logs
+	time.Sleep(time.Second)
 
 	return nil
 }
