@@ -195,7 +195,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		return FunctionError(reqId, "function not found %s", name.String())
 	}
 
-	args := req.GetList(rpc.ArgumentsField)
+	args, _ := req.Get(rpc.ArgumentsField)
 	if args == nil {
 		args = value.EmptyList()
 	}
