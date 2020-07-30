@@ -21,6 +21,7 @@ package server
 import (
 	"github.com/consensusdb/value-rpc/rpc"
 	"github.com/pkg/errors"
+	"go.uber.org/atomic"
 	"go.uber.org/zap"
 	"io"
 	"net"
@@ -33,6 +34,7 @@ import (
 
 type rpcServer struct {
 	listener net.Listener
+	closed   atomic.Bool
 	shutdown chan bool
 	wg       sync.WaitGroup
 	logger   *zap.Logger
@@ -67,16 +69,23 @@ func NewServer(address string, logger *zap.Logger) (Server, error) {
 }
 
 func (t *rpcServer) Close() error {
-	t.logger.Info("shutdown vRPC server")
 
-	t.clientMap.Range(func(key, value interface{}) bool {
-		cli := value.(*servingClient)
-		cli.Close()
-		return true
-	})
+	if t.closed.CAS(false, true) {
 
-	t.shutdown <- true
-	return t.listener.Close()
+		t.logger.Info("shutdown vRPC server")
+
+		t.clientMap.Range(func(key, value interface{}) bool {
+			cli := value.(*servingClient)
+			cli.Close()
+			return true
+		})
+
+		t.shutdown <- true
+		return t.listener.Close()
+
+	}
+
+	return nil
 }
 
 func (t *rpcServer) Run() error {
