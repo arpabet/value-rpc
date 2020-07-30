@@ -19,7 +19,6 @@
 package server
 
 import (
-	"github.com/consensusdb/value"
 	"github.com/consensusdb/value-rpc/rpc"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
@@ -166,7 +165,7 @@ func (t *rpcServer) handleConnection(conn rpc.MsgConn) error {
 			}
 			return err
 		}
-		err = t.processMessage(cli, req)
+		err = cli.processRequest(req)
 		if err != nil {
 			// app error, continue after logging
 			t.logger.Debug("processMessage",
@@ -174,36 +173,6 @@ func (t *rpcServer) handleConnection(conn rpc.MsgConn) error {
 				zap.Error(err))
 		}
 	}
-}
-
-func (t *rpcServer) processMessage(cli *servingClient, req value.Map) error {
-	t.logger.Info("processMessage", zap.Stringer("req", req))
-
-	mt := req.GetNumber(rpc.MessageTypeField)
-	if mt == nil {
-		return errors.Errorf("empty message type %s", req.String())
-	}
-
-	switch rpc.MessageType(mt.Long()) {
-
-	case rpc.FunctionRequest:
-		go cli.serveFunctionRequest(req)
-
-	case rpc.GetStreamRequest:
-		go cli.serveGetStreamRequest(req)
-
-	case rpc.PutStreamRequest:
-		go cli.servePutStreamRequest(req)
-
-	case rpc.ChatRequest:
-		go cli.serveChatRequest(req)
-
-	default:
-		return errors.Errorf("unknown message type in %s", req.String())
-
-	}
-
-	return nil
 }
 
 func (t *rpcServer) createOrUpdateServingClient(clientId int64, conn rpc.MsgConn) *servingClient {

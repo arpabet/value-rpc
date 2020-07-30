@@ -24,7 +24,6 @@ package client
 
 import (
 	"github.com/consensusdb/value"
-	"time"
 )
 
 // must be fast function
@@ -48,15 +47,17 @@ type Client interface {
 
 	SetErrorHandler(ErrorHandler)
 
+	SetTimeout(timeoutMls int64)
+
 	CancelRequest(requestId int64)
 
-	CallFunction(name string, args value.List, timeout time.Duration) (value.Value, error)
+	CallFunction(name string, args value.List) (value.Value, error)
 
 	GetStream(name string, args value.List, receiveCap int) (<-chan value.Value, int64, error)
 
-	PutStream(name string, args value.List, timeout time.Duration, putCh <-chan value.Value) error
+	PutStream(name string, args value.List, putCh <-chan value.Value) error
 
-	Chat(name string, args value.List, timeout time.Duration, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error)
+	Chat(name string, args value.List, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error)
 
 	Close() error
 }

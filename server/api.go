@@ -24,18 +24,22 @@ import "github.com/consensusdb/value"
 @author Alex Shvid
 */
 
-type FunctionCallback func(args ...value.Value) (value.Value, error)
+type Function func(args value.List) (value.Value, error)
+type OutgoingStream func(args value.List) (<-chan value.Value, error)
+type IncomingStream func(args value.List, inC <-chan value.Value) error
+type Chat func(args value.List, inC <-chan value.Value) (<-chan value.Value, error)
 
 type Server interface {
-	AddFunction(name string, numArgs int, cb FunctionCallback) error
+	AddFunction(name string, numArgs int, cb Function) error
 
 	// GET for client
-	AddOutcomingStream(name string) error
+	AddOutgoingStream(name string, numArgs int, cb OutgoingStream) error
 
 	// PUT for client
-	AddIncomingStream(name string) error
+	AddIncomingStream(name string, numArgs int, cb IncomingStream) error
 
-	AddChat(name string) error
+	// Dual channel chat
+	AddChat(name string, numArgs int, cb Chat) error
 
 	Run() error
 

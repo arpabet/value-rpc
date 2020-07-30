@@ -26,10 +26,23 @@ import "errors"
 
 var ErrFunctionAlreadyExist = errors.New("function already exist")
 
+type functionType int
+
+const (
+	singleFunction functionType = iota
+	outgoingStream
+	incomingStream
+	chat
+)
+
 type function struct {
-	name    string
-	numArgs int
-	cb      FunctionCallback
+	name      string
+	numArgs   int
+	ft        functionType
+	singleFn  Function
+	outStream OutgoingStream
+	inStream  IncomingStream
+	chat      Chat
 }
 
 func (t *rpcServer) hasFunction(name string) bool {
@@ -39,15 +52,16 @@ func (t *rpcServer) hasFunction(name string) bool {
 	return false
 }
 
-func (t *rpcServer) AddFunction(name string, numArgs int, cb FunctionCallback) error {
+func (t *rpcServer) AddFunction(name string, numArgs int, cb Function) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
 
 	fn := &function{
-		name:    name,
-		numArgs: numArgs,
-		cb:      cb,
+		name:     name,
+		numArgs:  numArgs,
+		ft:       singleFunction,
+		singleFn: cb,
 	}
 
 	t.functionMap.Store(name, fn)
@@ -55,24 +69,51 @@ func (t *rpcServer) AddFunction(name string, numArgs int, cb FunctionCallback) e
 }
 
 // GET for client
-func (t *rpcServer) AddOutcomingStream(name string) error {
+func (t *rpcServer) AddOutgoingStream(name string, numArgs int, cb OutgoingStream) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
+
+	fn := &function{
+		name:      name,
+		numArgs:   numArgs,
+		ft:        outgoingStream,
+		outStream: cb,
+	}
+
+	t.functionMap.Store(name, fn)
 	return nil
 }
 
 // PUT for client
-func (t *rpcServer) AddIncomingStream(name string) error {
+func (t *rpcServer) AddIncomingStream(name string, numArgs int, cb IncomingStream) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
+
+	fn := &function{
+		name:     name,
+		numArgs:  numArgs,
+		ft:       incomingStream,
+		inStream: cb,
+	}
+
+	t.functionMap.Store(name, fn)
 	return nil
 }
 
-func (t *rpcServer) AddChat(name string) error {
+func (t *rpcServer) AddChat(name string, numArgs int, cb Chat) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
+
+	fn := &function{
+		name:    name,
+		numArgs: numArgs,
+		ft:      chat,
+		chat:    cb,
+	}
+
+	t.functionMap.Store(name, fn)
 	return nil
 }

@@ -20,7 +20,6 @@ package rpc
 
 import (
 	"github.com/consensusdb/value"
-	"github.com/pkg/errors"
 )
 
 /**
@@ -35,11 +34,10 @@ const (
 	FunctionRequest
 	FunctionResponse
 	GetStreamRequest
-	GetStreamResponse
 	PutStreamRequest
-	PutStreamResponse
 	ChatRequest
-	ChatResponse
+	ErrorResponse
+	StreamReady
 	StreamValue
 	StreamEnd
 	CancelRequest
@@ -95,22 +93,4 @@ func ValidMagicAndVersion(req value.Map) bool {
 		return false
 	}
 	return true
-}
-
-func FunctionResult(resp value.Map) (value.Value, error) {
-	err, _ := resp.Get(ErrorField)
-	if err != nil {
-		return nil, errors.Errorf("SERVER_FUNC_ERROR %v", err)
-	}
-	res, _ := resp.Get(ResultField)
-	return res, nil
-}
-
-func StreamResult(resp value.Map) (value.Value, error) {
-	err, _ := resp.Get(ErrorField)
-	if err != nil {
-		return nil, errors.Errorf("SERVER_STREAM_ERROR %v", err)
-	}
-	val, _ := resp.Get(ValueField)
-	return val, nil
 }

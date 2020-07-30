@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"github.com/consensusdb/value"
 	"github.com/consensusdb/value-rpc/rpc"
+	"github.com/pkg/errors"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 	"sync"
@@ -31,7 +32,7 @@ import (
 @author Alex Shvid
 */
 
-var outgoingQueueCap = 4096
+var OutgoingQueueCap = 4096
 
 type servingClient struct {
 	clientId    int64
@@ -41,6 +42,8 @@ type servingClient struct {
 	logger *zap.Logger
 
 	outgoingQueue chan value.Map
+
+	requestMap sync.Map
 }
 
 func NewServingClient(clientId int64, conn rpc.MsgConn, functionMap *sync.Map, logger *zap.Logger) *servingClient {
@@ -48,7 +51,7 @@ func NewServingClient(clientId int64, conn rpc.MsgConn, functionMap *sync.Map, l
 	client := &servingClient{
 		clientId:      clientId,
 		functionMap:   functionMap,
-		outgoingQueue: make(chan value.Map, outgoingQueueCap),
+		outgoingQueue: make(chan value.Map, OutgoingQueueCap),
 		logger:        logger,
 	}
 	client.activeConn.Store(conn)
@@ -73,10 +76,10 @@ func (t *servingClient) replaceConn(newConn rpc.MsgConn) {
 	go t.sender()
 }
 
-func FunctionResult(req value.Map, result value.Value) value.Map {
+func FunctionResult(requestId value.Number, result value.Value) value.Map {
 	resp := value.EmptyMap().
 		Put(rpc.MessageTypeField, rpc.FunctionResponse.Long()).
-		Put(rpc.RequestIdField, req.GetNumber(rpc.RequestIdField))
+		Put(rpc.RequestIdField, requestId)
 	if result != nil {
 		return resp.Put(rpc.ResultField, result)
 	} else {
@@ -84,10 +87,34 @@ func FunctionResult(req value.Map, result value.Value) value.Map {
 	}
 }
 
-func FunctionError(req value.Map, format string, args ...interface{}) value.Map {
+func StreamReady(requestId value.Number) value.Map {
+	return value.EmptyMap().
+		Put(rpc.MessageTypeField, rpc.StreamReady.Long()).
+		Put(rpc.RequestIdField, requestId)
+}
+
+func StreamValue(requestId value.Number, val value.Value) value.Map {
+	return value.EmptyMap().
+		Put(rpc.MessageTypeField, rpc.StreamValue.Long()).
+		Put(rpc.RequestIdField, requestId).
+		Put(rpc.ValueField, val)
+}
+
+func StreamEnd(requestId value.Number, val value.Value) value.Map {
 	resp := value.EmptyMap().
-		Put(rpc.MessageTypeField, rpc.FunctionResponse.Long()).
-		Put(rpc.RequestIdField, req.GetNumber(rpc.RequestIdField))
+		Put(rpc.MessageTypeField, rpc.StreamEnd.Long()).
+		Put(rpc.RequestIdField, requestId)
+	if val != nil {
+		return resp.Put(rpc.ValueField, val)
+	} else {
+		return resp
+	}
+}
+
+func FunctionError(requestId value.Number, format string, args ...interface{}) value.Map {
+	resp := value.EmptyMap().
+		Put(rpc.MessageTypeField, rpc.ErrorResponse.Long()).
+		Put(rpc.RequestIdField, requestId)
 	if len(args) == 0 {
 		return resp.Put(rpc.ErrorField, value.Utf8(format))
 	} else {
@@ -137,55 +164,146 @@ func (t *servingClient) findFunction(name string) (*function, bool) {
 	return nil, false
 }
 
-func (t *servingClient) serveFunctionRequest(req value.Map) {
-	t.send(t.doServeFunctionRequest(req))
+func (t *servingClient) serveFunctionRequest(ft functionType, req value.Map) {
+	resp := t.doServeFunctionRequest(ft, req)
+	if resp != nil {
+		t.send(resp)
+	}
 }
 
-func (t *servingClient) doServeFunctionRequest(req value.Map) value.Map {
+func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) value.Map {
+
+	reqId := req.GetNumber(rpc.RequestIdField)
+	if reqId == nil {
+		return FunctionError(reqId, "request id not found")
+	}
 
 	name := req.GetString(rpc.FunctionNameField)
 	if name == nil {
-		return FunctionError(req, "function name field not found")
+		return FunctionError(reqId, "function name field not found")
 	}
 
 	fn, ok := t.findFunction(name.String())
 	if !ok {
-		return FunctionError(req, "function not found %s", name.String())
+		return FunctionError(reqId, "function not found %s", name.String())
 	}
 
 	args := req.GetList(rpc.ArgumentsField)
-
-	numArgs := 0
-	if args != nil {
-		numArgs = args.Len()
+	if args == nil {
+		args = value.EmptyList()
 	}
 
-	if fn.numArgs != numArgs {
-		return FunctionError(req, "function wrong number of args %s, expected %d but actual %d", name.String(), fn.numArgs, numArgs)
+	if fn.numArgs != args.Len() {
+		return FunctionError(reqId, "function wrong number of args %s, expected %d, actual %d", name.String(), fn.numArgs, args.Len())
 	}
 
-	var res value.Value
-	var err error
-	if numArgs > 0 {
-		res, err = fn.cb(args.Values()...)
+	if fn.ft != ft {
+		return FunctionError(reqId, "function wrong type %s, expected %d, actual %d", name.String(), fn.ft, ft)
+	}
+
+	switch fn.ft {
+	case singleFunction:
+		res, err := fn.singleFn(args)
+		if err != nil {
+			return FunctionError(reqId, "single function %s call, %v", name.String(), err)
+		}
+		return FunctionResult(reqId, res)
+
+	case outgoingStream:
+		sr := t.newServingRequest(ft, reqId)
+		outC, err := fn.outStream(args)
+		if err != nil {
+			sr.closeRequest(t)
+			return FunctionError(reqId, "out stream function %s call, %v", name.String(), err)
+		}
+		go sr.outgoingStreamer(outC, t)
+		return nil
+
+	case incomingStream:
+		sr := t.newServingRequest(ft, reqId)
+		err := fn.inStream(args, sr.inC)
+		if err != nil {
+			sr.closeRequest(t)
+			return FunctionError(reqId, "in stream function %s call, %v", name.String(), err)
+		}
+		return StreamReady(reqId)
+
+	case chat:
+		sr := t.newServingRequest(ft, reqId)
+		outC, err := fn.chat(args, sr.inC)
+		if err != nil {
+			sr.closeRequest(t)
+			return FunctionError(reqId, "chat function %s call, %v", name.String(), err)
+		}
+		go sr.outgoingStreamer(outC, t)
+		return nil
+	}
+
+	return FunctionError(reqId, "unsupported function %s type", name.String())
+
+}
+
+func (t *servingClient) newServingRequest(ft functionType, reqId value.Number) *servingRequest {
+	sr := NewServingRequest(ft, reqId)
+	t.requestMap.Store(reqId.Long(), sr)
+	return sr
+}
+
+func (t *servingClient) findServingRequest(reqId value.Number) (*servingRequest, bool) {
+
+	requestCtx, ok := t.requestMap.Load(reqId.Long())
+	if !ok {
+		return nil, false
+	}
+
+	return requestCtx.(*servingRequest), true
+
+}
+
+func (t *servingClient) deleteRequest(requestId value.Number) {
+	t.requestMap.Delete(requestId.Long())
+}
+
+func (t *servingClient) processRequest(req value.Map) error {
+	//t.logger.Info("processRequest", zap.Stringer("req", req))
+
+	mt := req.GetNumber(rpc.MessageTypeField)
+	if mt == nil {
+		return errors.Errorf("empty message type in %s", req.String())
+	}
+
+	reqId := req.GetNumber(rpc.RequestIdField)
+	if reqId == nil {
+		return errors.Errorf("request id not found in %s", req.String())
+	}
+
+	if sr, ok := t.findServingRequest(reqId); ok {
+		return sr.serveRunningRequest(mt, req, t)
 	} else {
-		res, err = fn.cb()
+		return t.serveNewRequest(mt, req)
 	}
 
-	if err != nil {
-		return FunctionError(req, "function %s error, %v", name.String(), err)
+}
+
+func (t *servingClient) serveNewRequest(mt value.Number, req value.Map) error {
+
+	switch rpc.MessageType(mt.Long()) {
+
+	case rpc.FunctionRequest:
+		go t.serveFunctionRequest(singleFunction, req)
+
+	case rpc.GetStreamRequest:
+		go t.serveFunctionRequest(outgoingStream, req)
+
+	case rpc.PutStreamRequest:
+		go t.serveFunctionRequest(incomingStream, req)
+
+	case rpc.ChatRequest:
+		go t.serveFunctionRequest(chat, req)
+
+	default:
+		return errors.Errorf("unknown message type for new request in %s", req.String())
 	}
 
-	return FunctionResult(req, res)
-}
-
-func (t *servingClient) serveGetStreamRequest(req value.Map) {
-
-}
-
-func (t *servingClient) servePutStreamRequest(req value.Map) {
-}
-
-func (t *servingClient) serveChatRequest(req value.Map) {
-
+	return nil
 }

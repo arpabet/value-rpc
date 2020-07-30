@@ -33,13 +33,14 @@ const getStreamFlag = 1
 const putStreamFlag = 2
 
 type rpcRequestCtx struct {
-	requestId int64
-	state     atomic.Int32
-	req       value.Map
-	start     time.Time
-	resultCh  chan value.Value
-	resultErr atomic.Error
-	throttle  atomic.Int64
+	requestId        int64
+	state            atomic.Int32
+	req              value.Map
+	start            time.Time
+	resultCh         chan value.Value
+	resultErr        atomic.Error
+	throttleOutgoing atomic.Int64
+	throttleOnServer atomic.Int64
 }
 
 func NewRequestCtx(requestId int64, req value.Map, receiveCap int) *rpcRequestCtx {
@@ -130,14 +131,14 @@ func (t *rpcRequestCtx) Error(defaultError error) error {
 	return defaultError
 }
 
-func (t *rpcRequestCtx) SingleResp(timeout time.Duration, onTimeout func()) (value.Value, error) {
+func (t *rpcRequestCtx) SingleResp(timeoutMls int64, onTimeout func()) (value.Value, error) {
 	select {
 	case result, ok := <-t.resultCh:
 		if !ok {
 			return nil, t.Error(ErrNoResponse)
 		}
 		return result, nil
-	case <-time.After(timeout):
+	case <-time.After(time.Duration(timeoutMls) * time.Millisecond):
 		onTimeout()
 		return nil, t.Error(ErrTimeoutError)
 	}
