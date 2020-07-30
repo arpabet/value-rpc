@@ -3,7 +3,7 @@ module github.com/consensusdb/value-rpc
 go 1.14
 
 require (
-	github.com/consensusdb/value v1.0.0
+	github.com/consensusdb/value v1.2.2
 	github.com/pkg/errors v0.9.1
 	github.com/smallnest/goframe v1.0.0
 	go.uber.org/atomic v1.6.0

@@ -24,7 +24,7 @@ import (
 )
 
 /**
-Alex Shvid
+@author Alex Shvid
 */
 
 type MessageType int64
@@ -35,8 +35,11 @@ const (
 	FunctionRequest
 	FunctionResponse
 	GetStreamRequest
+	GetStreamResponse
 	PutStreamRequest
+	PutStreamResponse
 	ChatRequest
+	ChatResponse
 	StreamValue
 	StreamEnd
 	CancelRequest
@@ -58,36 +61,31 @@ var RequestIdField = "rid"
 var TimeoutField = "sla"
 var ClientIdField = "cid"
 var FunctionNameField = "fn"
-var ValueField = "val"
+var ArgumentsField = "args" // allow multiple args if List value in function call
+var ResultField = "res"     // allow multiple results if List in function call
 var ErrorField = "err"
+var ValueField = "val" // streaming value field
 
 var HandshakeRequestId = int64(-1)
 
-func NewClientRequest(clientId int64) value.Table {
-
-	msg := value.Map()
-	msg.Put(MagicField, value.Utf8(Magic))
-	msg.Put(VersionField, value.Double(Version))
-	msg.Put(MessageTypeField, HandshakeRequest.Long())
-	msg.Put(RequestIdField, value.Long(HandshakeRequestId))
-	msg.Put(ClientIdField, value.Long(clientId))
-
-	return msg
+func NewHandshakeRequest(clientId int64) value.Map {
+	return value.EmptyMap().
+		Put(MagicField, value.Utf8(Magic)).
+		Put(VersionField, value.Double(Version)).
+		Put(MessageTypeField, HandshakeRequest.Long()).
+		Put(RequestIdField, value.Long(HandshakeRequestId)).
+		Put(ClientIdField, value.Long(clientId))
 }
 
-func NewClientResponse() value.Table {
-
-	msg := value.Map()
-	msg.Put(MagicField, value.Utf8(Magic))
-	msg.Put(VersionField, value.Double(Version))
-	msg.Put(MessageTypeField, HandshakeResponse.Long())
-	msg.Put(RequestIdField, value.Long(HandshakeRequestId))
-
-	return msg
-
+func NewHandshakeResponse() value.Map {
+	return value.EmptyMap().
+		Put(MagicField, value.Utf8(Magic)).
+		Put(VersionField, value.Double(Version)).
+		Put(MessageTypeField, HandshakeResponse.Long()).
+		Put(RequestIdField, value.Long(HandshakeRequestId))
 }
 
-func ValidMagicAndVersion(req value.Table) bool {
+func ValidMagicAndVersion(req value.Map) bool {
 	magic := req.GetString(MagicField)
 	if magic == nil || magic.String() != Magic {
 		return false
@@ -99,10 +97,20 @@ func ValidMagicAndVersion(req value.Table) bool {
 	return true
 }
 
-func ServerResult(resp value.Table) (value.Value, error) {
-	err := resp.Get(ErrorField)
+func FunctionResult(resp value.Map) (value.Value, error) {
+	err, _ := resp.Get(ErrorField)
 	if err != nil {
-		return nil, errors.Errorf("SERVER_ERROR %v", err)
+		return nil, errors.Errorf("SERVER_FUNC_ERROR %v", err)
 	}
-	return resp.Get(ValueField), nil
+	res, _ := resp.Get(ResultField)
+	return res, nil
+}
+
+func StreamResult(resp value.Map) (value.Value, error) {
+	err, _ := resp.Get(ErrorField)
+	if err != nil {
+		return nil, errors.Errorf("SERVER_STREAM_ERROR %v", err)
+	}
+	val, _ := resp.Get(ValueField)
+	return val, nil
 }

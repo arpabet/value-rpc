@@ -28,7 +28,7 @@ import (
 )
 
 /**
-Alex Shvid
+@author Alex Shvid
 */
 
 var outgoingQueueCap = 4096
@@ -40,7 +40,7 @@ type servingClient struct {
 
 	logger *zap.Logger
 
-	outgoingQueue chan value.Table
+	outgoingQueue chan value.Map
 }
 
 func NewServingClient(clientId int64, conn rpc.MsgConn, functionMap *sync.Map, logger *zap.Logger) *servingClient {
@@ -48,7 +48,7 @@ func NewServingClient(clientId int64, conn rpc.MsgConn, functionMap *sync.Map, l
 	client := &servingClient{
 		clientId:      clientId,
 		functionMap:   functionMap,
-		outgoingQueue: make(chan value.Table, outgoingQueueCap),
+		outgoingQueue: make(chan value.Map, outgoingQueueCap),
 		logger:        logger,
 	}
 	client.activeConn.Store(conn)
@@ -73,27 +73,27 @@ func (t *servingClient) replaceConn(newConn rpc.MsgConn) {
 	go t.sender()
 }
 
-func ValueResult(req value.Table, msgType rpc.MessageType, result value.Value) value.Table {
-	resp := value.Map()
-	resp.Put(rpc.MessageTypeField, msgType.Long())
-	resp.Put(rpc.RequestIdField, req.Get(rpc.RequestIdField))
+func FunctionResult(req value.Map, result value.Value) value.Map {
+	resp := value.EmptyMap().
+		Put(rpc.MessageTypeField, rpc.FunctionResponse.Long()).
+		Put(rpc.RequestIdField, req.GetNumber(rpc.RequestIdField))
 	if result != nil {
-		resp.Put(rpc.ValueField, result)
+		return resp.Put(rpc.ResultField, result)
+	} else {
+		return resp
 	}
-	return resp
 }
 
-func ServerError(req value.Table, msgType rpc.MessageType, msg string, args ...interface{}) value.Table {
-	resp := value.Map()
-	resp.Put(rpc.MessageTypeField, msgType.Long())
-	resp.Put(rpc.RequestIdField, req.Get(rpc.RequestIdField))
+func FunctionError(req value.Map, format string, args ...interface{}) value.Map {
+	resp := value.EmptyMap().
+		Put(rpc.MessageTypeField, rpc.FunctionResponse.Long()).
+		Put(rpc.RequestIdField, req.GetNumber(rpc.RequestIdField))
 	if len(args) == 0 {
-		resp.Put(rpc.ErrorField, value.Utf8(msg))
+		return resp.Put(rpc.ErrorField, value.Utf8(format))
 	} else {
-		s := fmt.Sprintf(msg, args...)
-		resp.Put(rpc.ErrorField, value.Utf8(s))
+		s := fmt.Sprintf(format, args...)
+		return resp.Put(rpc.ErrorField, value.Utf8(s))
 	}
-	return resp
 }
 
 func (t *servingClient) sender() {
@@ -125,7 +125,7 @@ func (t *servingClient) sender() {
 	}
 }
 
-func (t *servingClient) send(resp value.Table) error {
+func (t *servingClient) send(resp value.Map) error {
 	t.outgoingQueue <- resp
 	return nil
 }
@@ -137,42 +137,55 @@ func (t *servingClient) findFunction(name string) (*function, bool) {
 	return nil, false
 }
 
-func (t *servingClient) serveFunctionRequest(req value.Table) {
+func (t *servingClient) serveFunctionRequest(req value.Map) {
 	t.send(t.doServeFunctionRequest(req))
 }
 
-func (t *servingClient) doServeFunctionRequest(req value.Table) value.Table {
+func (t *servingClient) doServeFunctionRequest(req value.Map) value.Map {
 
 	name := req.GetString(rpc.FunctionNameField)
 	if name == nil {
-		return ServerError(req, rpc.FunctionResponse, "function name field not found")
+		return FunctionError(req, "function name field not found")
 	}
 
 	fn, ok := t.findFunction(name.String())
 	if !ok {
-		return ServerError(req, rpc.FunctionResponse, "function not found %s", name.String())
+		return FunctionError(req, "function not found %s", name.String())
 	}
 
-	args := make([]value.Value, fn.args)
-	for i := 0; i < fn.args; i++ {
-		args[i] = req.GetAt(i)
+	args := req.GetList(rpc.ArgumentsField)
+
+	numArgs := 0
+	if args != nil {
+		numArgs = args.Len()
 	}
 
-	res, err := fn.cb(args)
+	if fn.numArgs != numArgs {
+		return FunctionError(req, "function wrong number of args %s, expected %d but actual %d", name.String(), fn.numArgs, numArgs)
+	}
+
+	var res value.Value
+	var err error
+	if numArgs > 0 {
+		res, err = fn.cb(args.Values()...)
+	} else {
+		res, err = fn.cb()
+	}
+
 	if err != nil {
-		return ServerError(req, rpc.FunctionResponse, "function %s error, %v", name.String(), err)
+		return FunctionError(req, "function %s error, %v", name.String(), err)
 	}
 
-	return ValueResult(req, rpc.FunctionResponse, res)
+	return FunctionResult(req, res)
 }
 
-func (t *servingClient) serveGetStreamRequest(req value.Table) {
+func (t *servingClient) serveGetStreamRequest(req value.Map) {
 
 }
 
-func (t *servingClient) servePutStreamRequest(req value.Table) {
+func (t *servingClient) servePutStreamRequest(req value.Map) {
 }
 
-func (t *servingClient) serveChatRequest(req value.Table) {
+func (t *servingClient) serveChatRequest(req value.Map) {
 
 }

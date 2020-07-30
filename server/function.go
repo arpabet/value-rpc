@@ -21,15 +21,15 @@ package server
 import "errors"
 
 /**
-Alex Shvid
+@author Alex Shvid
 */
 
 var ErrFunctionAlreadyExist = errors.New("function already exist")
 
 type function struct {
-	name string
-	args int
-	cb   FunctionCallback
+	name    string
+	numArgs int
+	cb      FunctionCallback
 }
 
 func (t *rpcServer) hasFunction(name string) bool {
@@ -45,9 +45,9 @@ func (t *rpcServer) AddFunction(name string, numArgs int, cb FunctionCallback) e
 	}
 
 	fn := &function{
-		name: name,
-		args: numArgs,
-		cb:   cb,
+		name:    name,
+		numArgs: numArgs,
+		cb:      cb,
 	}
 
 	t.functionMap.Store(name, fn)
@@ -55,7 +55,7 @@ func (t *rpcServer) AddFunction(name string, numArgs int, cb FunctionCallback) e
 }
 
 // GET for client
-func (t *rpcServer) AddOutcomingStream(name string, numArgs int) error {
+func (t *rpcServer) AddOutcomingStream(name string) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
@@ -63,14 +63,14 @@ func (t *rpcServer) AddOutcomingStream(name string, numArgs int) error {
 }
 
 // PUT for client
-func (t *rpcServer) AddIncomingStream(name string, numArgs int) error {
+func (t *rpcServer) AddIncomingStream(name string) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
 	return nil
 }
 
-func (t *rpcServer) AddChat(name string, numArgs int) error {
+func (t *rpcServer) AddChat(name string) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}

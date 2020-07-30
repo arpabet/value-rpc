@@ -26,12 +26,12 @@ import (
 )
 
 /**
-Alex Shvid
+@author Alex Shvid
 */
 
 type rpcConn struct {
 	conn         rpc.MsgConn
-	reqCh        chan value.Table
+	reqCh        chan value.Map
 	respHandler  responseHandler
 	errorHandler ErrorHandler
 }
@@ -57,13 +57,13 @@ func newConn(address, socks5 string, clientId int64, sendingCap int64, respHandl
 
 	t := &rpcConn{
 		conn:         rpc.NewMsgConn(conn),
-		reqCh:        make(chan value.Table, sendingCap),
+		reqCh:        make(chan value.Map, sendingCap),
 		respHandler:  respHandler,
 		errorHandler: errorHandler,
 	}
 
 	go t.requestLoop()
-	t.SendRequest(rpc.NewClientRequest(clientId))
+	t.SendRequest(rpc.NewHandshakeRequest(clientId))
 	go t.responseLoop()
 
 	return t, nil
@@ -111,6 +111,6 @@ func (t *rpcConn) responseLoop() error {
 
 }
 
-func (t *rpcConn) SendRequest(req value.Table) {
+func (t *rpcConn) SendRequest(req value.Map) {
 	t.reqCh <- req
 }

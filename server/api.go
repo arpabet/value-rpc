@@ -21,21 +21,21 @@ package server
 import "github.com/consensusdb/value"
 
 /**
-Alex Shvid
+@author Alex Shvid
 */
 
-type FunctionCallback func(args []value.Value) (value.Value, error)
+type FunctionCallback func(args ...value.Value) (value.Value, error)
 
 type Server interface {
 	AddFunction(name string, numArgs int, cb FunctionCallback) error
 
 	// GET for client
-	AddOutcomingStream(name string, numArgs int) error
+	AddOutcomingStream(name string) error
 
 	// PUT for client
-	AddIncomingStream(name string, numArgs int) error
+	AddIncomingStream(name string) error
 
-	AddChat(name string, numArgs int) error
+	AddChat(name string) error
 
 	Run() error
 

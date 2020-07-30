@@ -27,7 +27,7 @@ import (
 )
 
 /**
-Alex Shvid
+@author Alex Shvid
 */
 
 var encoderConfig = goframe.EncoderConfig{
@@ -46,9 +46,9 @@ var decoderConfig = goframe.DecoderConfig{
 }
 
 type MsgConn interface {
-	ReadMessage() (value.Table, error)
+	ReadMessage() (value.Map, error)
 
-	WriteMessage(msg value.Table) error
+	WriteMessage(msg value.Map) error
 
 	Close() error
 
@@ -64,7 +64,7 @@ type messageConnAdapter struct {
 	conn goframe.FrameConn
 }
 
-func (t *messageConnAdapter) ReadMessage() (value.Table, error) {
+func (t *messageConnAdapter) ReadMessage() (value.Map, error) {
 	frame, err := t.conn.ReadFrame()
 	if err != nil {
 		return nil, err
@@ -73,14 +73,13 @@ func (t *messageConnAdapter) ReadMessage() (value.Table, error) {
 	if err != nil {
 		return nil, errors.Errorf("msgpack unpack, %v", err)
 	}
-	if msg.Kind() != value.TABLE {
+	if msg.Kind() != value.MAP {
 		return nil, errors.New("expected msgpack table")
 	}
-	table := msg.(value.Table)
-	return table, nil
+	return msg.(value.Map), nil
 }
 
-func (t *messageConnAdapter) WriteMessage(msg value.Table) error {
+func (t *messageConnAdapter) WriteMessage(msg value.Map) error {
 	resp, err := value.Pack(msg)
 	if err != nil {
 		return errors.Errorf("msgpack pack, %v", err)

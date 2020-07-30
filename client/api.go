@@ -19,7 +19,7 @@
 package client
 
 /**
-Alex Shvid
+@author Alex Shvid
 */
 
 import (
@@ -29,7 +29,7 @@ import (
 
 // must be fast function
 type PerformanceMonitor func(name string, elapsed int64)
-type ConnectionHandler func(connected value.Table)
+type ConnectionHandler func(connected value.Map)
 
 type Client interface {
 	ClientId() int64
@@ -50,13 +50,13 @@ type Client interface {
 
 	CancelRequest(requestId int64)
 
-	CallFunction(name string, args []value.Value, timeout time.Duration) (value.Value, error)
+	CallFunction(name string, args value.List, timeout time.Duration) (value.Value, error)
 
-	GetStream(name string, args []value.Value, receiveCap int) (<-chan value.Value, int64, error)
+	GetStream(name string, args value.List, receiveCap int) (<-chan value.Value, int64, error)
 
-	PutStream(name string, args []value.Value, timeout time.Duration, putCh <-chan value.Value) error
+	PutStream(name string, args value.List, timeout time.Duration, putCh <-chan value.Value) error
 
-	Chat(name string, args []value.Value, timeout time.Duration, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error)
+	Chat(name string, args value.List, timeout time.Duration, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error)
 
 	Close() error
 }

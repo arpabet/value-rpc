@@ -30,10 +30,10 @@ import (
 )
 
 /**
-Alex Shvid
+@author Alex Shvid
 */
 
-type responseHandler func(resp value.Table)
+type responseHandler func(resp value.Map)
 
 var DefaultSendingCap = int64(1024)
 
@@ -95,7 +95,7 @@ func (t *rpcClient) getConnectionHandler() ConnectionHandler {
 	if ch != nil {
 		return ch.(ConnectionHandler)
 	}
-	return func(resp value.Table) {
+	return func(resp value.Map) {
 		log.Println("New connection established with ", resp)
 	}
 }
@@ -133,7 +133,7 @@ func (t *rpcClient) BadConnection(err error) {
 	}
 }
 
-func (t *rpcClient) ProtocolError(rest value.Table, err error) {
+func (t *rpcClient) ProtocolError(rest value.Map, err error) {
 	log.Printf("ERROR: wrong message received, %v\n", err)
 	var out strings.Builder
 	rest.PrintJSON(&out)
@@ -167,13 +167,12 @@ func (t *rpcClient) sendMetrics(requestCtx *rpcRequestCtx) {
 	}
 }
 
-func (t *rpcClient) processResponse(mt rpc.MessageType, resp value.Table, requestCtx *rpcRequestCtx) {
-
-	result, serverErr := rpc.ServerResult(resp)
+func (t *rpcClient) processResponse(mt rpc.MessageType, resp value.Map, requestCtx *rpcRequestCtx) {
 
 	switch mt {
 
 	case rpc.FunctionResponse:
+		result, serverErr := rpc.FunctionResult(resp)
 		if serverErr != nil {
 			requestCtx.SetError(serverErr)
 		} else {
@@ -184,18 +183,20 @@ func (t *rpcClient) processResponse(mt rpc.MessageType, resp value.Table, reques
 		t.requestCtxMap.Delete(requestCtx.requestId)
 
 	case rpc.StreamValue:
+		value, serverErr := rpc.StreamResult(resp)
 		if serverErr != nil {
 			t.getErrorHandler().StreamError(requestCtx.requestId, serverErr)
 		} else {
-			requestCtx.notifyResult(result)
+			requestCtx.notifyResult(value)
 		}
 		t.throttleStream(requestCtx)
 
 	case rpc.StreamEnd:
+		value, serverErr := rpc.StreamResult(resp)
 		if serverErr != nil {
 			t.getErrorHandler().StreamError(requestCtx.requestId, serverErr)
-		} else if result != nil { // optional result on StreamEnd like in gRPC
-			requestCtx.notifyResult(result)
+		} else if value != nil { // optional result on StreamEnd like in gRPC
+			requestCtx.notifyResult(value)
 		}
 		if requestCtx.TryGetClose() {
 			t.requestCtxMap.Delete(requestCtx.requestId)
@@ -207,11 +208,7 @@ func (t *rpcClient) processResponse(mt rpc.MessageType, resp value.Table, reques
 		}
 
 	default:
-		if serverErr != nil {
-			t.getErrorHandler().StreamError(requestCtx.requestId, serverErr)
-		} else {
-			requestCtx.notifyResult(result)
-		}
+		t.getErrorHandler().ProtocolError(resp, ErrUnsupportedMessageType)
 
 	}
 
@@ -229,7 +226,7 @@ func (t *rpcClient) throttleStream(requestCtx *rpcRequestCtx) {
 }
 
 func (t *rpcClient) getResponseHandler() responseHandler {
-	return func(resp value.Table) {
+	return func(resp value.Map) {
 
 		mt := resp.GetNumber(rpc.MessageTypeField)
 		if mt == nil {
@@ -258,8 +255,7 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 	}
 }
 
-func (t *rpcClient) newRequestCtx(req value.Table, receiveCap int) *rpcRequestCtx {
-	requestId := t.lastRequest.Inc()
+func (t *rpcClient) newRequestCtx(requestId int64, req value.Map, receiveCap int) *rpcRequestCtx {
 	requestCtx := NewRequestCtx(requestId, req, receiveCap)
 	t.requestCtxMap.Store(requestId, requestCtx)
 	return requestCtx
@@ -274,15 +270,17 @@ func (t *rpcClient) ensureConnection() error {
 	return nil
 }
 
-func (t *rpcClient) sendRequest(req value.Table, receiveCap int) (*rpcRequestCtx, error) {
+func (t *rpcClient) sendRequest(req value.Map, receiveCap int) (*rpcRequestCtx, error) {
 
 	err := t.ensureConnection()
 	if err != nil {
 		return nil, err
 	}
 
-	requestCtx := t.newRequestCtx(req, receiveCap)
-	req.Put(rpc.RequestIdField, value.Long(requestCtx.requestId))
+	requestId := t.lastRequest.Inc()
+	req = req.Put(rpc.RequestIdField, value.Long(requestId))
+
+	requestCtx := t.newRequestCtx(requestId, req, receiveCap)
 
 	t.conn.getConn().SendRequest(req)
 	return requestCtx, nil
@@ -296,9 +294,10 @@ func (t *rpcClient) sendSystemRequest(requestId int64, mt rpc.MessageType) {
 		return
 	}
 
-	req := value.Map()
-	req.Put(rpc.MessageTypeField, mt.Long())
-	req.Put(rpc.RequestIdField, value.Long(requestId))
+	req := value.EmptyMap().
+		Put(rpc.MessageTypeField, mt.Long()).
+		Put(rpc.RequestIdField, value.Long(requestId))
+
 	t.conn.getConn().SendRequest(req)
 }
 
@@ -306,7 +305,7 @@ func (t *rpcClient) CancelRequest(requestId int64) {
 	t.sendSystemRequest(requestId, rpc.CancelRequest)
 }
 
-func (t *rpcClient) CallFunction(name string, args []value.Value, timeout time.Duration) (value.Value, error) {
+func (t *rpcClient) CallFunction(name string, args value.List, timeout time.Duration) (value.Value, error) {
 
 	req := t.constructRequest(rpc.FunctionRequest, name, args, timeout.Milliseconds())
 
@@ -321,7 +320,7 @@ func (t *rpcClient) CallFunction(name string, args []value.Value, timeout time.D
 	return res, err
 }
 
-func (t *rpcClient) GetStream(name string, args []value.Value, receiveCap int) (<-chan value.Value, int64, error) {
+func (t *rpcClient) GetStream(name string, args value.List, receiveCap int) (<-chan value.Value, int64, error) {
 
 	req := t.constructRequest(rpc.GetStreamRequest, name, args, 0)
 
@@ -333,7 +332,7 @@ func (t *rpcClient) GetStream(name string, args []value.Value, receiveCap int) (
 	return requestCtx.MultiResp(), requestCtx.requestId, nil
 }
 
-func (t *rpcClient) PutStream(name string, args []value.Value, timeout time.Duration, putCh <-chan value.Value) error {
+func (t *rpcClient) PutStream(name string, args value.List, timeout time.Duration, putCh <-chan value.Value) error {
 
 	req := t.constructRequest(rpc.PutStreamRequest, name, args, timeout.Milliseconds())
 
@@ -355,7 +354,7 @@ func (t *rpcClient) PutStream(name string, args []value.Value, timeout time.Dura
 	return nil
 }
 
-func (t *rpcClient) Chat(name string, args []value.Value, timeout time.Duration, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error) {
+func (t *rpcClient) Chat(name string, args value.List, timeout time.Duration, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error) {
 
 	req := t.constructRequest(rpc.ChatRequest, name, args, timeout.Milliseconds())
 
@@ -377,23 +376,24 @@ func (t *rpcClient) Chat(name string, args []value.Value, timeout time.Duration,
 	return requestCtx.MultiResp(), requestCtx.requestId, nil
 }
 
-func (t *rpcClient) streamOut(req value.Table, requestCtx *rpcRequestCtx, putCh <-chan value.Value) {
+func (t *rpcClient) streamOut(req value.Map, requestCtx *rpcRequestCtx, putCh <-chan value.Value) {
 
 	for requestCtx.IsPutOpen() {
 
 		val, ok := <-putCh
 		if !ok {
-			endReq := value.Map()
-			endReq.Put(rpc.MessageTypeField, rpc.StreamEnd.Long())
-			endReq.Put(rpc.RequestIdField, req.GetNumber(rpc.RequestIdField))
+			endReq := value.EmptyMap().
+				Put(rpc.MessageTypeField, rpc.StreamEnd.Long()).
+				Put(rpc.RequestIdField, req.GetNumber(rpc.RequestIdField))
 			t.conn.getConn().SendRequest(endReq)
 			break
 		}
 
-		nextReq := value.Map()
-		nextReq.Put(rpc.MessageTypeField, rpc.StreamValue.Long())
-		nextReq.Put(rpc.RequestIdField, req.GetNumber(rpc.RequestIdField))
-		nextReq.Put(rpc.ValueField, val)
+		nextReq := value.EmptyMap().
+			Put(rpc.MessageTypeField, rpc.StreamValue.Long()).
+			Put(rpc.RequestIdField, req.GetNumber(rpc.RequestIdField)).
+			Put(rpc.ValueField, val)
+
 		t.conn.getConn().SendRequest(nextReq)
 
 	}
@@ -404,17 +404,15 @@ func (t *rpcClient) streamOut(req value.Table, requestCtx *rpcRequestCtx, putCh 
 
 }
 
-func (t *rpcClient) constructRequest(mt rpc.MessageType, name string, args []value.Value, timeout int64) value.Table {
+func (t *rpcClient) constructRequest(mt rpc.MessageType, name string, args value.List, timeout int64) value.Map {
 
-	req := value.Map()
-	req.Put(rpc.MessageTypeField, mt.Long())
-	req.Put(rpc.FunctionNameField, value.Utf8(name))
+	req := value.EmptyMap().
+		Put(rpc.MessageTypeField, mt.Long()).
+		Put(rpc.FunctionNameField, value.Utf8(name)).
+		Put(rpc.ArgumentsField, args)
+
 	if timeout > 0 {
-		req.Put(rpc.TimeoutField, value.Long(timeout))
-	}
-
-	for i, arg := range args {
-		req.PutAt(i, arg)
+		req = req.Put(rpc.TimeoutField, value.Long(timeout))
 	}
 
 	return req

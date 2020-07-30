@@ -19,21 +19,25 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"github.com/consensusdb/value"
 	"github.com/consensusdb/value-rpc/client"
 	"github.com/consensusdb/value-rpc/server"
+	"github.com/pkg/errors"
 	"os"
 	"time"
 )
+
+/**
+@author Alex Shvid
+*/
 
 var testAddress = "localhost:9999"
 
 var firstName = ""
 var lastName = ""
 
-func setName(args []value.Value) (value.Value, error) {
+func setName(args ...value.Value) (value.Value, error) {
 	if args[0] != nil {
 		firstName = args[0].String()
 	}
@@ -43,7 +47,7 @@ func setName(args []value.Value) (value.Value, error) {
 	return nil, nil
 }
 
-func getName(args []value.Value) (value.Value, error) {
+func getName(args ...value.Value) (value.Value, error) {
 	return value.Utf8(firstName + " " + lastName), nil
 }
 
@@ -66,13 +70,13 @@ func run() error {
 		return err
 	}
 
-	nothing, err := cli.CallFunction("setName", []value.Value{
+	nothing, err := cli.CallFunction("setName", value.Tuple(
 		value.Utf8("Alex"),
 		value.Utf8("Shvid"),
-	}, time.Second)
+	), time.Second)
 
 	if nothing != nil || err != nil {
-		return errors.New("something wrong")
+		return errors.Errorf("something wrong, %v", err)
 	}
 
 	name, err := cli.CallFunction("getName", nil, time.Second)

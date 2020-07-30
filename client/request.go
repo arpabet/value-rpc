@@ -26,7 +26,7 @@ import (
 )
 
 /**
-Alex Shvid
+@author Alex Shvid
 */
 
 const getStreamFlag = 1
@@ -35,14 +35,14 @@ const putStreamFlag = 2
 type rpcRequestCtx struct {
 	requestId int64
 	state     atomic.Int32
-	req       value.Table
+	req       value.Map
 	start     time.Time
 	resultCh  chan value.Value
 	resultErr atomic.Error
 	throttle  atomic.Int64
 }
 
-func NewRequestCtx(requestId int64, req value.Table, receiveCap int) *rpcRequestCtx {
+func NewRequestCtx(requestId int64, req value.Map, receiveCap int) *rpcRequestCtx {
 	t := &rpcRequestCtx{
 		requestId: requestId,
 		req:       req,

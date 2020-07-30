@@ -29,7 +29,7 @@ import (
 )
 
 /**
-Alex Shvid
+@author Alex Shvid
 */
 
 type rpcServer struct {
@@ -140,7 +140,7 @@ func (t *rpcServer) handshake(conn rpc.MsgConn) (*servingClient, error) {
 	clientId := cid.Long()
 	cli := t.createOrUpdateServingClient(clientId, conn)
 
-	resp := rpc.NewClientResponse()
+	resp := rpc.NewHandshakeResponse()
 	err = conn.WriteMessage(resp)
 	if err != nil {
 		return nil, errors.Errorf("on handshake, %v", err)
@@ -176,7 +176,7 @@ func (t *rpcServer) handleConnection(conn rpc.MsgConn) error {
 	}
 }
 
-func (t *rpcServer) processMessage(cli *servingClient, req value.Table) error {
+func (t *rpcServer) processMessage(cli *servingClient, req value.Map) error {
 	t.logger.Info("processMessage", zap.Stringer("req", req))
 
 	mt := req.GetNumber(rpc.MessageTypeField)

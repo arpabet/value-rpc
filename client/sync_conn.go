@@ -24,7 +24,7 @@ import (
 )
 
 /**
-Alex Shvid
+@author Alex Shvid
 */
 
 type syncConn struct {
@@ -33,11 +33,15 @@ type syncConn struct {
 	conn       atomic.Value
 }
 
+type connHolder struct {
+	value *rpcConn
+}
+
 func NewSyncConn() *syncConn {
 
 	t := &syncConn{}
 	t.active = sync.NewCond(&t.connecting)
-
+	t.conn.Store(connHolder{nil})
 	return t
 }
 
@@ -55,29 +59,29 @@ func (t *syncConn) connect(address, socks5 string, clientId, sendingCap int64, r
 		return err
 	}
 
-	t.conn.Store(conn)
+	t.conn.Store(connHolder{conn})
 	t.active.Broadcast()
 
 	return nil
 }
 
 func (t *syncConn) hasConn() bool {
-	return t.conn.Load() != nil
+	return t.conn.Load().(connHolder).value != nil
 }
 
 func (t *syncConn) getConn() *rpcConn {
-	v := t.conn.Load()
-	if v == nil {
+	conn := t.conn.Load().(connHolder)
+	if conn.value == nil {
 		t.active.Wait()
 		return t.getConn()
 	}
-	return v.(*rpcConn)
+	return conn.value
 }
 
 func (t *syncConn) reset() {
-	conn := t.conn.Load()
-	t.conn.Store(nil)
-	if conn != nil {
-		conn.(*rpcConn).Close()
+	conn := t.conn.Load().(connHolder)
+	t.conn.Store(connHolder{nil})
+	if conn.value != nil {
+		conn.value.Close()
 	}
 }
