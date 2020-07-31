@@ -30,18 +30,82 @@ type IncomingStream func(args value.Value, inC <-chan value.Value) error
 type Chat func(args value.Value, inC <-chan value.Value) (<-chan value.Value, error)
 
 type Server interface {
-	AddFunction(name string, cb Function) error
+	AddFunction(name string, args TypeDef, res TypeDef, cb Function) error
 
 	// GET for client
-	AddOutgoingStream(name string, cb OutgoingStream) error
+	AddOutgoingStream(name string, args TypeDef, cb OutgoingStream) error
 
 	// PUT for client
-	AddIncomingStream(name string, cb IncomingStream) error
+	AddIncomingStream(name string, args TypeDef, cb IncomingStream) error
 
 	// Dual channel chat
-	AddChat(name string, cb Chat) error
+	AddChat(name string, args TypeDef, cb Chat) error
 
 	Run() error
 
 	Close() error
+}
+
+type TypeDef interface {
+	UserTypeDef()
+}
+
+type AnyDef struct {
+}
+
+func (t AnyDef) UserTypeDef() {
+}
+
+var Any = AnyDef{}
+
+type VoidDef struct {
+}
+
+func (t VoidDef) UserTypeDef() {
+}
+
+var Void = VoidDef{}
+
+type ArgsDef struct {
+	List []ArgDef
+}
+
+func (t ArgsDef) UserTypeDef() {
+}
+
+func List(args ...ArgDef) ArgsDef {
+	return ArgsDef{args}
+}
+
+type ParamsDef struct {
+	Map []ParamDef
+}
+
+func (t ParamsDef) UserTypeDef() {
+}
+
+func Map(params ...ParamDef) ParamsDef {
+	return ParamsDef{params}
+}
+
+type ArgDef struct {
+	Kind     value.Kind
+	Required bool
+}
+
+func (t ArgDef) UserTypeDef() {
+}
+
+func Arg(kind value.Kind, required bool) ArgDef {
+	return ArgDef{kind, required}
+}
+
+type ParamDef struct {
+	Name     string
+	Kind     value.Kind
+	Required bool
+}
+
+func Param(name string, kind value.Kind, required bool) ParamDef {
+	return ParamDef{name, kind, required}
 }

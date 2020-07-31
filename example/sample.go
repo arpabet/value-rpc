@@ -40,21 +40,10 @@ var lastName = ""
 
 func setName(args value.Value) (value.Value, error) {
 
-	if args.Kind() != value.LIST {
-		return nil, errors.New("wrong args")
-	}
-
 	listArgs := args.(value.List)
-	if listArgs.Len() != 2 {
-		return nil, errors.New("wrong args len")
-	}
+	firstName = listArgs.GetStringAt(0).String()
+	lastName = listArgs.GetStringAt(1).String()
 
-	if listArgs.GetAt(0) != nil {
-		firstName = listArgs.GetAt(0).String()
-	}
-	if listArgs.GetAt(1) != nil {
-		lastName = listArgs.GetAt(1).String()
-	}
 	return nil, nil
 }
 
@@ -138,11 +127,14 @@ func run() error {
 	}
 	defer srv.Close()
 
-	srv.AddFunction("setName", setName)
-	srv.AddFunction("getName", getName)
-	srv.AddOutgoingStream("scanNames", scanNames)
-	srv.AddIncomingStream("uploadNames", uploadNames)
-	srv.AddChat("echoChat", echoChat)
+	srv.AddFunction("setName",
+		server.List(server.Arg(value.STRING, true), server.Arg(value.STRING, true)),
+		server.Void, setName)
+
+	srv.AddFunction("getName", server.Void, server.Arg(value.STRING, true), getName)
+	srv.AddOutgoingStream("scanNames", server.Void, scanNames)
+	srv.AddIncomingStream("uploadNames", server.Void, uploadNames)
+	srv.AddChat("echoChat", server.Void, echoChat)
 
 	go srv.Run()
 

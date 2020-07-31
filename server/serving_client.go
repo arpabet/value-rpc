@@ -196,8 +196,8 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 	}
 
 	args, _ := req.Get(rpc.ArgumentsField)
-	if args == nil {
-		args = value.EmptyList()
+	if !Verify(args, fn.args) {
+		return FunctionError(reqId, "function '%s' invalid args %s", name.String(), value.Jsonify(args))
 	}
 
 	if fn.ft != ft {
@@ -209,6 +209,9 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		res, err := fn.singleFn(args)
 		if err != nil {
 			return FunctionError(reqId, "single function %s call, %v", name.String(), err)
+		}
+		if !Verify(res, fn.res) {
+			return FunctionError(reqId, "function '%s' invalid results %s", name.String(), value.Jsonify(res))
 		}
 		return FunctionResult(reqId, res)
 
