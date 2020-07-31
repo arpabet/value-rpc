@@ -43,7 +43,8 @@ type servingClient struct {
 
 	outgoingQueue chan value.Map
 
-	requestMap sync.Map
+	requestMap        sync.Map
+	canceledRequests  sync.Map
 }
 
 func NewServingClient(clientId int64, conn valuerpc.MsgConn, functionMap *sync.Map, logger *zap.Logger) *servingClient {
@@ -204,6 +205,11 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		return FunctionError(reqId, "function wrong type %s, expected %d, actual %d", name.String(), fn.ft, ft)
 	}
 
+	if _, ok := t.canceledRequests.Load(reqId.Long()); ok {
+		t.canceledRequests.Delete(reqId.Long())
+		return FunctionError(reqId, "function '%s' canceled request %d", name.String(), reqId.Long())
+	}
+
 	switch fn.ft {
 	case singleFunction:
 		res, err := fn.singleFn(args)
@@ -277,6 +283,7 @@ func (t *servingClient) processRequest(req value.Map) error {
 	if mt == nil {
 		return errors.Errorf("empty message type in %s", req.String())
 	}
+	msgType := valuerpc.MessageType(mt.Long())
 
 	reqId := req.GetNumber(valuerpc.RequestIdField)
 	if reqId == nil {
@@ -284,16 +291,20 @@ func (t *servingClient) processRequest(req value.Map) error {
 	}
 
 	if sr, ok := t.findServingRequest(reqId); ok {
-		return sr.serveRunningRequest(mt, req, t)
+		return sr.serveRunningRequest(msgType, req, t)
 	} else {
-		return t.serveNewRequest(mt, req)
+		if msgType == valuerpc.CancelRequest {
+			t.canceledRequests.Store(reqId.Long(), req)
+			return nil
+		}
+		return t.serveNewRequest(msgType, req)
 	}
 
 }
 
-func (t *servingClient) serveNewRequest(mt value.Number, req value.Map) error {
+func (t *servingClient) serveNewRequest(msgType valuerpc.MessageType, req value.Map) error {
 
-	switch valuerpc.MessageType(mt.Long()) {
+	switch msgType {
 
 	case valuerpc.FunctionRequest:
 		go t.serveFunctionRequest(singleFunction, req)

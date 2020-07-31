@@ -62,9 +62,9 @@ func (t *servingRequest) Close() {
 	}
 }
 
-func (t *servingRequest) serveRunningRequest(mt value.Number, req value.Map, cli *servingClient) error {
+func (t *servingRequest) serveRunningRequest(msgType valuerpc.MessageType, req value.Map, cli *servingClient) error {
 
-	switch valuerpc.MessageType(mt.Long()) {
+	switch msgType {
 
 	case valuerpc.CancelRequest:
 		return t.closeRequest(cli)
@@ -119,6 +119,7 @@ func (t *servingRequest) incomingStreamEnd(req value.Map, cli *servingClient) er
 func (t *servingRequest) closeRequest(cli *servingClient) error {
 	cli.deleteRequest(t.requestId)
 	t.Close()
+	cli.canceledRequests.Delete(t.requestId)
 	return nil
 }
 
