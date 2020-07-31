@@ -16,7 +16,7 @@
  *
  */
 
-package client
+package valuecli
 
 import (
 	"sync"

@@ -16,7 +16,7 @@
  *
  */
 
-package server
+package valueserver
 
 import "errors"
 

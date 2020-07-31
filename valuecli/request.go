@@ -16,11 +16,11 @@
  *
  */
 
-package client
+package valuecli
 
 import (
 	"github.com/consensusdb/value"
-	"github.com/consensusdb/value-rpc/rpc"
+	"github.com/consensusdb/value-rpc/valuerpc"
 	"go.uber.org/atomic"
 	"time"
 )
@@ -55,7 +55,7 @@ func NewRequestCtx(requestId int64, req value.Map, receiveCap int) *rpcRequestCt
 }
 
 func (t *rpcRequestCtx) Name() string {
-	fn := t.req.GetString(rpc.FunctionNameField)
+	fn := t.req.GetString(valuerpc.FunctionNameField)
 	if fn != nil {
 		return fn.String()
 	}

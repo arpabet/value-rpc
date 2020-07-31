@@ -16,11 +16,11 @@
  *
  */
 
-package client
+package valuecli
 
 import (
 	"github.com/consensusdb/value"
-	"github.com/consensusdb/value-rpc/rpc"
+	"github.com/consensusdb/value-rpc/valuerpc"
 	"golang.org/x/net/proxy"
 	"net"
 )
@@ -30,7 +30,7 @@ import (
 */
 
 type rpcConn struct {
-	conn         rpc.MsgConn
+	conn         valuerpc.MsgConn
 	reqCh        chan value.Map
 	respHandler  responseHandler
 	errorHandler ErrorHandler
@@ -56,14 +56,14 @@ func newConn(address, socks5 string, clientId int64, sendingCap int64, respHandl
 	}
 
 	t := &rpcConn{
-		conn:         rpc.NewMsgConn(conn),
+		conn:         valuerpc.NewMsgConn(conn),
 		reqCh:        make(chan value.Map, sendingCap),
 		respHandler:  respHandler,
 		errorHandler: errorHandler,
 	}
 
 	go t.requestLoop()
-	t.SendRequest(rpc.NewHandshakeRequest(clientId))
+	t.SendRequest(valuerpc.NewHandshakeRequest(clientId))
 	go t.responseLoop()
 
 	return t, nil

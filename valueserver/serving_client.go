@@ -16,12 +16,12 @@
  *
  */
 
-package server
+package valueserver
 
 import (
 	"fmt"
 	"github.com/consensusdb/value"
-	"github.com/consensusdb/value-rpc/rpc"
+	"github.com/consensusdb/value-rpc/valuerpc"
 	"github.com/pkg/errors"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
@@ -46,7 +46,7 @@ type servingClient struct {
 	requestMap sync.Map
 }
 
-func NewServingClient(clientId int64, conn rpc.MsgConn, functionMap *sync.Map, logger *zap.Logger) *servingClient {
+func NewServingClient(clientId int64, conn valuerpc.MsgConn, functionMap *sync.Map, logger *zap.Logger) *servingClient {
 
 	client := &servingClient{
 		clientId:      clientId,
@@ -72,11 +72,11 @@ func (t *servingClient) Close() {
 	close(t.outgoingQueue)
 }
 
-func (t *servingClient) replaceConn(newConn rpc.MsgConn) {
+func (t *servingClient) replaceConn(newConn valuerpc.MsgConn) {
 
 	oldConn := t.activeConn.Load()
 	if oldConn != nil {
-		oldConn.(rpc.MsgConn).Close()
+		oldConn.(valuerpc.MsgConn).Close()
 	}
 
 	t.activeConn.Store(newConn)
@@ -85,10 +85,10 @@ func (t *servingClient) replaceConn(newConn rpc.MsgConn) {
 
 func FunctionResult(requestId value.Number, result value.Value) value.Map {
 	resp := value.EmptyMap().
-		Put(rpc.MessageTypeField, rpc.FunctionResponse.Long()).
-		Put(rpc.RequestIdField, requestId)
+		Put(valuerpc.MessageTypeField, valuerpc.FunctionResponse.Long()).
+		Put(valuerpc.RequestIdField, requestId)
 	if result != nil {
-		return resp.Put(rpc.ResultField, result)
+		return resp.Put(valuerpc.ResultField, result)
 	} else {
 		return resp
 	}
@@ -96,23 +96,23 @@ func FunctionResult(requestId value.Number, result value.Value) value.Map {
 
 func StreamReady(requestId value.Number) value.Map {
 	return value.EmptyMap().
-		Put(rpc.MessageTypeField, rpc.StreamReady.Long()).
-		Put(rpc.RequestIdField, requestId)
+		Put(valuerpc.MessageTypeField, valuerpc.StreamReady.Long()).
+		Put(valuerpc.RequestIdField, requestId)
 }
 
 func StreamValue(requestId value.Number, val value.Value) value.Map {
 	return value.EmptyMap().
-		Put(rpc.MessageTypeField, rpc.StreamValue.Long()).
-		Put(rpc.RequestIdField, requestId).
-		Put(rpc.ValueField, val)
+		Put(valuerpc.MessageTypeField, valuerpc.StreamValue.Long()).
+		Put(valuerpc.RequestIdField, requestId).
+		Put(valuerpc.ValueField, val)
 }
 
 func StreamEnd(requestId value.Number, val value.Value) value.Map {
 	resp := value.EmptyMap().
-		Put(rpc.MessageTypeField, rpc.StreamEnd.Long()).
-		Put(rpc.RequestIdField, requestId)
+		Put(valuerpc.MessageTypeField, valuerpc.StreamEnd.Long()).
+		Put(valuerpc.RequestIdField, requestId)
 	if val != nil {
-		return resp.Put(rpc.ValueField, val)
+		return resp.Put(valuerpc.ValueField, val)
 	} else {
 		return resp
 	}
@@ -120,13 +120,13 @@ func StreamEnd(requestId value.Number, val value.Value) value.Map {
 
 func FunctionError(requestId value.Number, format string, args ...interface{}) value.Map {
 	resp := value.EmptyMap().
-		Put(rpc.MessageTypeField, rpc.ErrorResponse.Long()).
-		Put(rpc.RequestIdField, requestId)
+		Put(valuerpc.MessageTypeField, valuerpc.ErrorResponse.Long()).
+		Put(valuerpc.RequestIdField, requestId)
 	if len(args) == 0 {
-		return resp.Put(rpc.ErrorField, value.Utf8(format))
+		return resp.Put(valuerpc.ErrorField, value.Utf8(format))
 	} else {
 		s := fmt.Sprintf(format, args...)
-		return resp.Put(rpc.ErrorField, value.Utf8(s))
+		return resp.Put(valuerpc.ErrorField, value.Utf8(s))
 	}
 }
 
@@ -146,7 +146,7 @@ func (t *servingClient) sender() {
 			break
 		}
 
-		msgConn := conn.(rpc.MsgConn)
+		msgConn := conn.(valuerpc.MsgConn)
 		err := msgConn.WriteMessage(resp)
 
 		if err != nil {
@@ -180,12 +180,12 @@ func (t *servingClient) serveFunctionRequest(ft functionType, req value.Map) {
 
 func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) value.Map {
 
-	reqId := req.GetNumber(rpc.RequestIdField)
+	reqId := req.GetNumber(valuerpc.RequestIdField)
 	if reqId == nil {
 		return FunctionError(reqId, "request id not found")
 	}
 
-	name := req.GetString(rpc.FunctionNameField)
+	name := req.GetString(valuerpc.FunctionNameField)
 	if name == nil {
 		return FunctionError(reqId, "function name field not found")
 	}
@@ -195,7 +195,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		return FunctionError(reqId, "function not found %s", name.String())
 	}
 
-	args, _ := req.Get(rpc.ArgumentsField)
+	args, _ := req.Get(valuerpc.ArgumentsField)
 	if !Verify(args, fn.args) {
 		return FunctionError(reqId, "function '%s' invalid args %s", name.String(), value.Jsonify(args))
 	}
@@ -273,12 +273,12 @@ func (t *servingClient) deleteRequest(requestId value.Number) {
 func (t *servingClient) processRequest(req value.Map) error {
 	//t.logger.Info("processRequest", zap.Stringer("req", req))
 
-	mt := req.GetNumber(rpc.MessageTypeField)
+	mt := req.GetNumber(valuerpc.MessageTypeField)
 	if mt == nil {
 		return errors.Errorf("empty message type in %s", req.String())
 	}
 
-	reqId := req.GetNumber(rpc.RequestIdField)
+	reqId := req.GetNumber(valuerpc.RequestIdField)
 	if reqId == nil {
 		return errors.Errorf("request id not found in %s", req.String())
 	}
@@ -293,18 +293,18 @@ func (t *servingClient) processRequest(req value.Map) error {
 
 func (t *servingClient) serveNewRequest(mt value.Number, req value.Map) error {
 
-	switch rpc.MessageType(mt.Long()) {
+	switch valuerpc.MessageType(mt.Long()) {
 
-	case rpc.FunctionRequest:
+	case valuerpc.FunctionRequest:
 		go t.serveFunctionRequest(singleFunction, req)
 
-	case rpc.GetStreamRequest:
+	case valuerpc.GetStreamRequest:
 		go t.serveFunctionRequest(outgoingStream, req)
 
-	case rpc.PutStreamRequest:
+	case valuerpc.PutStreamRequest:
 		go t.serveFunctionRequest(incomingStream, req)
 
-	case rpc.ChatRequest:
+	case valuerpc.ChatRequest:
 		go t.serveFunctionRequest(chat, req)
 
 	default:

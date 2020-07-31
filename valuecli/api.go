@@ -16,7 +16,7 @@
  *
  */
 
-package client
+package valuecli
 
 /**
 @author Alex Shvid

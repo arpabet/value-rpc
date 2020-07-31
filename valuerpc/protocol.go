@@ -16,7 +16,7 @@
  *
  */
 
-package rpc
+package valuerpc
 
 import (
 	"github.com/consensusdb/value"

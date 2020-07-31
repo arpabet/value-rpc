@@ -16,10 +16,10 @@
  *
  */
 
-package server
+package valueserver
 
 import (
-	"github.com/consensusdb/value-rpc/rpc"
+	"github.com/consensusdb/value-rpc/valuerpc"
 	"github.com/pkg/errors"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
@@ -106,7 +106,7 @@ func (t *rpcServer) Run() error {
 			go func() {
 				defer t.wg.Done()
 				t.logger.Info("new connection", zap.String("from", conn.RemoteAddr().String()))
-				err := t.handleConnection(rpc.NewMsgConn(conn))
+				err := t.handleConnection(valuerpc.NewMsgConn(conn))
 				if err != nil {
 					t.logger.Error("handle connection",
 						zap.String("from", conn.RemoteAddr().String()),
@@ -121,34 +121,34 @@ func (t *rpcServer) Run() error {
 
 }
 
-func (t *rpcServer) handshake(conn rpc.MsgConn) (*servingClient, error) {
+func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 	req, err := conn.ReadMessage()
 	if err != nil {
 		return nil, err
 	}
 
-	mt := req.GetNumber(rpc.MessageTypeField)
+	mt := req.GetNumber(valuerpc.MessageTypeField)
 	if mt == nil {
 		return nil, errors.Errorf("on handshake, empty message type in %s", req.String())
 	}
 
-	msgType := rpc.MessageType(mt.Long())
+	msgType := valuerpc.MessageType(mt.Long())
 
-	if msgType != rpc.HandshakeRequest {
+	if msgType != valuerpc.HandshakeRequest {
 		return nil, errors.Errorf("on handshake, wrong message type in %s", req.String())
 	}
 
-	if !rpc.ValidMagicAndVersion(req) {
+	if !valuerpc.ValidMagicAndVersion(req) {
 		return nil, errors.Errorf("on handshake, unsupported client version in %s", req.String())
 	}
-	cid := req.GetNumber(rpc.ClientIdField)
+	cid := req.GetNumber(valuerpc.ClientIdField)
 	if cid == nil {
 		return nil, errors.Errorf("on handshake, no client id in %s", req.String())
 	}
 	clientId := cid.Long()
 	cli := t.createOrUpdateServingClient(clientId, conn)
 
-	resp := rpc.NewHandshakeResponse()
+	resp := valuerpc.NewHandshakeResponse()
 	err = conn.WriteMessage(resp)
 	if err != nil {
 		return nil, errors.Errorf("on handshake, %v", err)
@@ -157,7 +157,7 @@ func (t *rpcServer) handshake(conn rpc.MsgConn) (*servingClient, error) {
 	return cli, nil
 }
 
-func (t *rpcServer) handleConnection(conn rpc.MsgConn) error {
+func (t *rpcServer) handleConnection(conn valuerpc.MsgConn) error {
 	defer conn.Close()
 
 	cli, err := t.handshake(conn)
@@ -184,7 +184,7 @@ func (t *rpcServer) handleConnection(conn rpc.MsgConn) error {
 	}
 }
 
-func (t *rpcServer) createOrUpdateServingClient(clientId int64, conn rpc.MsgConn) *servingClient {
+func (t *rpcServer) createOrUpdateServingClient(clientId int64, conn valuerpc.MsgConn) *servingClient {
 
 	if cli, ok := t.clientMap.Load(clientId); ok {
 		client := cli.(*servingClient)

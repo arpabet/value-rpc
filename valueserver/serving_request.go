@@ -16,11 +16,11 @@
  *
  */
 
-package server
+package valueserver
 
 import (
 	"github.com/consensusdb/value"
-	"github.com/consensusdb/value-rpc/rpc"
+	"github.com/consensusdb/value-rpc/valuerpc"
 	"github.com/pkg/errors"
 	"go.uber.org/atomic"
 	"time"
@@ -64,21 +64,21 @@ func (t *servingRequest) Close() {
 
 func (t *servingRequest) serveRunningRequest(mt value.Number, req value.Map, cli *servingClient) error {
 
-	switch rpc.MessageType(mt.Long()) {
+	switch valuerpc.MessageType(mt.Long()) {
 
-	case rpc.CancelRequest:
+	case valuerpc.CancelRequest:
 		return t.closeRequest(cli)
 
-	case rpc.StreamValue:
+	case valuerpc.StreamValue:
 		return t.incomingStreamValue(req)
 
-	case rpc.StreamEnd:
+	case valuerpc.StreamEnd:
 		return t.incomingStreamEnd(req, cli)
 
-	case rpc.ThrottleIncrease:
+	case valuerpc.ThrottleIncrease:
 		t.throttleOutgoing.Inc()
 
-	case rpc.ThrottleDecrease:
+	case valuerpc.ThrottleDecrease:
 		t.throttleOutgoing.Dec()
 
 	default:
@@ -96,7 +96,7 @@ func (t *servingRequest) incomingStreamValue(req value.Map) error {
 		return errors.Errorf("incoming value stream not found in serving request for %d", t.requestId)
 	}
 
-	if value, ok := req.Get(rpc.ValueField); ok {
+	if value, ok := req.Get(valuerpc.ValueField); ok {
 		t.inC <- value
 	}
 
@@ -109,7 +109,7 @@ func (t *servingRequest) incomingStreamEnd(req value.Map, cli *servingClient) er
 		return errors.Errorf("incoming end stream not found in serving request for %d", t.requestId)
 	}
 
-	if value, ok := req.Get(rpc.ValueField); ok {
+	if value, ok := req.Get(valuerpc.ValueField); ok {
 		t.inC <- value
 	}
 

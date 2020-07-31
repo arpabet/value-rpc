@@ -21,8 +21,8 @@ package main
 import (
 	"fmt"
 	"github.com/consensusdb/value"
-	"github.com/consensusdb/value-rpc/client"
-	"github.com/consensusdb/value-rpc/server"
+	"github.com/consensusdb/value-rpc/valuecli"
+	"github.com/consensusdb/value-rpc/valueserver"
 	"github.com/pkg/errors"
 	"os"
 	"sync"
@@ -121,26 +121,26 @@ func echoChat(args value.Value, inC <-chan value.Value) (<-chan value.Value, err
 
 func run() error {
 
-	srv, err := server.NewDevelopmentServer(testAddress)
+	srv, err := valueserver.NewDevelopmentServer(testAddress)
 	if err != nil {
 		return err
 	}
 	defer srv.Close()
 
 	srv.AddFunction("setName",
-		server.List(server.Arg(value.STRING, true), server.Arg(value.STRING, true)),
-		server.Void, setName)
+		valueserver.List(valueserver.Arg(value.STRING, true), valueserver.Arg(value.STRING, true)),
+		valueserver.Void, setName)
 
-	srv.AddFunction("getName", server.Void, server.Arg(value.STRING, true), getName)
-	srv.AddOutgoingStream("scanNames", server.Void, scanNames)
-	srv.AddIncomingStream("uploadNames", server.Void, uploadNames)
-	srv.AddChat("echoChat", server.Void, echoChat)
+	srv.AddFunction("getName", valueserver.Void, valueserver.Arg(value.STRING, true), getName)
+	srv.AddOutgoingStream("scanNames", valueserver.Void, scanNames)
+	srv.AddIncomingStream("uploadNames", valueserver.Void, uploadNames)
+	srv.AddChat("echoChat", valueserver.Void, echoChat)
 
 	go srv.Run()
 
 	var wg sync.WaitGroup
 
-	cli := client.NewClient(testAddress, "")
+	cli := valuecli.NewClient(testAddress, "")
 	err = cli.Connect()
 	if err != nil {
 		return err
@@ -165,7 +165,7 @@ func run() error {
 
 	cli.SetTimeout(0)
 	name, err := cli.CallFunction("getName", nil)
-	if err == client.ErrTimeoutError {
+	if err == valuecli.ErrTimeoutError {
 		fmt.Println("TImeout received")
 	} else {
 		fmt.Println(name)
