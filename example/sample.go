@@ -21,7 +21,7 @@ package main
 import (
 	"fmt"
 	"github.com/consensusdb/value"
-	"github.com/consensusdb/value-rpc/valuecli"
+	"github.com/consensusdb/value-rpc/valueclient"
 	"github.com/consensusdb/value-rpc/valueserver"
 	"github.com/pkg/errors"
 	"os"
@@ -140,7 +140,7 @@ func run() error {
 
 	var wg sync.WaitGroup
 
-	cli := valuecli.NewClient(testAddress, "")
+	cli := valueclient.NewClient(testAddress, "")
 	err = cli.Connect()
 	if err != nil {
 		return err
@@ -165,7 +165,7 @@ func run() error {
 
 	cli.SetTimeout(0)
 	name, err := cli.CallFunction("getName", nil)
-	if err == valuecli.ErrTimeoutError {
+	if err == valueclient.ErrTimeoutError {
 		fmt.Println("TImeout received")
 	} else {
 		fmt.Println(name)
