@@ -15,7 +15,7 @@
  * limitations under the License.
  *
  */
-package valueserver
+package valuerpc
 
 import "github.com/consensusdb/value"
 

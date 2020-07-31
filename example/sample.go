@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"github.com/consensusdb/value"
 	"github.com/consensusdb/value-rpc/valueclient"
+	"github.com/consensusdb/value-rpc/valuerpc"
 	"github.com/consensusdb/value-rpc/valueserver"
 	"github.com/pkg/errors"
 	"os"
@@ -128,13 +129,13 @@ func run() error {
 	defer srv.Close()
 
 	srv.AddFunction("setName",
-		valueserver.List(valueserver.Arg(value.STRING, true), valueserver.Arg(value.STRING, true)),
-		valueserver.Void, setName)
+		valuerpc.List(valuerpc.String, valuerpc.String),
+		valuerpc.Void, setName)
 
-	srv.AddFunction("getName", valueserver.Void, valueserver.Arg(value.STRING, true), getName)
-	srv.AddOutgoingStream("scanNames", valueserver.Void, scanNames)
-	srv.AddIncomingStream("uploadNames", valueserver.Void, uploadNames)
-	srv.AddChat("echoChat", valueserver.Void, echoChat)
+	srv.AddFunction("getName", valuerpc.Void, valuerpc.String, getName)
+	srv.AddOutgoingStream("scanNames", valuerpc.Void, scanNames)
+	srv.AddIncomingStream("uploadNames", valuerpc.Void, uploadNames)
+	srv.AddChat("echoChat", valuerpc.Void, echoChat)
 
 	go srv.Run()
 

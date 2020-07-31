@@ -21,7 +21,7 @@ package valueserver
 import (
 	"fmt"
 	"github.com/consensusdb/value"
-	"github.com/consensusdb/value-rpc/valuerpc"
+	 vrpc "github.com/consensusdb/value-rpc/valuerpc"
 	"github.com/pkg/errors"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
@@ -47,7 +47,7 @@ type servingClient struct {
 	canceledRequests  sync.Map
 }
 
-func NewServingClient(clientId int64, conn valuerpc.MsgConn, functionMap *sync.Map, logger *zap.Logger) *servingClient {
+func NewServingClient(clientId int64, conn vrpc.MsgConn, functionMap *sync.Map, logger *zap.Logger) *servingClient {
 
 	client := &servingClient{
 		clientId:      clientId,
@@ -73,11 +73,11 @@ func (t *servingClient) Close() {
 	close(t.outgoingQueue)
 }
 
-func (t *servingClient) replaceConn(newConn valuerpc.MsgConn) {
+func (t *servingClient) replaceConn(newConn vrpc.MsgConn) {
 
 	oldConn := t.activeConn.Load()
 	if oldConn != nil {
-		oldConn.(valuerpc.MsgConn).Close()
+		oldConn.(vrpc.MsgConn).Close()
 	}
 
 	t.activeConn.Store(newConn)
@@ -86,10 +86,10 @@ func (t *servingClient) replaceConn(newConn valuerpc.MsgConn) {
 
 func FunctionResult(requestId value.Number, result value.Value) value.Map {
 	resp := value.EmptyMap().
-		Put(valuerpc.MessageTypeField, valuerpc.FunctionResponse.Long()).
-		Put(valuerpc.RequestIdField, requestId)
+		Put(vrpc.MessageTypeField, vrpc.FunctionResponse.Long()).
+		Put(vrpc.RequestIdField, requestId)
 	if result != nil {
-		return resp.Put(valuerpc.ResultField, result)
+		return resp.Put(vrpc.ResultField, result)
 	} else {
 		return resp
 	}
@@ -97,23 +97,23 @@ func FunctionResult(requestId value.Number, result value.Value) value.Map {
 
 func StreamReady(requestId value.Number) value.Map {
 	return value.EmptyMap().
-		Put(valuerpc.MessageTypeField, valuerpc.StreamReady.Long()).
-		Put(valuerpc.RequestIdField, requestId)
+		Put(vrpc.MessageTypeField, vrpc.StreamReady.Long()).
+		Put(vrpc.RequestIdField, requestId)
 }
 
 func StreamValue(requestId value.Number, val value.Value) value.Map {
 	return value.EmptyMap().
-		Put(valuerpc.MessageTypeField, valuerpc.StreamValue.Long()).
-		Put(valuerpc.RequestIdField, requestId).
-		Put(valuerpc.ValueField, val)
+		Put(vrpc.MessageTypeField, vrpc.StreamValue.Long()).
+		Put(vrpc.RequestIdField, requestId).
+		Put(vrpc.ValueField, val)
 }
 
 func StreamEnd(requestId value.Number, val value.Value) value.Map {
 	resp := value.EmptyMap().
-		Put(valuerpc.MessageTypeField, valuerpc.StreamEnd.Long()).
-		Put(valuerpc.RequestIdField, requestId)
+		Put(vrpc.MessageTypeField, vrpc.StreamEnd.Long()).
+		Put(vrpc.RequestIdField, requestId)
 	if val != nil {
-		return resp.Put(valuerpc.ValueField, val)
+		return resp.Put(vrpc.ValueField, val)
 	} else {
 		return resp
 	}
@@ -121,13 +121,13 @@ func StreamEnd(requestId value.Number, val value.Value) value.Map {
 
 func FunctionError(requestId value.Number, format string, args ...interface{}) value.Map {
 	resp := value.EmptyMap().
-		Put(valuerpc.MessageTypeField, valuerpc.ErrorResponse.Long()).
-		Put(valuerpc.RequestIdField, requestId)
+		Put(vrpc.MessageTypeField, vrpc.ErrorResponse.Long()).
+		Put(vrpc.RequestIdField, requestId)
 	if len(args) == 0 {
-		return resp.Put(valuerpc.ErrorField, value.Utf8(format))
+		return resp.Put(vrpc.ErrorField, value.Utf8(format))
 	} else {
 		s := fmt.Sprintf(format, args...)
-		return resp.Put(valuerpc.ErrorField, value.Utf8(s))
+		return resp.Put(vrpc.ErrorField, value.Utf8(s))
 	}
 }
 
@@ -147,7 +147,7 @@ func (t *servingClient) sender() {
 			break
 		}
 
-		msgConn := conn.(valuerpc.MsgConn)
+		msgConn := conn.(vrpc.MsgConn)
 		err := msgConn.WriteMessage(resp)
 
 		if err != nil {
@@ -181,12 +181,12 @@ func (t *servingClient) serveFunctionRequest(ft functionType, req value.Map) {
 
 func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) value.Map {
 
-	reqId := req.GetNumber(valuerpc.RequestIdField)
+	reqId := req.GetNumber(vrpc.RequestIdField)
 	if reqId == nil {
 		return FunctionError(reqId, "request id not found")
 	}
 
-	name := req.GetString(valuerpc.FunctionNameField)
+	name := req.GetString(vrpc.FunctionNameField)
 	if name == nil {
 		return FunctionError(reqId, "function name field not found")
 	}
@@ -196,8 +196,8 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		return FunctionError(reqId, "function not found %s", name.String())
 	}
 
-	args, _ := req.Get(valuerpc.ArgumentsField)
-	if !Verify(args, fn.args) {
+	args, _ := req.Get(vrpc.ArgumentsField)
+	if !vrpc.Verify(args, fn.args) {
 		return FunctionError(reqId, "function '%s' invalid args %s", name.String(), value.Jsonify(args))
 	}
 
@@ -216,7 +216,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		if err != nil {
 			return FunctionError(reqId, "single function %s call, %v", name.String(), err)
 		}
-		if !Verify(res, fn.res) {
+		if !vrpc.Verify(res, fn.res) {
 			return FunctionError(reqId, "function '%s' invalid results %s", name.String(), value.Jsonify(res))
 		}
 		return FunctionResult(reqId, res)
@@ -279,13 +279,13 @@ func (t *servingClient) deleteRequest(requestId value.Number) {
 func (t *servingClient) processRequest(req value.Map) error {
 	//t.logger.Info("processRequest", zap.Stringer("req", req))
 
-	mt := req.GetNumber(valuerpc.MessageTypeField)
+	mt := req.GetNumber(vrpc.MessageTypeField)
 	if mt == nil {
 		return errors.Errorf("empty message type in %s", req.String())
 	}
-	msgType := valuerpc.MessageType(mt.Long())
+	msgType := vrpc.MessageType(mt.Long())
 
-	reqId := req.GetNumber(valuerpc.RequestIdField)
+	reqId := req.GetNumber(vrpc.RequestIdField)
 	if reqId == nil {
 		return errors.Errorf("request id not found in %s", req.String())
 	}
@@ -293,7 +293,7 @@ func (t *servingClient) processRequest(req value.Map) error {
 	if sr, ok := t.findServingRequest(reqId); ok {
 		return sr.serveRunningRequest(msgType, req, t)
 	} else {
-		if msgType == valuerpc.CancelRequest {
+		if msgType == vrpc.CancelRequest {
 			t.canceledRequests.Store(reqId.Long(), req)
 			return nil
 		}
@@ -302,20 +302,20 @@ func (t *servingClient) processRequest(req value.Map) error {
 
 }
 
-func (t *servingClient) serveNewRequest(msgType valuerpc.MessageType, req value.Map) error {
+func (t *servingClient) serveNewRequest(msgType vrpc.MessageType, req value.Map) error {
 
 	switch msgType {
 
-	case valuerpc.FunctionRequest:
+	case vrpc.FunctionRequest:
 		go t.serveFunctionRequest(singleFunction, req)
 
-	case valuerpc.GetStreamRequest:
+	case vrpc.GetStreamRequest:
 		go t.serveFunctionRequest(outgoingStream, req)
 
-	case valuerpc.PutStreamRequest:
+	case vrpc.PutStreamRequest:
 		go t.serveFunctionRequest(incomingStream, req)
 
-	case valuerpc.ChatRequest:
+	case vrpc.ChatRequest:
 		go t.serveFunctionRequest(chat, req)
 
 	default:

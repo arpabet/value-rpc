@@ -18,7 +18,10 @@
 
 package valueserver
 
-import "errors"
+import (
+	"errors"
+	vrpc "github.com/consensusdb/value-rpc/valuerpc"
+)
 
 /**
 @author Alex Shvid
@@ -37,8 +40,8 @@ const (
 
 type function struct {
 	name      string
-	args      TypeDef
-	res       TypeDef
+	args      vrpc.TypeDef
+	res       vrpc.TypeDef
 	ft        functionType
 	singleFn  Function
 	outStream OutgoingStream
@@ -53,7 +56,7 @@ func (t *rpcServer) hasFunction(name string) bool {
 	return false
 }
 
-func (t *rpcServer) AddFunction(name string, args TypeDef, res TypeDef, cb Function) error {
+func (t *rpcServer) AddFunction(name string, args vrpc.TypeDef, res vrpc.TypeDef, cb Function) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
@@ -71,7 +74,7 @@ func (t *rpcServer) AddFunction(name string, args TypeDef, res TypeDef, cb Funct
 }
 
 // GET for client
-func (t *rpcServer) AddOutgoingStream(name string, args TypeDef, cb OutgoingStream) error {
+func (t *rpcServer) AddOutgoingStream(name string, args vrpc.TypeDef, cb OutgoingStream) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
@@ -79,7 +82,7 @@ func (t *rpcServer) AddOutgoingStream(name string, args TypeDef, cb OutgoingStre
 	fn := &function{
 		name:      name,
 		args:      args,
-		res:       Void,
+		res:       vrpc.Void,
 		ft:        outgoingStream,
 		outStream: cb,
 	}
@@ -89,7 +92,7 @@ func (t *rpcServer) AddOutgoingStream(name string, args TypeDef, cb OutgoingStre
 }
 
 // PUT for client
-func (t *rpcServer) AddIncomingStream(name string, args TypeDef, cb IncomingStream) error {
+func (t *rpcServer) AddIncomingStream(name string, args vrpc.TypeDef, cb IncomingStream) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
@@ -97,7 +100,7 @@ func (t *rpcServer) AddIncomingStream(name string, args TypeDef, cb IncomingStre
 	fn := &function{
 		name:     name,
 		args:     args,
-		res:      Void,
+		res:      vrpc.Void,
 		ft:       incomingStream,
 		inStream: cb,
 	}
@@ -106,7 +109,7 @@ func (t *rpcServer) AddIncomingStream(name string, args TypeDef, cb IncomingStre
 	return nil
 }
 
-func (t *rpcServer) AddChat(name string, args TypeDef, cb Chat) error {
+func (t *rpcServer) AddChat(name string, args vrpc.TypeDef, cb Chat) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
@@ -114,7 +117,7 @@ func (t *rpcServer) AddChat(name string, args TypeDef, cb Chat) error {
 	fn := &function{
 		name: name,
 		args: args,
-		res:  Void,
+		res:  vrpc.Void,
 		ft:   chat,
 		chat: cb,
 	}
