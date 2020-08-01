@@ -158,7 +158,13 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 }
 
 func (t *rpcServer) handleConnection(conn valuerpc.MsgConn) error {
-	defer conn.Close()
+
+	defer func() {
+		defer conn.Close()
+		if r := recover(); r != nil {
+			t.logger.Error("Recovered in handleConnection", zap.Any("recover", r))
+		}
+	}()
 
 	cli, err := t.handshake(conn)
 	if err != nil {
