@@ -45,6 +45,8 @@ type servingClient struct {
 
 	requestMap        sync.Map
 	canceledRequests  sync.Map
+
+	closeOnce sync.Once
 }
 
 func NewServingClient(clientId int64, conn vrpc.MsgConn, functionMap *sync.Map, logger *zap.Logger) *servingClient {
@@ -64,13 +66,16 @@ func NewServingClient(clientId int64, conn vrpc.MsgConn, functionMap *sync.Map, 
 
 func (t *servingClient) Close() {
 
-	t.requestMap.Range(func(key, value interface{}) bool {
-		sr := value.(*servingRequest)
-		sr.Close()
-		return true
+	t.closeOnce.Do(func() {
+		t.requestMap.Range(func(key, value interface{}) bool {
+			sr := value.(*servingRequest)
+			sr.Close()
+			return true
+		})
+
+		close(t.outgoingQueue)
 	})
 
-	close(t.outgoingQueue)
 }
 
 func (t *servingClient) replaceConn(newConn vrpc.MsgConn) {

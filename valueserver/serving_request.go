@@ -36,8 +36,9 @@ type servingRequest struct {
 	ft               functionType
 	requestId        value.Number
 	inC              chan value.Value
-	closed           atomic.Bool
 	throttleOutgoing atomic.Int64
+
+	closed           atomic.Bool
 }
 
 func NewServingRequest(ft functionType, requestId value.Number) *servingRequest {

@@ -78,15 +78,24 @@ func (t *rpcRequestCtx) notifyResult(res value.Value) {
 }
 
 func (t *rpcRequestCtx) Close() {
-	st := t.state.Load()
-	if st&getStreamFlag > 0 {
+	doClose := false
+
+	for {
+		st := t.state.Load()
+		if st & getStreamFlag > 0 {
+			if t.state.CAS(st, 0) {
+				doClose = true
+				break
+			}
+		} else {
+			break
+		}
+	}
+
+	if doClose {
 		close(t.resultCh)
 	}
-	t.state.Store(0)
-}
 
-func (t *rpcRequestCtx) Closed() bool {
-	return t.state.Load() == 0
 }
 
 func (t *rpcRequestCtx) IsGetOpen() bool {
@@ -96,14 +105,22 @@ func (t *rpcRequestCtx) IsGetOpen() bool {
 
 func (t *rpcRequestCtx) TryGetClose() bool {
 
-	st := t.state.Load()
-	if st&getStreamFlag > 0 {
-		st -= getStreamFlag
-		t.state.Store(st)
-		close(t.resultCh)
+	closed := false
+	for {
+		st := t.state.Load()
+		if st & getStreamFlag > 0 {
+			if t.state.CAS(st, st - getStreamFlag) {
+				close(t.resultCh)
+				closed = true
+				break
+			}
+		} else {
+			closed = true
+			break
+		}
 	}
 
-	return st == 0
+	return closed
 }
 
 func (t *rpcRequestCtx) IsPutOpen() bool {
@@ -113,12 +130,22 @@ func (t *rpcRequestCtx) IsPutOpen() bool {
 
 func (t *rpcRequestCtx) TryPutClose() bool {
 
-	st := t.state.Load()
-	if st&putStreamFlag > 0 {
-		st -= putStreamFlag
-		t.state.Store(st)
+	closed := false
+	for {
+		st := t.state.Load()
+		if st & putStreamFlag > 0 {
+			if t.state.CAS(st, st - putStreamFlag) {
+				close(t.resultCh)
+				closed = true
+				break
+			}
+		} else {
+			closed = true
+			break
+		}
 	}
-	return st == 0
+
+	return closed
 }
 
 func (t *rpcRequestCtx) SetError(err error) {
