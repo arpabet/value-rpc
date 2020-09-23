@@ -20,7 +20,7 @@ package valueclient
 
 import (
 	"errors"
-	"github.com/consensusdb/value"
+	"github.com/arpabet/value"
 )
 
 /**

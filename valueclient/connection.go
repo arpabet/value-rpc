@@ -19,8 +19,8 @@
 package valueclient
 
 import (
-	"github.com/consensusdb/value"
-	"github.com/consensusdb/value-rpc/valuerpc"
+	"github.com/arpabet/value"
+	"github.com/arpabet/value-rpc/valuerpc"
 	"golang.org/x/net/proxy"
 	"net"
 )

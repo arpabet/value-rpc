@@ -20,10 +20,10 @@ package main
 
 import (
 	"fmt"
-	"github.com/consensusdb/value"
-	"github.com/consensusdb/value-rpc/valueclient"
-	"github.com/consensusdb/value-rpc/valuerpc"
-	"github.com/consensusdb/value-rpc/valueserver"
+	"github.com/arpabet/value"
+	"github.com/arpabet/value-rpc/valueclient"
+	"github.com/arpabet/value-rpc/valuerpc"
+	"github.com/arpabet/value-rpc/valueserver"
 	"github.com/pkg/errors"
 	"os"
 	"sync"

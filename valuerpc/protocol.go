@@ -19,7 +19,7 @@
 package valuerpc
 
 import (
-	"github.com/consensusdb/value"
+	"github.com/arpabet/value"
 )
 
 /**

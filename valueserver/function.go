@@ -20,7 +20,7 @@ package valueserver
 
 import (
 	"errors"
-	vrpc "github.com/consensusdb/value-rpc/valuerpc"
+	vrpc "github.com/arpabet/value-rpc/valuerpc"
 )
 
 /**

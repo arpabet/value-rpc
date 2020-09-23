@@ -20,8 +20,8 @@ package valueserver
 
 import (
 	"fmt"
-	"github.com/consensusdb/value"
-	 vrpc "github.com/consensusdb/value-rpc/valuerpc"
+	"github.com/arpabet/value"
+	 vrpc "github.com/arpabet/value-rpc/valuerpc"
 	"github.com/pkg/errors"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"

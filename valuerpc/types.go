@@ -18,7 +18,7 @@
 
 package valuerpc
 
-import "github.com/consensusdb/value"
+import "github.com/arpabet/value"
 
 /**
 @author Alex Shvid

@@ -20,7 +20,7 @@ package valuerpc
 
 import (
 	"encoding/binary"
-	"github.com/consensusdb/value"
+	"github.com/arpabet/value"
 	"github.com/pkg/errors"
 	"github.com/smallnest/goframe"
 	"net"

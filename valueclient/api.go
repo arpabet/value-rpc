@@ -23,7 +23,7 @@ package valueclient
 */
 
 import (
-	"github.com/consensusdb/value"
+	"github.com/arpabet/value"
 )
 
 // must be fast function
