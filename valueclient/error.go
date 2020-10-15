@@ -20,7 +20,7 @@ package valueclient
 
 import (
 	"errors"
-	"github.com/arpabet/value"
+	"arpabet.pkg.is/value"
 )
 
 /**

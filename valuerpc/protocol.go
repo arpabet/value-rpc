@@ -19,7 +19,7 @@
 package valuerpc
 
 import (
-	"github.com/arpabet/value"
+	"arpabet.pkg.is/value"
 )
 
 /**

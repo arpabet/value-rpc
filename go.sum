@@ -1,7 +1,9 @@
+arpabet.pkg.is/value v0.4.0 h1:Bf1HT+JuFSnPynlo5HUlIcqrPEF9dl9PRgLgs5tkbms=
+arpabet.pkg.is/value v0.4.0/go.mod h1:Y3sZoA/gblv3F+0bEv0abHzwiCoDn8/oCREz9z02TgM=
+arpabet.pkg.is/value v0.5.0 h1:8Enynrlwyb09V4cYMoNOl9UzQ3m2DhCtTw3eDk47tNQ=
+arpabet.pkg.is/value v0.5.0/go.mod h1:8QaqKjtjPddqNCR5NFGpY8bvQFN7S0zWXYjMO9AY5e8=
 github.com/BurntSushi/toml v0.3.1 h1:WXkYYl6Yr3qBf1K79EBnL4mak0OimBfB0XUf9Vl28OQ=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-github.com/arpabet/value v0.4.0 h1:Bf1HT+JuFSnPynlo5HUlIcqrPEF9dl9PRgLgs5tkbms=
-github.com/arpabet/value v0.4.0/go.mod h1:Y3sZoA/gblv3F+0bEv0abHzwiCoDn8/oCREz9z02TgM=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

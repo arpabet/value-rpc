@@ -20,10 +20,10 @@ package main
 
 import (
 	"fmt"
-	"github.com/arpabet/value"
-	"github.com/arpabet/value-rpc/valueclient"
-	"github.com/arpabet/value-rpc/valuerpc"
-	"github.com/arpabet/value-rpc/valueserver"
+	"arpabet.pkg.is/value"
+	"arpabet.pkg.is/value-rpc/valueclient"
+	"arpabet.pkg.is/value-rpc/valuerpc"
+	"arpabet.pkg.is/value-rpc/valueserver"
 	"github.com/pkg/errors"
 	"os"
 	"sync"

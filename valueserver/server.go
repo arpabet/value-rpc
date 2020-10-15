@@ -19,7 +19,7 @@
 package valueserver
 
 import (
-	"github.com/arpabet/value-rpc/valuerpc"
+	"arpabet.pkg.is/value-rpc/valuerpc"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"io"

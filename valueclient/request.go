@@ -19,8 +19,8 @@
 package valueclient
 
 import (
-	"github.com/arpabet/value"
-	"github.com/arpabet/value-rpc/valuerpc"
+	"arpabet.pkg.is/value"
+	"arpabet.pkg.is/value-rpc/valuerpc"
 	"go.uber.org/atomic"
 	"time"
 )

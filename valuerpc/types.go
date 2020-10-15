@@ -18,7 +18,7 @@
 
 package valuerpc
 
-import "github.com/arpabet/value"
+import "arpabet.pkg.is/value"
 
 /**
 @author Alex Shvid

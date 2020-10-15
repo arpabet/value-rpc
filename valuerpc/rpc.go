@@ -20,7 +20,7 @@ package valuerpc
 
 import (
 	"encoding/binary"
-	"github.com/arpabet/value"
+	"arpabet.pkg.is/value"
 	"github.com/pkg/errors"
 	"github.com/smallnest/goframe"
 	"net"

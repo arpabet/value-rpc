@@ -23,7 +23,7 @@ package valueclient
 */
 
 import (
-	"github.com/arpabet/value"
+	"arpabet.pkg.is/value"
 )
 
 // must be fast function
