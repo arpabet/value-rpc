@@ -1,2 +1,3 @@
 # value-rpc
-Simple RPC Framework
+
+vRPC on golang
