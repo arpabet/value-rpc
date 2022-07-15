@@ -9,5 +9,8 @@ build: version
 	go test -cover ./...
 	go build -v ./example/sample.go
 
+update:
+	go get -u ./...
+
 run: build
 	./sample
