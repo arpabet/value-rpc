@@ -1,6 +1,7 @@
-/**
-  Copyright (c) 2022 Arpabet, LLC. All rights reserved.
-*/
+/*
+ * Copyright (c) 2025 Karagatan LLC.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
 
 package valueclient
 
@@ -9,8 +10,10 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"golang.org/x/net/proxy"
 	"net"
+	"time"
 )
 
+var DefaultTimeout  = 10 * time.Second
 
 type rpcConn struct {
 	conn         valuerpc.MsgConn
@@ -39,7 +42,7 @@ func newConn(address, socks5 string, clientId int64, sendingCap int64, respHandl
 	}
 
 	t := &rpcConn{
-		conn:         valuerpc.NewMsgConn(conn),
+		conn:         valuerpc.NewMsgConn(conn, DefaultTimeout),
 		reqCh:        make(chan value.Map, sendingCap),
 		respHandler:  respHandler,
 		errorHandler: errorHandler,

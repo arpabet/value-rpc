@@ -1,6 +1,7 @@
-/**
-  Copyright (c) 2022 Arpabet, LLC. All rights reserved.
-*/
+/*
+ * Copyright (c) 2025 Karagatan LLC.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
 
 package valueserver
 
@@ -11,8 +12,11 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
+
+var DefaultTimeout  = 10 * time.Second
 
 type rpcServer struct {
 	listener net.Listener
@@ -86,7 +90,7 @@ func (t *rpcServer) Run() error {
 			go func() {
 				defer t.wg.Done()
 				t.logger.Info("new connection", zap.String("from", conn.RemoteAddr().String()))
-				err := t.handleConnection(valuerpc.NewMsgConn(conn))
+				err := t.handleConnection(valuerpc.NewMsgConn(conn, DefaultTimeout))
 				if err != nil {
 					t.logger.Error("handle connection",
 						zap.String("from", conn.RemoteAddr().String()),
