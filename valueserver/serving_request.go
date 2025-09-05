@@ -6,13 +6,13 @@
 package valueserver
 
 import (
+	"time"
+
+	"github.com/pkg/errors"
 	"go.arpabet.com/value"
 	vrpc "go.arpabet.com/value-rpc/valuerpc"
-	"github.com/pkg/errors"
 	"go.uber.org/atomic"
-	"time"
 )
-
 
 var IncomingQueueCap = 4096
 
@@ -22,7 +22,7 @@ type servingRequest struct {
 	inC              chan value.Value
 	throttleOutgoing atomic.Int64
 
-	closed           atomic.Bool
+	closed atomic.Bool
 }
 
 func NewServingRequest(ft functionType, requestId value.Number) *servingRequest {
@@ -81,8 +81,8 @@ func (t *servingRequest) incomingStreamValue(req value.Map) error {
 		return errors.Errorf("incoming value stream not found in serving request for %d", t.requestId)
 	}
 
-	if value, ok := req.Get(vrpc.ValueField); ok {
-		t.inC <- value
+	if val := req.Get(vrpc.ValueField); val != value.Null {
+		t.inC <- val
 	}
 
 	return nil
@@ -94,8 +94,8 @@ func (t *servingRequest) incomingStreamEnd(req value.Map, cli *servingClient) er
 		return errors.Errorf("incoming end stream not found in serving request for %d", t.requestId)
 	}
 
-	if value, ok := req.Get(vrpc.ValueField); ok {
-		t.inC <- value
+	if val := req.Get(vrpc.ValueField); val != value.Null {
+		t.inC <- val
 	}
 
 	return t.closeRequest(cli)

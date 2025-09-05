@@ -9,7 +9,6 @@ import (
 	"go.arpabet.com/value"
 )
 
-
 type MessageType int64
 
 const (
@@ -51,7 +50,7 @@ var ValueField = "val" // streaming value field
 var HandshakeRequestId = int64(-1)
 
 func NewHandshakeRequest(clientId int64) value.Map {
-	return value.EmptyMap().
+	return value.EmptyMap(true).
 		Put(MagicField, value.Utf8(Magic)).
 		Put(VersionField, value.Double(Version)).
 		Put(MessageTypeField, HandshakeRequest.Long()).
@@ -60,7 +59,7 @@ func NewHandshakeRequest(clientId int64) value.Map {
 }
 
 func NewHandshakeResponse() value.Map {
-	return value.EmptyMap().
+	return value.EmptyMap(true).
 		Put(MagicField, value.Utf8(Magic)).
 		Put(VersionField, value.Double(Version)).
 		Put(MessageTypeField, HandshakeResponse.Long()).

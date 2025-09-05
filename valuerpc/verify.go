@@ -66,7 +66,7 @@ func VerifyParams(args value.Value, paramsDef ParamsDef) bool {
 	}
 	cache := args.(value.Map)
 	for _, paramDef := range paramsDef.Map {
-		if val, ok := cache.Get(paramDef.Name); ok {
+		if val := cache.Get(paramDef.Name); val != value.Null {
 			if !VerifyParam(val, paramDef) {
 				return false
 			}

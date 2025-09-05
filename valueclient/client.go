@@ -6,17 +6,17 @@
 package valueclient
 
 import (
-	"go.arpabet.com/value"
-	"go.arpabet.com/value-rpc/valuerpc"
-	"github.com/pkg/errors"
-	"go.uber.org/atomic"
 	"log"
 	"math/rand"
 	"strings"
 	"sync"
 	"time"
-)
 
+	"github.com/pkg/errors"
+	"go.arpabet.com/value"
+	"go.arpabet.com/value-rpc/valuerpc"
+	"go.uber.org/atomic"
+)
 
 type responseHandler func(resp value.Map)
 
@@ -165,7 +165,7 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 	switch mt {
 
 	case valuerpc.FunctionResponse:
-		result, _ := resp.Get(valuerpc.ResultField)
+		result := resp.Get(valuerpc.ResultField)
 		requestCtx.notifyResult(result)
 		t.sendMetrics(requestCtx)
 		requestCtx.Close()
@@ -183,14 +183,14 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 		requestCtx.notifyResult(nil)
 
 	case valuerpc.StreamValue:
-		value, _ := resp.Get(valuerpc.ValueField)
-		requestCtx.notifyResult(value)
+		streamValue := resp.Get(valuerpc.ValueField)
+		requestCtx.notifyResult(streamValue)
 		t.regulateIncomingStream(requestCtx)
 
 	case valuerpc.StreamEnd:
-		value, _ := resp.Get(valuerpc.ValueField)
-		if value != nil {
-			requestCtx.notifyResult(value)
+		streamEndValue := resp.Get(valuerpc.ValueField)
+		if streamEndValue != nil {
+			requestCtx.notifyResult(streamEndValue)
 		}
 		if requestCtx.TryGetClose() {
 			t.requestCtxMap.Delete(requestCtx.requestId)
@@ -294,7 +294,7 @@ func (t *rpcClient) sendSystemRequest(requestId int64, mt valuerpc.MessageType) 
 		return
 	}
 
-	req := value.EmptyMap().
+	req := value.EmptyMap(true).
 		Put(valuerpc.MessageTypeField, mt.Long()).
 		Put(valuerpc.RequestIdField, value.Long(requestId))
 
@@ -395,14 +395,14 @@ func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Valu
 
 		val, ok := <-putCh
 		if !ok {
-			endReq := value.EmptyMap().
+			endReq := value.EmptyMap(true).
 				Put(valuerpc.MessageTypeField, valuerpc.StreamEnd.Long()).
 				Put(valuerpc.RequestIdField, value.Long(requestCtx.requestId))
 			t.conn.getConn().SendRequest(endReq)
 			break
 		}
 
-		nextReq := value.EmptyMap().
+		nextReq := value.EmptyMap(true).
 			Put(valuerpc.MessageTypeField, valuerpc.StreamValue.Long()).
 			Put(valuerpc.RequestIdField, value.Long(requestCtx.requestId)).
 			Put(valuerpc.ValueField, val)
@@ -424,7 +424,7 @@ func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Valu
 
 func (t *rpcClient) constructRequest(mt valuerpc.MessageType, name string, args value.Value, timeout int64) value.Map {
 
-	req := value.EmptyMap().
+	req := value.EmptyMap(true).
 		Put(valuerpc.MessageTypeField, mt.Long()).
 		Put(valuerpc.FunctionNameField, value.Utf8(name)).
 		Put(valuerpc.ArgumentsField, args)

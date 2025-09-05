@@ -7,12 +7,13 @@ package valueserver
 
 import (
 	"fmt"
-	"go.arpabet.com/value"
-	 vrpc "go.arpabet.com/value-rpc/valuerpc"
+	"sync"
+
 	"github.com/pkg/errors"
+	"go.arpabet.com/value"
+	vrpc "go.arpabet.com/value-rpc/valuerpc"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
-	"sync"
 )
 
 var OutgoingQueueCap = 4096
@@ -26,8 +27,8 @@ type servingClient struct {
 
 	outgoingQueue chan value.Map
 
-	requestMap        sync.Map
-	canceledRequests  sync.Map
+	requestMap       sync.Map
+	canceledRequests sync.Map
 
 	closeOnce sync.Once
 }
@@ -73,7 +74,7 @@ func (t *servingClient) replaceConn(newConn vrpc.MsgConn) {
 }
 
 func FunctionResult(requestId value.Number, result value.Value) value.Map {
-	resp := value.EmptyMap().
+	resp := value.EmptyMap(true).
 		Put(vrpc.MessageTypeField, vrpc.FunctionResponse.Long()).
 		Put(vrpc.RequestIdField, requestId)
 	if result != nil {
@@ -84,20 +85,20 @@ func FunctionResult(requestId value.Number, result value.Value) value.Map {
 }
 
 func StreamReady(requestId value.Number) value.Map {
-	return value.EmptyMap().
+	return value.EmptyMap(true).
 		Put(vrpc.MessageTypeField, vrpc.StreamReady.Long()).
 		Put(vrpc.RequestIdField, requestId)
 }
 
 func StreamValue(requestId value.Number, val value.Value) value.Map {
-	return value.EmptyMap().
+	return value.EmptyMap(true).
 		Put(vrpc.MessageTypeField, vrpc.StreamValue.Long()).
 		Put(vrpc.RequestIdField, requestId).
 		Put(vrpc.ValueField, val)
 }
 
 func StreamEnd(requestId value.Number, val value.Value) value.Map {
-	resp := value.EmptyMap().
+	resp := value.EmptyMap(true).
 		Put(vrpc.MessageTypeField, vrpc.StreamEnd.Long()).
 		Put(vrpc.RequestIdField, requestId)
 	if val != nil {
@@ -108,7 +109,7 @@ func StreamEnd(requestId value.Number, val value.Value) value.Map {
 }
 
 func FunctionError(requestId value.Number, format string, args ...interface{}) value.Map {
-	resp := value.EmptyMap().
+	resp := value.EmptyMap(true).
 		Put(vrpc.MessageTypeField, vrpc.ErrorResponse.Long()).
 		Put(vrpc.RequestIdField, requestId)
 	if len(args) == 0 {
@@ -184,7 +185,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		return FunctionError(reqId, "function not found %s", name.String())
 	}
 
-	args, _ := req.Get(vrpc.ArgumentsField)
+	args := req.Get(vrpc.ArgumentsField)
 	if !vrpc.Verify(args, fn.args) {
 		return FunctionError(reqId, "function '%s' invalid args %s", name.String(), value.Jsonify(args))
 	}
