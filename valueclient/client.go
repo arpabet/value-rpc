@@ -38,10 +38,17 @@ type rpcClient struct {
 	shuttingDown      atomic.Bool
 }
 
-// NewClient creates a TCP client. address is "host:port"; a non-empty socks5
-// routes through a SOCKS5 proxy. For other transports use NewClientWithDialer.
+// NewClient creates a client for address. A bare "host:port" dials TCP; a scheme
+// selects the transport: "tcp://host:port" or "unix:///path/to.sock". A non-empty
+// socks5 (TCP only) routes through a SOCKS5 proxy. For full control use
+// NewClientWithDialer.
 func NewClient(address, socks5 string) Client {
-	return NewClientWithDialer(valuerpc.NewStreamDialer("tcp", address, socks5, KeepAlivePeriod, DefaultTimeout))
+	return NewClientWithDialer(valuerpc.NewDialer(address, socks5, KeepAlivePeriod, DefaultTimeout))
+}
+
+// NewUnixClient creates a client that dials the Unix-domain socket at path.
+func NewUnixClient(path string) Client {
+	return NewClientWithDialer(valuerpc.NewStreamDialer("unix", path, "", 0, DefaultTimeout))
 }
 
 // NewClientWithDialer creates a client over any transport (TCP, Unix socket,

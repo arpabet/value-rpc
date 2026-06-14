@@ -12,11 +12,15 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 )
 
-
 type Function func(args value.Value) (value.Value, error)
 type OutgoingStream func(args value.Value) (<-chan value.Value, error)
 type IncomingStream func(args value.Value, inC <-chan value.Value) error
 type Chat func(args value.Value, inC <-chan value.Value) (<-chan value.Value, error)
+
+// ConnectAuthorizer is called once per new connection, before the handshake. If
+// it returns an error the connection is rejected and closed. Combine it with
+// valuerpc.PeerCredOf for Unix-domain-socket peer authorization.
+type ConnectAuthorizer func(conn valuerpc.MsgConn) error
 
 type Server interface {
 	AddFunction(name string, args valuerpc.TypeDef, res valuerpc.TypeDef, cb Function) error
@@ -34,8 +38,11 @@ type Server interface {
 	// to an ephemeral port (":0").
 	Addr() net.Addr
 
+	// SetConnectAuthorizer installs a per-connection authorization hook (called
+	// before the handshake). Call before Run. Passing nil clears it.
+	SetConnectAuthorizer(fn ConnectAuthorizer)
+
 	Run() error
 
 	Close() error
 }
-

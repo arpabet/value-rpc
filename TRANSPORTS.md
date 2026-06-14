@@ -292,9 +292,19 @@ SOCKS5 stays a TCP-only option (already its own argument).
    `valueclient.NewClientWithDialer` expose the seam; `NewServer`/`NewClient`
    are unchanged (TCP). A Unix-socket round-trip and the new `MsgConn` methods
    are covered by tests. Pure refactor — the full `-race` suite still passes.
-2. **Unix.** Add `network` param to the stream transport + `NewUnixServer` /
-   `unix://` parsing + stale-file handling. Add round-trip tests over a temp
-   socket path. (~½ day incl. tests.)
+2. **Unix.** ✅ **DONE (2026-06-14).** Added `tcp://`/`unix://` address parsing
+   (`valuerpc.ParseAddress`/`NewListener`/`NewDialer`; bare `host:port` still
+   defaults to TCP), the `valueserver.NewUnixServer` / `valueclient.NewUnixClient`
+   convenience constructors, and stale-socket-file cleanup on bind
+   (`valuerpc.NewUnixListener`, which refuses to clobber a non-socket file).
+   **Peer authentication** is implemented: `valuerpc.PeerCred` +
+   `valuerpc.PeerCredOf(MsgConn)` read the kernel-reported peer uid/gid/pid
+   (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS via build-tagged files,
+   unsupported elsewhere), surfaced through a new
+   `valueserver.Server.SetConnectAuthorizer` hook that runs before the handshake.
+   Tested over real Unix sockets (round-trip, scheme + convenience constructors,
+   stale-file cleanup, peer-cred uid match, authorizer rejection); Linux build
+   verified by cross-compile.
 3. **WebSocket.** Add `valuerpc/transport_ws.go` (coder/websocket), the
    standalone server + `WebSocketHandler`, the `ws://`/`wss://` client, ping/pong
    keepalive, `SetReadLimit = MaxFrameSize`. Add integration tests mirroring the

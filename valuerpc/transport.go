@@ -6,7 +6,10 @@
 package valuerpc
 
 import (
+	"fmt"
 	"net"
+	"os"
+	"strings"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -114,4 +117,74 @@ func enableKeepAlive(conn net.Conn, period time.Duration) {
 		_ = tcp.SetKeepAlive(true)
 		_ = tcp.SetKeepAlivePeriod(period)
 	}
+}
+
+// --- address scheme parsing & transport factories ---
+
+// ParseAddress splits an address into a network and an address. A "scheme://"
+// prefix selects the network ("tcp://host:port", "unix:///path"); a bare
+// address ("host:port", ":port") defaults to "tcp" for backward compatibility.
+func ParseAddress(address string) (network, addr string) {
+	if i := strings.Index(address, "://"); i >= 0 {
+		return address[:i], address[i+3:]
+	}
+	return "tcp", address
+}
+
+// NewListener builds a Listener from a (possibly schemed) address. "unix"
+// addresses get stale-socket cleanup; unsupported networks return an error
+// (WebSocket arrives in a later phase).
+func NewListener(address string, keepAlive, writeTimeout time.Duration) (Listener, error) {
+	network, addr := ParseAddress(address)
+	switch network {
+	case "unix", "unixpacket":
+		return NewUnixListener(addr, writeTimeout)
+	case "tcp", "tcp4", "tcp6":
+		return NewStreamListener(network, addr, keepAlive, writeTimeout)
+	default:
+		return nil, fmt.Errorf("unsupported listen network %q in address %q", network, address)
+	}
+}
+
+// NewDialer builds a Dialer from a (possibly schemed) address. An unsupported
+// network yields a Dialer whose Dial returns the error, so callers that do not
+// return an error from construction (e.g. NewClient) surface it at connect time.
+func NewDialer(address, socks5 string, keepAlive, writeTimeout time.Duration) Dialer {
+	network, addr := ParseAddress(address)
+	switch network {
+	case "unix", "unixpacket":
+		return NewStreamDialer(network, addr, "", 0, writeTimeout)
+	case "tcp", "tcp4", "tcp6":
+		return NewStreamDialer(network, addr, socks5, keepAlive, writeTimeout)
+	default:
+		return errDialer{fmt.Errorf("unsupported dial network %q in address %q", network, address)}
+	}
+}
+
+type errDialer struct{ err error }
+
+func (d errDialer) Dial() (MsgConn, error) { return nil, d.err }
+
+// NewUnixListener listens on a Unix-domain socket, cleaning up a stale socket
+// file left behind by a previous (crashed) process first. It refuses to remove
+// a path that is not a socket, so it cannot clobber a regular file.
+func NewUnixListener(path string, writeTimeout time.Duration) (Listener, error) {
+	if err := removeStaleSocket(path); err != nil {
+		return nil, err
+	}
+	return NewStreamListener("unix", path, 0, writeTimeout)
+}
+
+func removeStaleSocket(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refusing to remove non-socket file at %q", path)
+	}
+	return os.Remove(path)
 }

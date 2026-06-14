@@ -168,23 +168,32 @@ There is no built‑in TLS or authentication; wrap the connection (e.g. with
 
 The RPC layer is decoupled from the wire transport behind a small seam
 (`valuerpc.Listener` / `valuerpc.Dialer` / `valuerpc.MsgConn`). `NewServer` /
-`NewClient` use **TCP**; for anything else, build a transport and pass it to the
-explicit constructors:
+`NewClient` accept a scheme in the address; a bare `host:port` is **TCP**:
 
 ```go
-// Unix domain socket (the generic stream transport, network "unix")
-lis, _ := valuerpc.NewStreamListener("unix", "/run/vrpc.sock",
-    valueserver.KeepAlivePeriod, valueserver.DefaultTimeout)
-srv, _ := valueserver.NewServerWithListener(lis, logger)
-
-cli := valueclient.NewClientWithDialer(
-    valuerpc.NewStreamDialer("unix", "/run/vrpc.sock", "",
-        valueclient.KeepAlivePeriod, valueclient.DefaultTimeout))
+valueserver.NewServer("unix:///run/vrpc.sock", logger) // or NewUnixServer(path, logger)
+valueclient.NewClient("unix:///run/vrpc.sock", "")     // or NewUnixClient(path)
 ```
 
-TCP and Unix sockets share the length-prefix framing and work today. Ergonomic
-`unix://` / `ws://` address parsing and a **WebSocket (MessagePack)** transport
-are planned — see [TRANSPORTS.md](TRANSPORTS.md) for the design and roadmap.
+**TCP** and **Unix domain sockets** are supported today (they share the
+length-prefix framing); a **WebSocket (MessagePack)** transport is planned — see
+[TRANSPORTS.md](TRANSPORTS.md). For full control, build a transport yourself and
+pass it to `NewServerWithListener` / `NewClientWithDialer`.
+
+### Unix peer authentication
+
+On a Unix socket the connecting process can be authorized by its
+kernel-reported credentials (uid/gid/pid), which the peer cannot forge:
+
+```go
+srv.SetConnectAuthorizer(func(conn valuerpc.MsgConn) error {
+    cred, ok := valuerpc.PeerCredOf(conn)
+    if !ok || cred.UID != uint32(os.Getuid()) {
+        return fmt.Errorf("peer uid %d not allowed", cred.UID)
+    }
+    return nil // accept the connection
+})
+```
 
 ## Performance
 

@@ -99,3 +99,156 @@ func TestSeam_UnixSocketTransport(t *testing.T) {
 		t.Fatalf("result = %q, want %q", got, "u:hi")
 	}
 }
+
+// tmpSock returns a short, unique Unix socket path (macOS caps sun_path ~104).
+func tmpSock(t testing.TB) string {
+	t.Helper()
+	return filepath.Join(os.TempDir(), fmt.Sprintf("vrpc-%d.sock", time.Now().UnixNano()))
+}
+
+// TestUnixScheme_RoundTrip drives the ergonomic API: a unix:// address through
+// the plain NewServer / NewClient constructors.
+func TestUnixScheme_RoundTrip(t *testing.T) {
+	sock := tmpSock(t)
+	defer os.Remove(sock)
+
+	srv, err := valueserver.NewServer("unix://"+sock, zap.NewNop())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+	srv.AddFunction("echo", valuerpc.List(valuerpc.String), valuerpc.String,
+		func(args value.Value) (value.Value, error) {
+			return value.Utf8(args.(value.List).GetStringAt(0).String()), nil
+		})
+	go srv.Run()
+
+	cli := valueclient.NewClient("unix://"+sock, "")
+	if err := cli.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer cli.Close()
+	cli.SetTimeout(5000)
+
+	res, err := cli.CallFunction("echo", value.Tuple(value.Utf8("scheme")))
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got := res.(value.String).String(); got != "scheme" {
+		t.Fatalf("result = %q, want %q", got, "scheme")
+	}
+}
+
+// TestNewUnixServerClient_RoundTrip drives the NewUnixServer / NewUnixClient
+// convenience constructors.
+func TestNewUnixServerClient_RoundTrip(t *testing.T) {
+	sock := tmpSock(t)
+	defer os.Remove(sock)
+
+	srv, err := valueserver.NewUnixServer(sock, zap.NewNop())
+	if err != nil {
+		t.Fatalf("new unix server: %v", err)
+	}
+	defer srv.Close()
+	srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
+		func(args value.Value) (value.Value, error) {
+			return value.Utf8("pong"), nil
+		})
+	go srv.Run()
+
+	cli := valueclient.NewUnixClient(sock)
+	if err := cli.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer cli.Close()
+	cli.SetTimeout(5000)
+
+	res, err := cli.CallFunction("ping", nil)
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got := res.(value.String).String(); got != "pong" {
+		t.Fatalf("result = %q, want %q", got, "pong")
+	}
+}
+
+// TestPeerCredOverUnix checks that a Unix connection exposes the peer's
+// credentials (via the connect authorizer + valuerpc.PeerCredOf), and that they
+// match the running process.
+func TestPeerCredOverUnix(t *testing.T) {
+	sock := tmpSock(t)
+	defer os.Remove(sock)
+
+	srv, err := valueserver.NewUnixServer(sock, zap.NewNop())
+	if err != nil {
+		t.Fatalf("new unix server: %v", err)
+	}
+	defer srv.Close()
+
+	credCh := make(chan valuerpc.PeerCred, 1)
+	srv.SetConnectAuthorizer(func(conn valuerpc.MsgConn) error {
+		cred, ok := valuerpc.PeerCredOf(conn)
+		if !ok {
+			return fmt.Errorf("no peer credentials available")
+		}
+		select {
+		case credCh <- cred:
+		default:
+		}
+		return nil
+	})
+	srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
+		func(args value.Value) (value.Value, error) {
+			return value.Utf8("pong"), nil
+		})
+	go srv.Run()
+
+	cli := valueclient.NewUnixClient(sock)
+	if err := cli.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer cli.Close()
+	cli.SetTimeout(5000)
+	if _, err := cli.CallFunction("ping", nil); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+
+	select {
+	case cred := <-credCh:
+		if cred.UID != uint32(os.Getuid()) {
+			t.Errorf("peer UID = %d, want %d", cred.UID, os.Getuid())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("connect authorizer never observed the connection")
+	}
+}
+
+// TestConnectAuthorizerRejects verifies a rejecting authorizer closes the
+// connection so calls fail.
+func TestConnectAuthorizerRejects(t *testing.T) {
+	sock := tmpSock(t)
+	defer os.Remove(sock)
+
+	srv, err := valueserver.NewUnixServer(sock, zap.NewNop())
+	if err != nil {
+		t.Fatalf("new unix server: %v", err)
+	}
+	defer srv.Close()
+	srv.SetConnectAuthorizer(func(conn valuerpc.MsgConn) error {
+		return fmt.Errorf("denied")
+	})
+	srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
+		func(args value.Value) (value.Value, error) {
+			return value.Utf8("pong"), nil
+		})
+	go srv.Run()
+
+	cli := valueclient.NewUnixClient(sock)
+	_ = cli.Connect() // dial may succeed; the server closes after rejecting
+	defer cli.Close()
+	cli.SetTimeout(1000)
+
+	if _, err := cli.CallFunction("ping", nil); err == nil {
+		t.Fatal("expected the call to fail when the authorizer rejects the connection")
+	}
+}

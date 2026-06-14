@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
@@ -39,7 +40,20 @@ type rpcServer struct {
 	functionMap sync.Map // key is function name, value *function
 	connMap     sync.Map // key is valuerpc.MsgConn, tracks live conns for shutdown (BUG-14)
 
+	authorizer atomic.Value // ConnectAuthorizer, optional
+
 	closeOnce sync.Once
+}
+
+func (t *rpcServer) SetConnectAuthorizer(fn ConnectAuthorizer) {
+	t.authorizer.Store(fn)
+}
+
+func (t *rpcServer) getConnectAuthorizer() ConnectAuthorizer {
+	if v := t.authorizer.Load(); v != nil {
+		return v.(ConnectAuthorizer)
+	}
+	return nil
 }
 
 func NewDevelopmentServer(address string) (Server, error) {
@@ -47,13 +61,27 @@ func NewDevelopmentServer(address string) (Server, error) {
 	return NewServer(address, logger)
 }
 
-// NewServer creates a TCP server bound to address ("host:port"). For other
-// transports use NewServerWithListener.
+// NewServer creates a server bound to address. A bare "host:port" (or ":port")
+// listens on TCP; a scheme selects the transport: "tcp://host:port" or
+// "unix:///path/to.sock". For full control use NewServerWithListener.
 func NewServer(address string, logger *zap.Logger) (Server, error) {
-	lis, err := valuerpc.NewStreamListener("tcp", address, KeepAlivePeriod, DefaultTimeout)
+	lis, err := valuerpc.NewListener(address, KeepAlivePeriod, DefaultTimeout)
 	if err != nil {
-		logger.Error("bind the server port",
+		logger.Error("bind the server address",
 			zap.String("addr", address),
+			zap.Error(err))
+		return nil, err
+	}
+	return NewServerWithListener(lis, logger)
+}
+
+// NewUnixServer creates a server listening on the Unix-domain socket at path. A
+// stale socket file from a previous run is removed first.
+func NewUnixServer(path string, logger *zap.Logger) (Server, error) {
+	lis, err := valuerpc.NewUnixListener(path, DefaultTimeout)
+	if err != nil {
+		logger.Error("bind the unix socket",
+			zap.String("path", path),
 			zap.Error(err))
 		return nil, err
 	}
@@ -216,6 +244,12 @@ func (t *rpcServer) handleConnection(conn valuerpc.MsgConn) error {
 			t.logger.Error("Recovered in handleConnection", zap.Any("recover", r))
 		}
 	}()
+
+	if authz := t.getConnectAuthorizer(); authz != nil {
+		if err := authz(conn); err != nil {
+			return errors.Errorf("connection rejected by authorizer: %v", err)
+		}
+	}
 
 	cli, err := t.handshake(conn)
 	if err != nil {
