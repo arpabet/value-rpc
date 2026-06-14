@@ -51,6 +51,12 @@ func NewUnixClient(path string) Client {
 	return NewClientWithDialer(valuerpc.NewStreamDialer("unix", path, "", 0, DefaultTimeout))
 }
 
+// NewWebSocketClient creates a client that dials a WebSocket URL, e.g.
+// "ws://host:9000/rpc" or "wss://host/rpc".
+func NewWebSocketClient(url string) Client {
+	return NewClientWithDialer(valuerpc.NewDialer(url, "", KeepAlivePeriod, DefaultTimeout))
+}
+
 // NewClientWithDialer creates a client over any transport (TCP, Unix socket,
 // WebSocket, …) supplied as a valuerpc.Dialer.
 func NewClientWithDialer(dialer valuerpc.Dialer) Client {

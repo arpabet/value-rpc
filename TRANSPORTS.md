@@ -305,10 +305,17 @@ SOCKS5 stays a TCP-only option (already its own argument).
    Tested over real Unix sockets (round-trip, scheme + convenience constructors,
    stale-file cleanup, peer-cred uid match, authorizer rejection); Linux build
    verified by cross-compile.
-3. **WebSocket.** Add `valuerpc/transport_ws.go` (coder/websocket), the
-   standalone server + `WebSocketHandler`, the `ws://`/`wss://` client, ping/pong
-   keepalive, `SetReadLimit = MaxFrameSize`. Add integration tests mirroring the
-   existing four-pattern suite but over WS. (~1 day incl. tests.)
+3. **WebSocket.** ✅ **DONE (2026-06-14).** Added `valuerpc/transport_ws.go` on
+   `github.com/coder/websocket` (one MessagePack `value.Map` per binary frame, no
+   length prefix; `SetReadLimit` = `MaxFrameSize`; ping/pong keepalive via
+   `WSKeepAlive`). Server: `valueserver.NewWebSocketServer(addr, path)` (standalone)
+   and `valueserver.NewWebSocketHandler()` returning an `http.Handler` to mount on
+   your own mux (port sharing; wss:// via your own TLS server). Client:
+   `valueclient.NewWebSocketClient(url)`. The `ws://` scheme also works through
+   plain `NewServer`/`NewClient`; `wss://` is supported on the client and on the
+   embedded handler. All four patterns are tested over WS, plus the embedded
+   handler and a `BenchmarkWebSocketUnary` (~30 µs/op vs ~25 µs TCP). Whole suite
+   green under `-race`; linux+windows cross-compile verified.
 4. **Tests/CI/docs.** Parameterize the integration suite by transport (run the
    same tests over tcp/unix/ws via a table), add benchmarks per transport, and
    document in the README. The existing `Example_*` tests already exercise the

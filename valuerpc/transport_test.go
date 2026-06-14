@@ -35,13 +35,13 @@ func TestParseAddress(t *testing.T) {
 }
 
 func TestNewListener_UnsupportedScheme(t *testing.T) {
-	if _, err := vrpc.NewListener("ws://:0/rpc", 0, time.Second); err == nil {
+	if _, err := vrpc.NewListener("bogus://addr", 0, time.Second); err == nil {
 		t.Fatal("expected an error for an unsupported listen scheme")
 	}
 }
 
 func TestNewDialer_UnsupportedSchemeErrorsOnDial(t *testing.T) {
-	d := vrpc.NewDialer("ws://host/rpc", "", 0, time.Second)
+	d := vrpc.NewDialer("bogus://addr", "", 0, time.Second)
 	if _, err := d.Dial(); err == nil {
 		t.Fatal("expected Dial to fail for an unsupported scheme")
 	}

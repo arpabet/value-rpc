@@ -141,6 +141,11 @@ func NewListener(address string, keepAlive, writeTimeout time.Duration) (Listene
 		return NewUnixListener(addr, writeTimeout)
 	case "tcp", "tcp4", "tcp6":
 		return NewStreamListener(network, addr, keepAlive, writeTimeout)
+	case "ws":
+		host, path := splitWSPath(addr)
+		return NewWebSocketListener(host, path, writeTimeout)
+	case "wss":
+		return nil, fmt.Errorf("wss:// server needs TLS; mount valueserver.NewWebSocketHandler on your own TLS http.Server")
 	default:
 		return nil, fmt.Errorf("unsupported listen network %q in address %q", network, address)
 	}
@@ -156,6 +161,8 @@ func NewDialer(address, socks5 string, keepAlive, writeTimeout time.Duration) Di
 		return NewStreamDialer(network, addr, "", 0, writeTimeout)
 	case "tcp", "tcp4", "tcp6":
 		return NewStreamDialer(network, addr, socks5, keepAlive, writeTimeout)
+	case "ws", "wss":
+		return newWSDialer(network+"://"+addr, writeTimeout)
 	default:
 		return errDialer{fmt.Errorf("unsupported dial network %q in address %q", network, address)}
 	}

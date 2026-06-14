@@ -170,15 +170,32 @@ The RPC layer is decoupled from the wire transport behind a small seam
 (`valuerpc.Listener` / `valuerpc.Dialer` / `valuerpc.MsgConn`). `NewServer` /
 `NewClient` accept a scheme in the address; a bare `host:port` is **TCP**:
 
+| Transport | Address | Convenience constructor |
+|-----------|---------|--------------------------|
+| TCP | `host:port` or `tcp://host:port` | `NewServer` / `NewClient` |
+| Unix socket | `unix:///path.sock` | `NewUnixServer` / `NewUnixClient` |
+| WebSocket | `ws://host:port/path` (client also `wss://`) | `NewWebSocketServer` / `NewWebSocketClient` |
+
 ```go
 valueserver.NewServer("unix:///run/vrpc.sock", logger) // or NewUnixServer(path, logger)
-valueclient.NewClient("unix:///run/vrpc.sock", "")     // or NewUnixClient(path)
+valueserver.NewServer("ws://:9000/rpc", logger)        // or NewWebSocketServer(":9000", "/rpc", logger)
+valueclient.NewClient("ws://host:9000/rpc", "")        // or NewWebSocketClient(url)
 ```
 
-**TCP** and **Unix domain sockets** are supported today (they share the
-length-prefix framing); a **WebSocket (MessagePack)** transport is planned — see
-[TRANSPORTS.md](TRANSPORTS.md). For full control, build a transport yourself and
-pass it to `NewServerWithListener` / `NewClientWithDialer`.
+TCP and Unix sockets share the 4-byte length-prefix framing; WebSocket carries
+one MessagePack message per **binary** frame (no length prefix). For full control,
+build a transport yourself and pass it to `NewServerWithListener` /
+`NewClientWithDialer`. See [TRANSPORTS.md](TRANSPORTS.md) for the design.
+
+WebSocket can also share a port with your other HTTP routes (and serve `wss://`
+from your own TLS server) by mounting the vRPC handler on your `http.ServeMux`:
+
+```go
+srv, handler, _ := valueserver.NewWebSocketHandler(logger)
+srv.AddFunction(...)
+go srv.Run()
+mux.Handle("/rpc", handler) // alongside /healthz, REST, metrics, …
+```
 
 ### Unix peer authentication
 
@@ -204,8 +221,9 @@ Numbers are indicative; run `go test -bench=. ./...` on your hardware.
 |-----------|--------|
 | Pack+Unpack a small request | ~0.6 µs, 53 allocs |
 | Frame codec write+read (in‑memory) | ~1.8 µs |
-| Unary call, loopback, serial | ~25 µs (~40k calls/s) |
-| Unary call, loopback, parallel | ~5 µs (~190k calls/s) |
+| Unary call, loopback, serial (TCP) | ~25 µs (~40k calls/s) |
+| Unary call, loopback, parallel (TCP) | ~5 µs (~190k calls/s) |
+| Unary call, loopback, serial (WebSocket) | ~30 µs (~22% over TCP) |
 | Server stream, per value | ~2 µs (~500k values/s) |
 
 Streaming/chat throughput is bounded by the millisecond‑granularity throttle

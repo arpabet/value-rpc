@@ -8,6 +8,7 @@ package valueserver
 import (
 	"io"
 	"net"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -86,6 +87,35 @@ func NewUnixServer(path string, logger *zap.Logger) (Server, error) {
 		return nil, err
 	}
 	return NewServerWithListener(lis, logger)
+}
+
+// NewWebSocketServer creates a standalone WebSocket server: it owns an HTTP
+// server bound to addr and serves the vRPC endpoint at path (default "/"). Each
+// message travels as one MessagePack binary frame. For wss:// (TLS) or to share
+// a port with other HTTP routes, use NewWebSocketHandler instead.
+func NewWebSocketServer(addr, path string, logger *zap.Logger) (Server, error) {
+	lis, err := valuerpc.NewWebSocketListener(addr, path, DefaultTimeout)
+	if err != nil {
+		logger.Error("bind the websocket server",
+			zap.String("addr", addr),
+			zap.Error(err))
+		return nil, err
+	}
+	return NewServerWithListener(lis, logger)
+}
+
+// NewWebSocketHandler returns a server plus an http.Handler to mount on your own
+// http.ServeMux (e.g. mux.Handle("/rpc", h)). The server does not listen on its
+// own port; register functions and call Run() to serve upgraded connections.
+// This is the path to wss:// (run your own TLS http.Server) and to sharing a
+// port with REST/health/metrics routes.
+func NewWebSocketHandler(logger *zap.Logger) (Server, http.Handler, error) {
+	lis, h := valuerpc.NewWebSocketHandler(DefaultTimeout)
+	srv, err := NewServerWithListener(lis, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	return srv, h, nil
 }
 
 // NewServerWithListener creates a server over any transport (TCP, Unix socket,
