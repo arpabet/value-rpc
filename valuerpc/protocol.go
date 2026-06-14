@@ -67,13 +67,36 @@ func NewHandshakeResponse() value.Map {
 }
 
 func ValidMagicAndVersion(req value.Map) bool {
-	magic := req.GetString(MagicField)
-	if magic == nil || magic.String() != Magic {
+	magic, ok := GetStringField(req, MagicField)
+	if !ok || magic.String() != Magic {
 		return false
 	}
-	version := req.GetNumber(MagicField)
-	if version == nil || version.Double() > Version {
+	// BUG-1 fix: the version lives in VersionField ("v"), not MagicField ("m").
+	version, ok := GetNumberField(req, VersionField)
+	if !ok || version.Double() > Version {
 		return false
 	}
 	return true
+}
+
+// GetNumberField returns the NUMBER at field and true, or (nil, false) when the
+// field is absent or not a number. Use this instead of Map.GetNumber when you
+// need to distinguish "absent" from "zero": GetNumber returns value.Zero for a
+// missing key, so `GetNumber(k) == nil` is always false (BUG-5).
+func GetNumberField(m value.Map, field string) (value.Number, bool) {
+	v := m.Get(field)
+	if v == nil || v.Kind() != value.NUMBER {
+		return nil, false
+	}
+	return v.(value.Number), true
+}
+
+// GetStringField returns the STRING at field and true, or (nil, false) when the
+// field is absent or not a string. See GetNumberField for the rationale.
+func GetStringField(m value.Map, field string) (value.String, bool) {
+	v := m.Get(field)
+	if v == nil || v.Kind() != value.STRING {
+		return nil, false
+	}
+	return v.(value.String), true
 }

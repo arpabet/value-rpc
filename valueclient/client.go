@@ -165,7 +165,12 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 	switch mt {
 
 	case valuerpc.FunctionResponse:
+		// BUG-4/5 fix: an absent result field decodes as value.Null, not Go nil.
+		// A void result must surface to the caller as nil, not a Null sentinel.
 		result := resp.Get(valuerpc.ResultField)
+		if result != nil && result.Kind() == value.NULL {
+			result = nil
+		}
 		requestCtx.notifyResult(result)
 		t.sendMetrics(requestCtx)
 		requestCtx.Close()
@@ -183,13 +188,16 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 		requestCtx.notifyResult(nil)
 
 	case valuerpc.StreamValue:
-		streamValue := resp.Get(valuerpc.ValueField)
-		requestCtx.notifyResult(streamValue)
+		// BUG-4 fix: an absent value field decodes as value.Null, not Go nil;
+		// only deliver a real payload.
+		if streamValue := resp.Get(valuerpc.ValueField); streamValue != nil && streamValue.Kind() != value.NULL {
+			requestCtx.notifyResult(streamValue)
+		}
 		t.regulateIncomingStream(requestCtx)
 
 	case valuerpc.StreamEnd:
-		streamEndValue := resp.Get(valuerpc.ValueField)
-		if streamEndValue != nil {
+		// BUG-4 fix: do not deliver a phantom value.Null at end of stream.
+		if streamEndValue := resp.Get(valuerpc.ValueField); streamEndValue != nil && streamEndValue.Kind() != value.NULL {
 			requestCtx.notifyResult(streamEndValue)
 		}
 		if requestCtx.TryGetClose() {
@@ -197,9 +205,8 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 		}
 
 	case valuerpc.CancelRequest:
-		if requestCtx.TryPutClose() {
-			t.requestCtxMap.Delete(requestCtx.requestId)
-		}
+		requestCtx.Close()
+		t.requestCtxMap.Delete(requestCtx.requestId)
 
 	case valuerpc.ThrottleIncrease:
 		requestCtx.throttleOutgoing.Inc()
@@ -228,8 +235,11 @@ func (t *rpcClient) regulateIncomingStream(requestCtx *rpcRequestCtx) {
 func (t *rpcClient) getResponseHandler() responseHandler {
 	return func(resp value.Map) {
 
-		mt := resp.GetNumber(valuerpc.MessageTypeField)
-		if mt == nil {
+		// BUG-5 fix: GetNumber returns value.Zero (never nil) for a missing key,
+		// so presence must be checked with GetNumberField, otherwise a message
+		// with no type is silently treated as MessageType(0) = HandshakeResponse.
+		mt, ok := valuerpc.GetNumberField(resp, valuerpc.MessageTypeField)
+		if !ok {
 			t.getErrorHandler().ProtocolError(resp, ErrNoMessageType)
 			return
 		}
@@ -240,8 +250,8 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 			return
 		}
 
-		id := resp.GetNumber(valuerpc.RequestIdField)
-		if id == nil {
+		id, ok := valuerpc.GetNumberField(resp, valuerpc.RequestIdField)
+		if !ok {
 			t.getErrorHandler().ProtocolError(resp, ErrIdFieldNotFound)
 			return
 		}
@@ -255,8 +265,8 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 	}
 }
 
-func (t *rpcClient) newRequestCtx(requestId int64, req value.Map, receiveCap int) *rpcRequestCtx {
-	requestCtx := NewRequestCtx(requestId, req, receiveCap)
+func (t *rpcClient) newRequestCtx(requestId int64, kind streamKind, req value.Map, receiveCap int) *rpcRequestCtx {
+	requestCtx := NewRequestCtx(requestId, kind, req, receiveCap)
 	t.requestCtxMap.Store(requestId, requestCtx)
 	return requestCtx
 }
@@ -270,7 +280,7 @@ func (t *rpcClient) ensureConnection() error {
 	return nil
 }
 
-func (t *rpcClient) sendRequest(req value.Map, receiveCap int) (*rpcRequestCtx, error) {
+func (t *rpcClient) sendRequest(kind streamKind, req value.Map, receiveCap int) (*rpcRequestCtx, error) {
 
 	err := t.ensureConnection()
 	if err != nil {
@@ -280,7 +290,7 @@ func (t *rpcClient) sendRequest(req value.Map, receiveCap int) (*rpcRequestCtx, 
 	requestId := t.lastRequest.Inc()
 	req = req.Put(valuerpc.RequestIdField, value.Long(requestId))
 
-	requestCtx := t.newRequestCtx(requestId, req, receiveCap)
+	requestCtx := t.newRequestCtx(requestId, kind, req, receiveCap)
 
 	t.conn.getConn().SendRequest(req)
 	return requestCtx, nil
@@ -309,7 +319,7 @@ func (t *rpcClient) CallFunction(name string, args value.Value) (value.Value, er
 
 	req := t.constructRequest(valuerpc.FunctionRequest, name, args, t.timeoutMls.Load())
 
-	requestCtx, err := t.sendRequest(req, 1)
+	requestCtx, err := t.sendRequest(unaryKind, req, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -329,7 +339,7 @@ func (t *rpcClient) GetStream(name string, args value.Value, receiveCap int) (<-
 
 	req := t.constructRequest(valuerpc.GetStreamRequest, name, args, t.timeoutMls.Load())
 
-	requestCtx, err := t.sendRequest(req, receiveCap)
+	requestCtx, err := t.sendRequest(getStreamKind, req, receiveCap)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -349,7 +359,7 @@ func (t *rpcClient) PutStream(name string, args value.Value, putCh <-chan value.
 
 	req := t.constructRequest(valuerpc.PutStreamRequest, name, args, t.timeoutMls.Load())
 
-	requestCtx, err := t.sendRequest(req, 1)
+	requestCtx, err := t.sendRequest(putStreamKind, req, 1)
 	if err != nil {
 		return err
 	}
@@ -371,7 +381,7 @@ func (t *rpcClient) Chat(name string, args value.Value, receiveCap int, putCh <-
 
 	req := t.constructRequest(valuerpc.ChatRequest, name, args, t.timeoutMls.Load())
 
-	requestCtx, err := t.sendRequest(req, receiveCap+1)
+	requestCtx, err := t.sendRequest(chatKind, req, receiveCap+1)
 	if err != nil {
 		return nil, 0, err
 	}

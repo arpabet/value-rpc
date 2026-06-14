@@ -26,6 +26,7 @@ type servingClient struct {
 	logger *zap.Logger
 
 	outgoingQueue chan value.Map
+	done          chan struct{} // closed by Close(); never close outgoingQueue (BUG-3)
 
 	requestMap       sync.Map
 	canceledRequests sync.Map
@@ -39,10 +40,14 @@ func NewServingClient(clientId int64, conn vrpc.MsgConn, functionMap *sync.Map, 
 		clientId:      clientId,
 		functionMap:   functionMap,
 		outgoingQueue: make(chan value.Map, OutgoingQueueCap),
+		done:          make(chan struct{}),
 		logger:        logger,
 	}
 	client.activeConn.Store(conn)
 
+	// Exactly one long-lived sender for the lifetime of the serving client; it
+	// always writes to the current activeConn, so reconnects must not start
+	// another one (BUG-8).
 	go client.sender()
 
 	return client
@@ -51,13 +56,21 @@ func NewServingClient(clientId int64, conn vrpc.MsgConn, functionMap *sync.Map, 
 func (t *servingClient) Close() {
 
 	t.closeOnce.Do(func() {
+		// Signal the sender and any blocked producers to stop. We must NOT
+		// close(outgoingQueue): producers (handlers, streamers) may still send
+		// and would panic on a closed channel (BUG-3).
+		close(t.done)
+
+		// Unblock the connection read loop so it can exit.
+		if c := t.activeConn.Load(); c != nil {
+			c.(vrpc.MsgConn).Close()
+		}
+
 		t.requestMap.Range(func(key, value interface{}) bool {
 			sr := value.(*servingRequest)
 			sr.Close()
 			return true
 		})
-
-		close(t.outgoingQueue)
 	})
 
 }
@@ -70,7 +83,8 @@ func (t *servingClient) replaceConn(newConn vrpc.MsgConn) {
 	}
 
 	t.activeConn.Store(newConn)
-	go t.sender()
+	// The single sender (started in NewServingClient) picks up the new conn via
+	// activeConn; starting another sender here caused duplicates (BUG-8).
 }
 
 func FunctionResult(requestId value.Number, result value.Value) value.Map {
@@ -124,34 +138,39 @@ func (t *servingClient) sender() {
 
 	for {
 
-		resp, ok := <-t.outgoingQueue
-		if !ok {
+		select {
+		case <-t.done:
 			t.logger.Info("stop serving client", zap.Int64("clientId", t.clientId))
-			break
-		}
+			return
+		case resp, ok := <-t.outgoingQueue:
+			if !ok {
+				return
+			}
 
-		conn := t.activeConn.Load()
-		if conn == nil {
-			t.logger.Error("sender no active connection")
-			break
-		}
+			conn := t.activeConn.Load()
+			if conn == nil {
+				t.logger.Error("sender no active connection")
+				continue
+			}
 
-		msgConn := conn.(vrpc.MsgConn)
-		err := msgConn.WriteMessage(resp)
-
-		if err != nil {
-			// io error
-			t.send(resp)
-			t.logger.Error("sender write message", zap.Error(err))
-			break
+			if err := conn.(vrpc.MsgConn).WriteMessage(resp); err != nil {
+				// BUG-9 fix: do not re-enqueue (a full queue would deadlock) and
+				// do not stop the only sender; the connection is replaced on
+				// reconnect, after which sends resume.
+				t.logger.Error("sender write message", zap.Error(err))
+			}
 		}
 
 	}
 }
 
 func (t *servingClient) send(resp value.Map) error {
-	t.outgoingQueue <- resp
-	return nil
+	select {
+	case t.outgoingQueue <- resp:
+		return nil
+	case <-t.done:
+		return vrpc.ErrClientClosed
+	}
 }
 
 func (t *servingClient) findFunction(name string) (*function, bool) {
@@ -162,6 +181,13 @@ func (t *servingClient) findFunction(name string) (*function, bool) {
 }
 
 func (t *servingClient) serveFunctionRequest(ft functionType, req value.Map) {
+	// This runs in its own goroutine; a panicking user handler must not crash
+	// the whole server process.
+	defer func() {
+		if r := recover(); r != nil {
+			t.logger.Error("recovered in serveFunctionRequest", zap.Any("recover", r))
+		}
+	}()
 	resp := t.doServeFunctionRequest(ft, req)
 	if resp != nil {
 		t.send(resp)
@@ -170,13 +196,14 @@ func (t *servingClient) serveFunctionRequest(ft functionType, req value.Map) {
 
 func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) value.Map {
 
-	reqId := req.GetNumber(vrpc.RequestIdField)
-	if reqId == nil {
-		return FunctionError(reqId, "request id not found")
+	reqId, ok := vrpc.GetNumberField(req, vrpc.RequestIdField)
+	if !ok {
+		// Without a request id the response cannot be routed; reply with id 0.
+		reqId = value.Long(0)
 	}
 
-	name := req.GetString(vrpc.FunctionNameField)
-	if name == nil {
+	name, ok := vrpc.GetStringField(req, vrpc.FunctionNameField)
+	if !ok {
 		return FunctionError(reqId, "function name field not found")
 	}
 
@@ -268,14 +295,14 @@ func (t *servingClient) deleteRequest(requestId value.Number) {
 func (t *servingClient) processRequest(req value.Map) error {
 	//t.logger.Info("processRequest", zap.Stringer("req", req))
 
-	mt := req.GetNumber(vrpc.MessageTypeField)
-	if mt == nil {
+	mt, ok := vrpc.GetNumberField(req, vrpc.MessageTypeField)
+	if !ok {
 		return errors.Errorf("empty message type in %s", req.String())
 	}
 	msgType := vrpc.MessageType(mt.Long())
 
-	reqId := req.GetNumber(vrpc.RequestIdField)
-	if reqId == nil {
+	reqId, ok := vrpc.GetNumberField(req, vrpc.RequestIdField)
+	if !ok {
 		return errors.Errorf("request id not found in %s", req.String())
 	}
 

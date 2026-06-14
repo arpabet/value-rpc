@@ -100,13 +100,9 @@ func TestUnaryCall_ServerError(t *testing.T) {
 	}
 }
 
-// TestVoidArgsRejected documents BUG-2: a function registered with valuerpc.Void
-// cannot be called with nil args. The client serializes nil into the args field,
-// it arrives as value.Null, and Verify(Null, Void) is false (Verify only special-
-// cases Go nil and empty collections). This breaks the shipped example program at
-// its first Void call. Workarounds: register with valuerpc.Any, or pass an empty
-// list as args.
-func TestVoidArgsRejected(t *testing.T) {
+// TestVoidArgsAccepted pins the BUG-2 fix: a function registered with
+// valuerpc.Void can be called with nil args (which arrive as value.Null).
+func TestVoidArgsAccepted(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("ping", valuerpc.Void, valuerpc.String,
 			func(args value.Value) (value.Value, error) {
@@ -118,11 +114,13 @@ func TestVoidArgsRejected(t *testing.T) {
 	cli := dialClient(t, addr)
 	defer cli.Close()
 
-	_, err := cli.CallFunction("ping", nil)
-	if err == nil {
-		t.Skip("Void + nil args now accepted — BUG-2 appears FIXED; update this test")
+	res, err := cli.CallFunction("ping", nil)
+	if err != nil {
+		t.Fatalf("BUG-2: Void function with nil args should be accepted, got: %v", err)
 	}
-	t.Logf("BUG-2 confirmed: Void function called with nil args rejected: %v", err)
+	if got := res.(value.String).String(); got != "pong" {
+		t.Fatalf("result = %q, want %q", got, "pong")
+	}
 }
 
 func TestUnaryCall_UnknownFunction(t *testing.T) {
@@ -163,22 +161,15 @@ func TestServerStreaming(t *testing.T) {
 	}
 
 	var got []int64
-	var phantom int
 	for v := range readC {
-		// BUG (see FINDINGS.md): the client pushes a phantom value.Null on
-		// StreamEnd because processResponse compares Get(ValueField) to Go nil
-		// instead of value.Null. Tolerate it here and count it.
+		// BUG-4 fix: no phantom value.Null may be delivered on the stream.
 		if v == nil || v.Kind() == value.NULL {
-			phantom++
-			continue
+			t.Fatalf("BUG-4: phantom Null delivered on stream")
 		}
 		got = append(got, v.(value.Number).Long())
 	}
 	if len(got) != 5 {
 		t.Fatalf("received %d numeric values %v, want 5", len(got), got)
-	}
-	if phantom > 0 {
-		t.Logf("BUG observed: %d phantom Null value(s) delivered on the stream (StreamEnd handler)", phantom)
 	}
 }
 
@@ -280,13 +271,63 @@ func TestConcurrentUnaryCalls(t *testing.T) {
 	}
 }
 
-// TestChatBidirectional is SKIPPED: the Chat shutdown path double-closes the
-// response channel and panics the process (see FINDINGS.md BUG-7 and
-// valueclient.TestRequestCtx_GetThenPutClose_DoubleClose). Enabling this test
-// crashes `go test` for the whole package, so it is guarded until the bug is
-// fixed.
+// TestChatBidirectional exercises the full bidirectional path end-to-end. It
+// also covers the chat half-close fix: the client closes its send side and must
+// still receive every echo the server produced (no dropped messages, no phantom
+// Null, no double-close panic).
 func TestChatBidirectional(t *testing.T) {
-	t.Skip("BUG-7: Chat double-closes resultCh and panics the process; see FINDINGS.md")
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddChat("echo", valuerpc.Any,
+			func(args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
+				outC := make(chan value.Value, 8)
+				go func() {
+					defer close(outC)
+					for v := range inC {
+						if v == nil || v.Kind() == value.NULL {
+							continue
+						}
+						outC <- value.Utf8("echo:" + v.(value.String).String())
+					}
+				}()
+				return outC, nil
+			})
+	})
+	defer stop()
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+	cli.SetTimeout(5000)
+
+	sendC := make(chan value.Value, 4)
+	readC, _, err := cli.Chat("echo", nil, 16, sendC)
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+
+	inputs := []string{"a", "bb", "ccc", "dddd"}
+	go func() {
+		for _, s := range inputs {
+			sendC <- value.Utf8(s)
+		}
+		close(sendC) // half-close send; must still receive all echoes
+	}()
+
+	var got []string
+	for v := range readC {
+		if v == nil || v.Kind() == value.NULL {
+			t.Fatalf("BUG-4: phantom Null in chat stream")
+		}
+		got = append(got, v.(value.String).String())
+	}
+
+	if len(got) != len(inputs) {
+		t.Fatalf("received %d echoes %v, want %d", len(got), got, len(inputs))
+	}
+	for i, s := range inputs {
+		if want := "echo:" + s; got[i] != want {
+			t.Fatalf("echo[%d] = %q, want %q", i, got[i], want)
+		}
+	}
 }
 
 func BenchmarkUnaryCallLoopback(b *testing.B) {

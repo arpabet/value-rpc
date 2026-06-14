@@ -22,7 +22,9 @@ type servingRequest struct {
 	inC              chan value.Value
 	throttleOutgoing atomic.Int64
 
-	closed atomic.Bool
+	closed   atomic.Bool
+	inClosed atomic.Bool
+	done     chan struct{}
 }
 
 func NewServingRequest(ft functionType, requestId value.Number) *servingRequest {
@@ -30,6 +32,7 @@ func NewServingRequest(ft functionType, requestId value.Number) *servingRequest 
 	sr := &servingRequest{
 		ft:        ft,
 		requestId: requestId,
+		done:      make(chan struct{}),
 	}
 
 	if ft == incomingStream || ft == chat {
@@ -41,9 +44,32 @@ func NewServingRequest(ft functionType, requestId value.Number) *servingRequest 
 
 func (t *servingRequest) Close() {
 	if t.closed.CAS(false, true) {
+		close(t.done)
+		t.closeInboundChan()
+	}
+}
+
+// closeInboundChan closes the application's inbound channel exactly once,
+// signalling end-of-input to the handler without tearing down the whole
+// request (used for chat half-close).
+func (t *servingRequest) closeInboundChan() {
+	if t.inClosed.CAS(false, true) {
 		if t.inC != nil {
 			close(t.inC)
 		}
+	}
+}
+
+// offer hands a value to the application's inbound channel without panicking if
+// the request was closed concurrently (BUG-6) and without blocking forever
+// after close. It still blocks while a live consumer is slow (backpressure).
+func (t *servingRequest) offer(val value.Value) bool {
+	defer func() { _ = recover() }() // inC may be closed concurrently
+	select {
+	case t.inC <- val:
+		return true
+	case <-t.done:
+		return false
 	}
 }
 
@@ -82,7 +108,7 @@ func (t *servingRequest) incomingStreamValue(req value.Map) error {
 	}
 
 	if val := req.Get(vrpc.ValueField); val != value.Null {
-		t.inC <- val
+		t.offer(val)
 	}
 
 	return nil
@@ -95,16 +121,27 @@ func (t *servingRequest) incomingStreamEnd(req value.Map, cli *servingClient) er
 	}
 
 	if val := req.Get(vrpc.ValueField); val != value.Null {
-		t.inC <- val
+		t.offer(val)
 	}
 
+	// For chat, the client ending its input must NOT tear down the server's
+	// output side (you can half-close the send direction and keep receiving).
+	// Just close the inbound channel; the request is torn down when the
+	// outgoing stream finishes. For a pure incoming stream there is no output,
+	// so close the whole request.
+	if t.ft == chat {
+		t.closeInboundChan()
+		return nil
+	}
 	return t.closeRequest(cli)
 }
 
 func (t *servingRequest) closeRequest(cli *servingClient) error {
 	cli.deleteRequest(t.requestId)
 	t.Close()
-	cli.canceledRequests.Delete(t.requestId)
+	// BUG-13 fix: canceledRequests is keyed by int64 (reqId.Long()), not by the
+	// value.Number; deleting with the wrong key type leaked entries forever.
+	cli.canceledRequests.Delete(t.requestId.Long())
 	return nil
 }
 
@@ -114,12 +151,20 @@ func (t *servingRequest) outgoingStreamer(outC <-chan value.Value, cli *servingC
 
 	for {
 
-		val, ok := <-outC
+		var val value.Value
+		var ok bool
+		select {
+		case val, ok = <-outC:
+		case <-t.done: // client/request closed: stop promptly
+			ok = false
+		}
+
 		if !ok || t.closed.Load() {
 			cli.send(StreamEnd(t.requestId, val))
-			if t.ft == outgoingStream {
-				t.closeRequest(cli)
-			}
+			// The server's output ending is the terminal event for both
+			// outgoing-stream and chat requests; tear the request down here
+			// (closeRequest is idempotent).
+			t.closeRequest(cli)
 			break
 		}
 

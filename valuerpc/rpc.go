@@ -6,35 +6,32 @@
 package valuerpc
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
-	"go.arpabet.com/value"
-	"github.com/pkg/errors"
-	"github.com/smallnest/goframe"
-	"go.uber.org/atomic"
+	"io"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/pkg/errors"
+	"go.arpabet.com/value"
+	"go.uber.org/atomic"
 )
 
 var (
 	ErrClientClosed = fmt.Errorf("client closed")
 )
 
-var encoderConfig = goframe.EncoderConfig{
-	ByteOrder:                       binary.BigEndian,
-	LengthFieldLength:               4,
-	LengthAdjustment:                0,
-	LengthIncludesLengthFieldLength: false,
-}
+// MaxFrameSize bounds the size of a single inbound message payload. A 4-byte
+// length prefix would otherwise allow a peer to request a ~4 GiB allocation
+// with a few bytes (BUG-11). Set to 0 to disable the check. Default 16 MiB
+// (gRPC defaults to 4 MiB for comparison).
+var MaxFrameSize = 16 * 1024 * 1024
 
-var decoderConfig = goframe.DecoderConfig{
-	ByteOrder:           binary.BigEndian,
-	LengthFieldOffset:   0,
-	LengthFieldLength:   4,
-	LengthAdjustment:    0,
-	InitialBytesToStrip: 4,
-}
+// Wire format (unchanged from the previous goframe-based implementation):
+//   [4-byte big-endian length N][N bytes MessagePack payload]
+// The length does not include the 4-byte length field itself.
 
 type MsgConn interface {
 	ReadMessage() (value.Map, error)
@@ -47,28 +44,40 @@ type MsgConn interface {
 }
 
 func NewMsgConn(conn net.Conn, timeout time.Duration) MsgConn {
-	framedConn := goframe.NewLengthFieldBasedFrameConn(encoderConfig, decoderConfig, conn)
-	return &messageConnAdapter{conn: framedConn, timeout: timeout}
+	return &messageConnAdapter{
+		conn:    conn,
+		reader:  bufio.NewReader(conn),
+		timeout: timeout,
+	}
 }
 
 type messageConnAdapter struct {
-	conn goframe.FrameConn
-	timeout  time.Duration
+	conn      net.Conn
+	reader    *bufio.Reader
+	timeout   time.Duration
 	writeLock sync.Mutex
 	shutdown  atomic.Bool
 }
 
 func (t *messageConnAdapter) ReadMessage() (value.Map, error) {
-	frame, err := t.conn.ReadFrame()
-	if err != nil {
+	var lenBuf [4]byte
+	if _, err := io.ReadFull(t.reader, lenBuf[:]); err != nil {
 		return nil, err
 	}
-	msg, err := value.Unpack(frame, true)
+	n := binary.BigEndian.Uint32(lenBuf[:])
+	if MaxFrameSize > 0 && int64(n) > int64(MaxFrameSize) {
+		return nil, errors.Errorf("frame too large: %d bytes (max %d)", n, MaxFrameSize)
+	}
+	payload := make([]byte, int(n))
+	if _, err := io.ReadFull(t.reader, payload); err != nil {
+		return nil, err
+	}
+	msg, err := value.Unpack(payload, true)
 	if err != nil {
 		return nil, errors.Errorf("msgpack unpack, %v", err)
 	}
 	if msg.Kind() != value.MAP {
-		return nil, errors.New("expected msgpack table")
+		return nil, errors.New("expected msgpack map")
 	}
 	return msg.(value.Map), nil
 }
@@ -77,20 +86,28 @@ func (t *messageConnAdapter) WriteMessage(msg value.Map) error {
 	if t.shutdown.Load() {
 		return ErrClientClosed
 	}
-	resp, err := value.Pack(msg)
+	payload, err := value.Pack(msg)
 	if err != nil {
 		return errors.Errorf("msgpack pack, %v", err)
 	}
-	return t.doWriteFrame(resp)
+	return t.doWriteFrame(payload)
 }
 
-func (t* messageConnAdapter) doWriteFrame(payload []byte) error {
+func (t *messageConnAdapter) doWriteFrame(payload []byte) error {
 	t.writeLock.Lock()
 	defer t.writeLock.Unlock()
-	if err := t.conn.Conn().SetWriteDeadline(time.Now().Add(t.timeout)); err != nil {
-		return err
+	if t.timeout > 0 {
+		if err := t.conn.SetWriteDeadline(time.Now().Add(t.timeout)); err != nil {
+			return err
+		}
 	}
-	return t.conn.WriteFrame(payload)
+	// Single buffer + single Write so the length prefix and payload cannot be
+	// torn apart by a concurrent writer (writeLock already serializes callers).
+	frame := make([]byte, 4+len(payload))
+	binary.BigEndian.PutUint32(frame[:4], uint32(len(payload)))
+	copy(frame[4:], payload)
+	_, err := t.conn.Write(frame)
+	return err
 }
 
 func (t *messageConnAdapter) Close() error {
@@ -99,5 +116,5 @@ func (t *messageConnAdapter) Close() error {
 }
 
 func (t *messageConnAdapter) Conn() net.Conn {
-	return t.conn.Conn()
+	return t.conn
 }

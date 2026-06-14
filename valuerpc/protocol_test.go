@@ -61,25 +61,26 @@ func TestValidMagicAndVersion_BadMagic(t *testing.T) {
 	}
 }
 
-// TestValidMagicAndVersion_VersionCheckBroken is a CHARACTERIZATION test: it
-// documents a real bug rather than the intended behaviour. ValidMagicAndVersion
-// reads the version out of MagicField ("m") instead of VersionField ("v"):
-//
-//	version := req.GetNumber(MagicField)   // should be VersionField
-//
-// Because GetNumber("m") parses the magic string "vRPC" -> NaN, and NaN > 1.0 is
-// false, the "client is newer than us" guard never fires. A client announcing an
-// impossibly high version is still accepted. See FINDINGS.md (BUG-1).
-func TestValidMagicAndVersion_VersionCheckBroken(t *testing.T) {
+// TestValidMagicAndVersion_RejectsNewerVersion pins the BUG-1 fix:
+// ValidMagicAndVersion must read the version out of VersionField ("v") and
+// reject a client claiming a version newer than ours.
+func TestValidMagicAndVersion_RejectsNewerVersion(t *testing.T) {
 	req := value.EmptyMap(true).
 		Put(vrpc.MagicField, value.Utf8(vrpc.Magic)).
 		Put(vrpc.VersionField, value.Double(999.0)) // pretend to be from the future
 
-	got := vrpc.ValidMagicAndVersion(req)
-	if !got {
-		t.Skip("version check appears to be FIXED — update/remove this characterization test")
+	if vrpc.ValidMagicAndVersion(req) {
+		t.Fatal("BUG-1: a newer-than-supported version must be rejected")
 	}
-	t.Log("BUG-1 still present: version 999.0 accepted because the wrong field is read")
+}
+
+// TestValidMagicAndVersion_MissingVersion: a handshake with no version field
+// must be rejected (GetNumber would silently return Zero).
+func TestValidMagicAndVersion_MissingVersion(t *testing.T) {
+	req := value.EmptyMap(true).Put(vrpc.MagicField, value.Utf8(vrpc.Magic))
+	if vrpc.ValidMagicAndVersion(req) {
+		t.Fatal("a handshake without a version field must be rejected")
+	}
 }
 
 func TestVerify_AnyAndVoid(t *testing.T) {

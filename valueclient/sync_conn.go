@@ -54,12 +54,21 @@ func (t *syncConn) hasConn() bool {
 }
 
 func (t *syncConn) getConn() *rpcConn {
-	conn := t.conn.Load().(connHolder)
-	if conn.value == nil {
-		t.active.Wait()
-		return t.getConn()
+	// BUG-17 fix: sync.Cond.Wait requires its Locker to be held; the previous
+	// code called Wait() with no lock, which panics ("unlock of unlocked
+	// mutex"). Hold the lock and loop on the predicate.
+	if conn := t.conn.Load().(connHolder); conn.value != nil {
+		return conn.value
 	}
-	return conn.value
+	t.connecting.Lock()
+	defer t.connecting.Unlock()
+	for {
+		conn := t.conn.Load().(connHolder)
+		if conn.value != nil {
+			return conn.value
+		}
+		t.active.Wait()
+	}
 }
 
 func (t *syncConn) reset() {

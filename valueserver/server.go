@@ -6,26 +6,37 @@
 package valueserver
 
 import (
-	"go.arpabet.com/value-rpc/valuerpc"
-	"github.com/pkg/errors"
-	"go.uber.org/zap"
 	"io"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/pkg/errors"
+	"go.arpabet.com/value-rpc/valuerpc"
+	"go.uber.org/zap"
 )
 
+var DefaultTimeout = 10 * time.Second
 
-var DefaultTimeout  = 10 * time.Second
+// HandshakeTimeout bounds how long a freshly accepted connection has to send a
+// valid handshake before it is dropped (slowloris protection, BUG-10). It does
+// not apply to the steady-state read loop, so long-lived idle streams are not
+// affected. Set to 0 to disable.
+var HandshakeTimeout = 10 * time.Second
+
+// KeepAlivePeriod enables TCP keepalive on accepted connections so dead peers
+// are reclaimed without killing idle streams (BUG-10).
+var KeepAlivePeriod = 15 * time.Second
 
 type rpcServer struct {
 	listener net.Listener
-	shutdown chan bool
+	shutdown chan struct{}
 	wg       sync.WaitGroup
 	logger   *zap.Logger
 
 	clientMap   sync.Map // key is clientId, value *servingClient
 	functionMap sync.Map // key is function name, value *function
+	connMap     sync.Map // key is valuerpc.MsgConn, tracks live conns for shutdown (BUG-14)
 
 	closeOnce sync.Once
 }
@@ -38,7 +49,7 @@ func NewDevelopmentServer(address string) (Server, error) {
 func NewServer(address string, logger *zap.Logger) (Server, error) {
 
 	t := &rpcServer{
-		shutdown: make(chan bool, 1),
+		shutdown: make(chan struct{}),
 		logger:   logger,
 	}
 	lis, err := net.Listen("tcp", address)
@@ -60,14 +71,25 @@ func (t *rpcServer) Close() error {
 	t.closeOnce.Do(func() {
 		t.logger.Info("shutdown vRPC server")
 
-		t.clientMap.Range(func(key, value interface{}) bool {
-			cli := value.(*servingClient)
-			cli.Close()
+		// Stop accepting and unblock Run().
+		close(t.shutdown)
+		err = t.listener.Close()
+
+		// Unblock every live connection's read loop (pre- and post-handshake)
+		// so handleConnection goroutines can exit (BUG-14).
+		t.connMap.Range(func(key, _ interface{}) bool {
+			key.(valuerpc.MsgConn).Close()
 			return true
 		})
 
-		t.shutdown <- true
-		err = t.listener.Close()
+		// Stop serving clients (senders, in-flight requests).
+		t.clientMap.Range(func(_, value interface{}) bool {
+			value.(*servingClient).Close()
+			return true
+		})
+
+		// Wait for Run() and all connection goroutines to finish.
+		t.wg.Wait()
 	})
 	return err
 }
@@ -76,6 +98,7 @@ func (t *rpcServer) Run() error {
 
 	defer t.wg.Done()
 
+	var backoff time.Duration
 	for {
 		conn, err := t.listener.Accept()
 		if err != nil {
@@ -83,34 +106,77 @@ func (t *rpcServer) Run() error {
 			case <-t.shutdown:
 				return nil
 			default:
-				t.logger.Warn("error on accept connection", zap.Error(err))
 			}
-		} else {
-			t.wg.Add(1)
-			go func() {
-				defer t.wg.Done()
-				t.logger.Info("new connection", zap.String("from", conn.RemoteAddr().String()))
-				err := t.handleConnection(valuerpc.NewMsgConn(conn, DefaultTimeout))
-				if err != nil {
+			// BUG-12 fix: back off instead of spinning at 100% CPU on a
+			// persistent accept error (e.g. EMFILE).
+			if backoff == 0 {
+				backoff = 5 * time.Millisecond
+			} else {
+				backoff *= 2
+			}
+			if backoff > time.Second {
+				backoff = time.Second
+			}
+			t.logger.Warn("error on accept connection; retrying",
+				zap.Duration("backoff", backoff), zap.Error(err))
+			time.Sleep(backoff)
+			continue
+		}
+		backoff = 0
+
+		enableKeepAlive(conn)
+		msgConn := valuerpc.NewMsgConn(conn, DefaultTimeout)
+		t.connMap.Store(msgConn, struct{}{})
+
+		t.wg.Add(1)
+		go func() {
+			defer t.wg.Done()
+			defer t.connMap.Delete(msgConn)
+			t.logger.Info("new connection", zap.String("from", conn.RemoteAddr().String()))
+			if err := t.handleConnection(msgConn); err != nil {
+				select {
+				case <-t.shutdown:
+					// expected: the read loop was unblocked by graceful shutdown
+					t.logger.Debug("connection closed on shutdown", zap.Error(err))
+				default:
 					t.logger.Error("handle connection",
 						zap.String("from", conn.RemoteAddr().String()),
 						zap.Error(err),
 					)
 				}
-			}()
-		}
+			}
+		}()
 	}
 
 }
 
+func enableKeepAlive(conn net.Conn) {
+	if tcp, ok := conn.(*net.TCPConn); ok && KeepAlivePeriod > 0 {
+		_ = tcp.SetKeepAlive(true)
+		_ = tcp.SetKeepAlivePeriod(KeepAlivePeriod)
+	}
+}
+
 func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
+
+	// Bound the time to receive a valid handshake (BUG-10), then clear the
+	// deadline so steady-state reads (which may idle on long streams) are not
+	// affected.
+	if HandshakeTimeout > 0 {
+		_ = conn.Conn().SetReadDeadline(time.Now().Add(HandshakeTimeout))
+	}
+
 	req, err := conn.ReadMessage()
 	if err != nil {
 		return nil, err
 	}
 
-	mt := req.GetNumber(valuerpc.MessageTypeField)
-	if mt == nil {
+	if HandshakeTimeout > 0 {
+		_ = conn.Conn().SetReadDeadline(time.Time{})
+	}
+
+	mt, ok := valuerpc.GetNumberField(req, valuerpc.MessageTypeField)
+	if !ok {
 		return nil, errors.Errorf("on handshake, empty message type in %s", req.String())
 	}
 
@@ -123,8 +189,8 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 	if !valuerpc.ValidMagicAndVersion(req) {
 		return nil, errors.Errorf("on handshake, unsupported client version in %s", req.String())
 	}
-	cid := req.GetNumber(valuerpc.ClientIdField)
-	if cid == nil {
+	cid, ok := valuerpc.GetNumberField(req, valuerpc.ClientIdField)
+	if !ok {
 		return nil, errors.Errorf("on handshake, no client id in %s", req.String())
 	}
 	clientId := cid.Long()

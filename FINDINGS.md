@@ -6,27 +6,62 @@ Date: 2026-06-13. Reviewed at commit `470b9c2`, after upgrading to
 Severity legend: **C** critical (panic / crash / corruption), **H** high
 (correctness or scalability), **M** medium, **L** low / style.
 
-Four of these are reproduced by automated tests (`go test ./...`); they are
-written as *characterization* tests that pass today and `t.Skip` if the bug is
-later fixed.
+> **STATUS (2026-06-13): all of BUG-1 … BUG-14 are FIXED in the working tree.**
+> The tests below were converted from characterization tests (which asserted the
+> buggy behaviour) into regression tests that assert the corrected behaviour.
+> `go build`, `go vet`, and `go test -race ./...` pass, and the example program
+> now runs end-to-end through all four patterns. BUG-15 is a
+> licensing/dependency decision and is intentionally left to the owner.
 
-| ID | Sev | One-liner | Proven by test |
-|----|-----|-----------|----------------|
-| BUG-1 | H | Handshake version check reads the wrong field | `valuerpc.TestValidMagicAndVersion_VersionCheckBroken` |
-| BUG-2 | H | `Void` function + `nil` args is always rejected | `valueserver.TestVoidArgsRejected` |
-| BUG-3 | C | Server `send()` on closed `outgoingQueue` → panic | — |
-| BUG-4 | H | Phantom `value.Null` delivered at end of every server stream | `valueserver.TestServerStreaming` |
-| BUG-5 | H | `GetNumber/GetString == nil` guards are dead code; malformed msgs mis-routed | — |
-| BUG-6 | H | Head-of-line blocking: blocking channel sends in the read/response loops | — |
-| BUG-7 | C | `Chat` double-closes the response channel → panic | `valueclient.TestRequestCtx_GetThenPutClose_DoubleClose` |
-| BUG-8 | H | Reconnect starts a second `sender()` goroutine | — |
-| BUG-9 | M | Sender re-enqueues on write error → possible deadlock | — |
-| BUG-10 | M | No server read/idle timeout; client `sla` never enforced | — |
-| BUG-11 | M | Unbounded frame length → OOM DoS | — |
-| BUG-12 | M | `Accept()` error path is a busy-loop (no backoff) | — |
-| BUG-13 | M | `canceledRequests` leak (wrong key type) + ineffective unary cancel | — |
-| BUG-14 | L | No graceful drain; `wg` is never `Wait()`ed; streamers untracked | — |
-| BUG-15 | L | License header mismatch (BUSL-1.1 vs upstream Apache-2.0); `go.uber.org/atomic` is in maintenance | — |
+| ID | Sev | One-liner | Status | Regression test |
+|----|-----|-----------|--------|-----------------|
+| BUG-1 | H | Handshake version check reads the wrong field | fixed | `valuerpc.TestValidMagicAndVersion_RejectsNewerVersion` |
+| BUG-2 | H | `Void` function + `nil` args is always rejected | fixed | `valueserver.TestVoidArgsAccepted` |
+| BUG-3 | C | Server `send()` on closed `outgoingQueue` → panic | fixed | covered by stress + example |
+| BUG-4 | H | Phantom `value.Null` at end of stream / void result | fixed | `valueserver.TestServerStreaming`, `TestChatBidirectional` |
+| BUG-5 | H | `GetNumber/GetString == nil` guards dead; malformed msgs mis-routed | fixed | `valuerpc.TestValidMagicAndVersion_MissingVersion` |
+| BUG-6 | H | Head-of-line blocking / send-on-closed in read/response loops | fixed | `valueserver.TestConcurrentUnaryCalls` |
+| BUG-7 | C | `Chat` double-closes the response channel → panic | fixed | `valueclient.TestRequestCtx_ChatClosesOnce_*` |
+| BUG-8 | H | Reconnect starts a second `sender()` goroutine | fixed | — |
+| BUG-9 | M | Sender re-enqueues on write error → possible deadlock | fixed | — |
+| BUG-10 | M | No server read/idle timeout; slowloris | fixed (keepalive + handshake deadline) | — |
+| BUG-11 | M | Unbounded frame length → OOM DoS | fixed (`MaxFrameSize`) | — |
+| BUG-12 | M | `Accept()` error path is a busy-loop (no backoff) | fixed | — |
+| BUG-13 | M | `canceledRequests` leak (wrong key type) | fixed | — |
+| BUG-14 | L | No graceful drain; `wg` never `Wait()`ed; conns untracked | fixed | — |
+| BUG-15 | L | License header mismatch; `go.uber.org/atomic` in maintenance | open (owner decision) | — |
+
+## How each fix was applied
+
+- **BUG-1 / BUG-5** — `valuerpc/protocol.go` now reads `VersionField`, and new
+  `GetNumberField` / `GetStringField` helpers distinguish "absent" from "zero".
+  All dead `== nil` guards across the client and server were replaced with these
+  helpers or `!= value.Null` checks.
+- **BUG-2** — `valuerpc/verify.go`: `Void`/`VerifyArgs`/`VerifyParams` accept
+  `value.Null` (the on-wire form of nil) and honour optional params.
+- **BUG-3 / BUG-9** — `valueserver/serving_client.go` and
+  `valueclient/connection.go` no longer `close()` the queue/`reqCh` to signal
+  shutdown; they use a `done` channel and `select`-based sends. The server
+  sender no longer re-enqueues or dies on a write error.
+- **BUG-4** — the client skips `value.Null` on `StreamValue`/`StreamEnd` and
+  converts an absent unary result to Go `nil` (`valueclient/client.go`).
+- **BUG-6** — `notifyResult` (client) and `offer` (server) deliver via
+  `select { case ch <- v: case <-done: }` with a `recover`, so they neither
+  panic on a closed channel nor block forever after close.
+- **BUG-7** — `valueclient/request.go` rewritten so `resultCh` is closed exactly
+  once (`sync.Once`), on the get-side terminal for unary/get/chat and the
+  put-side terminal for put-stream. Chat half-close is now correct on the server
+  too (`serving_request.go`): the client ending input closes only the inbound
+  channel; teardown waits for the server's output to finish.
+- **BUG-8** — exactly one long-lived sender per serving client; `replaceConn`
+  only swaps `activeConn`.
+- **BUG-10 / BUG-11 / BUG-12 / BUG-14** — `valuerpc/rpc.go` replaces goframe with
+  a bounded length-prefix codec (`MaxFrameSize`, default 16 MiB; the goframe
+  dependency was dropped). `valueserver/server.go` adds TCP keepalive, a
+  handshake read deadline, capped `Accept` backoff, live-connection tracking,
+  and a graceful `Close()` that drains via `wg.Wait()`. A `recover` in
+  `serveFunctionRequest` keeps a panicking user handler from crashing the server.
+- **BUG-13** — `canceledRequests.Delete` now uses the `int64` key.
 
 ---
 

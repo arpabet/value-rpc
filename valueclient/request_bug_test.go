@@ -11,30 +11,62 @@ import (
 	"go.arpabet.com/value"
 )
 
-// TestRequestCtx_GetThenPutClose_DoubleClose deterministically reproduces the
-// Chat double-close panic without any networking.
-//
-// A Chat request opens BOTH the get and put halves (state = getStreamFlag +
-// putStreamFlag). On a normal chat shutdown the server's StreamEnd drives
-// TryGetClose() on the response loop while the client's drained putCh drives
-// TryPutClose() in streamOut. Each method unconditionally calls
-// close(t.resultCh) when it clears *its* flag — so the second one panics with
-// "close of closed channel". See FINDINGS.md (BUG-7).
-//
-// The intended contract is "close the channel once, when the LAST half closes".
-func TestRequestCtx_GetThenPutClose_DoubleClose(t *testing.T) {
-	ctx := NewRequestCtx(1, value.EmptyMap(true), 4) // opens get+put, like Chat
+// These tests pin the BUG-7 fix: a chat request opens both the get and put
+// halves, and resultCh must be closed exactly once — when the LAST half closes
+// — regardless of order. Previously each half closed independently and the
+// second close panicked with "close of closed channel".
 
-	ctx.TryGetClose() // closes resultCh once (state 3 -> 2)
+func assertClosed(t *testing.T, ctx *rpcRequestCtx) {
+	t.Helper()
+	if _, ok := <-ctx.resultCh; ok {
+		t.Fatal("resultCh should be closed")
+	}
+}
 
-	defer func() {
-		if r := recover(); r != nil {
-			t.Logf("BUG-7 confirmed: double close panic: %v", r)
-			return
-		}
-		t.Skip("no panic: double-close appears to be FIXED — update this test")
-	}()
+func TestRequestCtx_ChatClosesOnce_GetThenPut(t *testing.T) {
+	ctx := NewRequestCtx(1, chatKind, value.EmptyMap(true), 4)
 
-	ctx.TryPutClose() // clears put flag (state 2 -> 0) and closes resultCh AGAIN -> panic
-	t.Fatalf("expected a double-close panic, got none")
+	if done := ctx.TryGetClose(); done {
+		t.Fatal("chat is not finished until the put side also closes")
+	}
+	// Must not panic (this is the BUG-7 regression guard).
+	if done := ctx.TryPutClose(); !done {
+		t.Fatal("chat must be finished once both halves close")
+	}
+	assertClosed(t, ctx)
+}
+
+func TestRequestCtx_ChatClosesOnce_PutThenGet(t *testing.T) {
+	ctx := NewRequestCtx(2, chatKind, value.EmptyMap(true), 4)
+
+	if done := ctx.TryPutClose(); done {
+		t.Fatal("chat is not finished until the get side also closes")
+	}
+	if done := ctx.TryGetClose(); !done {
+		t.Fatal("chat must be finished once both halves close")
+	}
+	assertClosed(t, ctx)
+}
+
+func TestRequestCtx_GetStreamClosesOnGet(t *testing.T) {
+	ctx := NewRequestCtx(3, getStreamKind, value.EmptyMap(true), 1)
+	if done := ctx.TryGetClose(); !done {
+		t.Fatal("get-stream is finished when the get side closes")
+	}
+	assertClosed(t, ctx)
+}
+
+func TestRequestCtx_PutStreamClosesOnPut(t *testing.T) {
+	ctx := NewRequestCtx(4, putStreamKind, value.EmptyMap(true), 1)
+	if done := ctx.TryPutClose(); !done {
+		t.Fatal("put-stream is finished when the put side closes")
+	}
+	assertClosed(t, ctx)
+}
+
+func TestRequestCtx_UnaryCloseIsIdempotent(t *testing.T) {
+	ctx := NewRequestCtx(5, unaryKind, value.EmptyMap(true), 1)
+	ctx.Close()
+	ctx.Close() // must not panic (closeOnce)
+	assertClosed(t, ctx)
 }

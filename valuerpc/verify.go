@@ -12,7 +12,9 @@ func Verify(args value.Value, def TypeDef) bool {
 		return true
 	}
 	if def == Void {
-		if args == nil {
+		// BUG-2 fix: nil args cross the wire as value.Null, so Void must accept
+		// Null as well as Go nil and empty collections.
+		if args == nil || args.Kind() == value.NULL {
 			return true
 		}
 		switch args.Kind() {
@@ -39,7 +41,7 @@ func Verify(args value.Value, def TypeDef) bool {
 }
 
 func VerifyArgs(args value.Value, argsDef ArgsDef) bool {
-	if args == nil {
+	if args == nil || args.Kind() == value.NULL {
 		return len(argsDef.List) == 0
 	}
 	if args.Kind() != value.LIST {
@@ -58,7 +60,7 @@ func VerifyArgs(args value.Value, argsDef ArgsDef) bool {
 }
 
 func VerifyParams(args value.Value, paramsDef ParamsDef) bool {
-	if args == nil {
+	if args == nil || args.Kind() == value.NULL {
 		return len(paramsDef.Map) == 0
 	}
 	if args.Kind() != value.MAP {
@@ -66,11 +68,15 @@ func VerifyParams(args value.Value, paramsDef ParamsDef) bool {
 	}
 	cache := args.(value.Map)
 	for _, paramDef := range paramsDef.Map {
-		if val := cache.Get(paramDef.Name); val != value.Null {
-			if !VerifyParam(val, paramDef) {
+		val := cache.Get(paramDef.Name)
+		if val == value.Null {
+			// absent: only an error when the param is required
+			if paramDef.Required {
 				return false
 			}
-		} else {
+			continue
+		}
+		if !VerifyParam(val, paramDef) {
 			return false
 		}
 	}

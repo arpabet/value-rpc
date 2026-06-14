@@ -4,7 +4,6 @@ go 1.25.0
 
 require (
 	github.com/pkg/errors v0.9.1
-	github.com/smallnest/goframe v1.0.0
 	go.arpabet.com/value v1.2.0
 	go.uber.org/atomic v1.11.0
 	go.uber.org/zap v1.28.0
