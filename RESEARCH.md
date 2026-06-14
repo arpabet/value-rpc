@@ -5,16 +5,18 @@ suite added under `valuerpc/`, `valueclient/`, `valueserver/`.
 
 ## 1. What this library is
 
-`value-rpc` ("vRPC") is a **small, schemaless RPC framework over raw TCP**. It
-is the transport/RPC layer built on top of the [`value`](https://github.com/arpabet/value)
-library, which provides a deterministic MessagePack value model
-(`value.Map`, `value.List`, `value.Number`, `value.String`, …).
+`value-rpc` ("vRPC") is a **small, schemaless RPC framework** with pluggable
+transports — **TCP, Unix domain sockets, and WebSocket** (see
+[TRANSPORTS.md](TRANSPORTS.md)). It is the transport/RPC layer built on top of
+the [`value`](https://github.com/arpabet/value) library, which provides a
+deterministic MessagePack value model (`value.Map`, `value.List`,
+`value.Number`, `value.String`, …).
 
 The stack, bottom to top:
 
 ```
-net.Conn (TCP, optional SOCKS5)
-  └─ goframe length-prefixed frames (4-byte big-endian length)
+transport: TCP · Unix socket · WebSocket   (optional SOCKS5 / wss TLS)
+  └─ framing: 4-byte length prefix (TCP/Unix) | one binary frame (WebSocket)
        └─ value.Pack / value.Unpack  (MessagePack, canonical)
             └─ message = value.Map with well-known fields (t, rid, fn, args, …)
                  └─ four interaction patterns
@@ -39,7 +41,7 @@ with short keys — `t` (message type), `rid` (request id), `fn` (function name)
 - **No code generation, no IDL.** Handlers take and return `value.Value`. Types
   are validated at runtime via `TypeDef`/`Verify` (`Arg`, `List`, `Map`, `Void`,
   `Any`). This is the central trade-off: less ceremony, no compile-time safety.
-- **Multiplexing over one TCP connection**, keyed by `rid`, so many concurrent
+- **Multiplexing over one connection**, keyed by `rid`, so many concurrent
   calls and streams share a socket.
 - **Session identity / resumption**: the client picks a random `cid`; on
   reconnect the server re-attaches to the same `servingClient` (its in-flight

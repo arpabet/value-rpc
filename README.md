@@ -2,16 +2,16 @@
 
 [![Value-RPC CI](https://github.com/arpabet/value-rpc/actions/workflows/build.yaml/badge.svg)](https://github.com/arpabet/value-rpc/actions/workflows/build.yaml)
 
-**vRPC** is a small, schemaless RPC framework for Go that runs over a raw TCP
-connection. It offers the same four interaction patterns as gRPC — unary,
-server‑streaming, client‑streaming, and bidirectional — but **without an IDL or
-code generation**: handlers take and return [`value`](https://github.com/arpabet/value)
-values (a deterministic MessagePack model) and argument types are checked at
-runtime.
+**vRPC** is a small, schemaless RPC framework for Go. It offers the same four
+interaction patterns as gRPC — unary, server‑streaming, client‑streaming, and
+bidirectional — but **without an IDL or code generation**: handlers take and
+return [`value`](https://github.com/arpabet/value) values (a deterministic
+MessagePack model) and argument types are checked at runtime. It runs over
+**TCP, Unix domain sockets, or WebSocket** behind one API.
 
 ```
-net.Conn (TCP, optional SOCKS5)
-  └─ length-prefixed frames  [4-byte BE length][payload]
+transport:  TCP  ·  Unix socket  ·  WebSocket        (optional SOCKS5 / wss TLS)
+  └─ framing: [4-byte BE length][payload]  (TCP/Unix)  |  one binary frame  (WebSocket)
        └─ value.Pack / value.Unpack  (MessagePack)
             └─ message = value.Map { t, rid, fn, args, res, val, err, ... }
                  └─ unary · server-stream · client-stream · chat
@@ -21,13 +21,14 @@ net.Conn (TCP, optional SOCKS5)
 
 - **No codegen, no `.proto`.** Register Go functions, call them by name.
 - **Four call patterns** multiplexed over a single connection (keyed by request id).
+- **Pluggable transports**: TCP, Unix domain sockets, and WebSocket (MessagePack) — one API, pick by address scheme.
 - **Runtime type checking** via `TypeDef` / `Verify` (`Arg`, `List`, `Map`, `Void`, `Any`).
 - **Cancellation**, **timeouts**, and a **throttle**-based flow‑control mechanism.
 - **Client session resumption** by client id across reconnects.
-- **SOCKS5** client support.
-- **Bounded frames** (`MaxFrameSize`), **TCP keepalive**, **handshake deadline**,
+- **SOCKS5** client support; **Unix peer authentication** (`SO_PEERCRED`) via a connect‑authorizer hook.
+- **Bounded frames** (`MaxFrameSize`), **keepalive**, **handshake deadline**,
   and **graceful shutdown** out of the box.
-- Tiny dependency set: `value`, `zap`, `golang.org/x/net`.
+- Small dependency set: `value`, `zap`, `golang.org/x/net`, `golang.org/x/sys`, `coder/websocket`.
 
 ## Install
 
@@ -90,7 +91,9 @@ if err != nil {
 fmt.Println(res.(value.String).String()) // Hello, world!
 ```
 
-Runnable, output‑checked versions of all patterns are in
+The example above uses TCP; the identical code works over a Unix socket or
+WebSocket by changing only the address — see [Transports](#transports). Runnable,
+output‑checked examples for every pattern and transport are in
 [`valueserver/example_test.go`](valueserver/example_test.go) (they also render on
 pkg.go.dev), and a full end‑to‑end demo is in [`example/sample.go`](example/sample.go)
 (`make run`).
@@ -150,10 +153,11 @@ Package‑level knobs (set before constructing servers/clients):
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `valuerpc.MaxFrameSize` | 16 MiB | Max inbound message size; `0` disables the check |
+| `valuerpc.MaxFrameSize` | 16 MiB | Max inbound message size; `0` disables (maps to the WebSocket read limit) |
 | `valueserver.HandshakeTimeout` | 10s | Deadline for a client to complete the handshake |
-| `valueserver.KeepAlivePeriod` | 15s | TCP keepalive on accepted connections |
-| `valueclient.KeepAlivePeriod` | 15s | TCP keepalive on dialed connections |
+| `valueserver.KeepAlivePeriod` / `valueclient.KeepAlivePeriod` | 15s | TCP keepalive (ignored on Unix sockets) |
+| `valuerpc.WSKeepAlive` | 15s | WebSocket ping interval (`0` disables) |
+| `valuerpc.WSDialTimeout` | 30s | WebSocket opening-handshake timeout |
 | `valueserver.OutgoingQueueCap` | 4096 | Per‑client server send buffer |
 | `valueserver.IncomingQueueCap` | 4096 | Per‑request inbound stream buffer |
 | `valueclient.DefaultTimeoutMls` | 1000 | Default client call timeout (ms) |
@@ -161,8 +165,10 @@ Package‑level knobs (set before constructing servers/clients):
 Per‑client: `cli.SetTimeout(ms)`, `cli.SetErrorHandler(...)`, `cli.SetMonitor(...)`,
 `cli.CancelRequest(id)`, `cli.Stats()`.
 
-There is no built‑in TLS or authentication; wrap the connection (e.g. with
-`crypto/tls`) or run behind a mesh if you need them.
+For transport security and authentication: use **`wss://`** (TLS) via the embedded
+WebSocket handler on your own TLS `http.Server`; use **Unix-socket peer
+credentials** (below) for local authz; or wrap a TCP connection with `crypto/tls`.
+There is otherwise no built‑in TLS or auth.
 
 ## Transports
 

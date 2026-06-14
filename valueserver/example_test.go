@@ -7,6 +7,8 @@ package valueserver_test
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valueclient"
@@ -145,4 +147,72 @@ func Example_chat() {
 	// Output:
 	// echo: one
 	// echo: two
+}
+
+// Example_unixSocket runs a unary call over a Unix domain socket — the same API,
+// only the address changes.
+func Example_unixSocket() {
+	sock := filepath.Join(os.TempDir(), "vrpc-example.sock")
+
+	srv, err := valueserver.NewUnixServer(sock, zap.NewNop())
+	if err != nil {
+		panic(err)
+	}
+	defer srv.Close()
+	defer os.Remove(sock)
+
+	srv.AddFunction("greet", valuerpc.List(valuerpc.String), valuerpc.String,
+		func(args value.Value) (value.Value, error) {
+			return value.Utf8("Hello, " + args.(value.List).GetStringAt(0).String() + "!"), nil
+		})
+	go srv.Run()
+
+	cli := valueclient.NewUnixClient(sock)
+	if err := cli.Connect(); err != nil {
+		panic(err)
+	}
+	defer cli.Close()
+	cli.SetTimeout(5000)
+
+	res, err := cli.CallFunction("greet", value.Tuple(value.Utf8("unix")))
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(res.(value.String).String())
+
+	// Output:
+	// Hello, unix!
+}
+
+// Example_webSocket runs a unary call over WebSocket (one MessagePack message
+// per binary frame). Use NewWebSocketHandler instead to share a port with other
+// HTTP routes or to serve wss:// from your own TLS server.
+func Example_webSocket() {
+	srv, err := valueserver.NewWebSocketServer("127.0.0.1:0", "/rpc", zap.NewNop())
+	if err != nil {
+		panic(err)
+	}
+	defer srv.Close()
+
+	srv.AddFunction("greet", valuerpc.List(valuerpc.String), valuerpc.String,
+		func(args value.Value) (value.Value, error) {
+			return value.Utf8("Hello, " + args.(value.List).GetStringAt(0).String() + "!"), nil
+		})
+	go srv.Run()
+
+	cli := valueclient.NewWebSocketClient("ws://" + srv.Addr().String() + "/rpc")
+	if err := cli.Connect(); err != nil {
+		panic(err)
+	}
+	defer cli.Close()
+	cli.SetTimeout(5000)
+
+	res, err := cli.CallFunction("greet", value.Tuple(value.Utf8("websocket")))
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(res.(value.String).String())
+
+	// Output:
+	// Hello, websocket!
 }

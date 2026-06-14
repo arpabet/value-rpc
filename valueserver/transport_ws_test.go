@@ -8,6 +8,7 @@ package valueserver_test
 import (
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 
 	"go.arpabet.com/value"
@@ -219,6 +220,39 @@ func TestWebSocket_EmbeddedHandler(t *testing.T) {
 	}
 	if got := res.(value.String).String(); got != "shared-port" {
 		t.Fatalf("result = %q, want %q", got, "shared-port")
+	}
+}
+
+// TestWebSocket_MaxFrameSize verifies that MaxFrameSize is enforced on the
+// WebSocket read limit: a payload over the limit is rejected by the server.
+func TestWebSocket_MaxFrameSize(t *testing.T) {
+	old := valuerpc.MaxFrameSize
+	valuerpc.MaxFrameSize = 512
+	defer func() { valuerpc.MaxFrameSize = old }()
+
+	srv, url := newWSServer(t, "/rpc", func(s valueserver.Server) {
+		s.AddFunction("recv", valuerpc.Any, valuerpc.String,
+			func(args value.Value) (value.Value, error) {
+				return value.Utf8("ok"), nil
+			})
+	})
+	defer srv.Close()
+
+	cli := valueclient.NewWebSocketClient(url) // SetReadLimit(512) applied on connect
+	if err := cli.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer cli.Close()
+	cli.SetTimeout(600)
+
+	// A small message round-trips.
+	if _, err := cli.CallFunction("recv", value.Tuple(value.Utf8("small"))); err != nil {
+		t.Fatalf("small call should succeed: %v", err)
+	}
+	// A message over the read limit must be rejected (server drops the frame).
+	big := strings.Repeat("x", 4096)
+	if _, err := cli.CallFunction("recv", value.Tuple(value.Utf8(big))); err == nil {
+		t.Fatal("expected an over-limit websocket message to be rejected")
 	}
 }
 
