@@ -1,17 +1,17 @@
 /*
  * Copyright (c) 2025 Karagatan LLC.
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 package valueserver
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
 	"go.arpabet.com/value"
 	vrpc "go.arpabet.com/value-rpc/valuerpc"
-	"go.uber.org/atomic"
 )
 
 var IncomingQueueCap = 4096
@@ -43,7 +43,7 @@ func NewServingRequest(ft functionType, requestId value.Number) *servingRequest 
 }
 
 func (t *servingRequest) Close() {
-	if t.closed.CAS(false, true) {
+	if t.closed.CompareAndSwap(false, true) {
 		close(t.done)
 		t.closeInboundChan()
 	}
@@ -53,7 +53,7 @@ func (t *servingRequest) Close() {
 // signalling end-of-input to the handler without tearing down the whole
 // request (used for chat half-close).
 func (t *servingRequest) closeInboundChan() {
-	if t.inClosed.CAS(false, true) {
+	if t.inClosed.CompareAndSwap(false, true) {
 		if t.inC != nil {
 			close(t.inC)
 		}
@@ -87,10 +87,10 @@ func (t *servingRequest) serveRunningRequest(msgType vrpc.MessageType, req value
 		return t.incomingStreamEnd(req, cli)
 
 	case vrpc.ThrottleIncrease:
-		t.throttleOutgoing.Inc()
+		t.throttleOutgoing.Add(1)
 
 	case vrpc.ThrottleDecrease:
-		t.throttleOutgoing.Dec()
+		t.throttleOutgoing.Add(-1)
 
 	default:
 		return errors.Errorf("unknown message type in %s", req.String())

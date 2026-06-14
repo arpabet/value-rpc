@@ -6,12 +6,13 @@ Date: 2026-06-13. Reviewed at commit `470b9c2`, after upgrading to
 Severity legend: **C** critical (panic / crash / corruption), **H** high
 (correctness or scalability), **M** medium, **L** low / style.
 
-> **STATUS (2026-06-13): all of BUG-1 … BUG-14 are FIXED in the working tree.**
+> **STATUS (2026-06-13): all of BUG-1 … BUG-15 are FIXED in the working tree.**
 > The tests below were converted from characterization tests (which asserted the
 > buggy behaviour) into regression tests that assert the corrected behaviour.
-> `go build`, `go vet`, and `go test -race ./...` pass, and the example program
-> now runs end-to-end through all four patterns. BUG-15 is a
-> licensing/dependency decision and is intentionally left to the owner.
+> `go build`, `go vet`, `go test -race ./...`, and `govulncheck ./...` pass, and
+> the example program runs end-to-end through all four patterns. A GitHub Actions
+> workflow (`.github/workflows/build.yaml`) runs build/vet/race-test on a
+> Go 1.25/1.26 matrix plus govulncheck.
 
 | ID | Sev | One-liner | Status | Regression test |
 |----|-----|-----------|--------|-----------------|
@@ -29,7 +30,7 @@ Severity legend: **C** critical (panic / crash / corruption), **H** high
 | BUG-12 | M | `Accept()` error path is a busy-loop (no backoff) | fixed | — |
 | BUG-13 | M | `canceledRequests` leak (wrong key type) | fixed | — |
 | BUG-14 | L | No graceful drain; `wg` never `Wait()`ed; conns untracked | fixed | — |
-| BUG-15 | L | License header mismatch; `go.uber.org/atomic` in maintenance | open (owner decision) | — |
+| BUG-15 | L | License header mismatch; `go.uber.org/atomic` in maintenance | fixed | — |
 
 ## How each fix was applied
 
@@ -62,6 +63,12 @@ Severity legend: **C** critical (panic / crash / corruption), **H** high
   and a graceful `Close()` that drains via `wg.Wait()`. A `recover` in
   `serveFunctionRequest` keeps a panicking user handler from crashing the server.
 - **BUG-13** — `canceledRequests.Delete` now uses the `int64` key.
+- **BUG-15** — relicensed BUSL-1.1 → Apache-2.0 to match upstream `value`
+  (`LICENSE` replaced; all 19 `.go` SPDX headers updated), and migrated off the
+  maintenance-mode `go.uber.org/atomic` to stdlib `sync/atomic` (Go 1.25 generic
+  types). `atomic.Error` (no stdlib equivalent) became `atomic.Pointer[error]`;
+  `.Inc()/.Dec()` → `.Add(±1)`; `.CAS()` → `.CompareAndSwap()`. The dependency
+  was dropped from `go.mod`.
 
 ---
 

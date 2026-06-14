@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2025 Karagatan LLC.
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 package valueserver
@@ -8,11 +8,11 @@ package valueserver
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pkg/errors"
 	"go.arpabet.com/value"
 	vrpc "go.arpabet.com/value-rpc/valuerpc"
-	"go.uber.org/atomic"
 	"go.uber.org/zap"
 )
 

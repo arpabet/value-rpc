@@ -5,9 +5,20 @@ all: build
 version:
 	@echo $(VERSION)
 
-build: version
-	go test -cover ./...
+clean:
+	go clean -i ./...
+
+vet:
+	go vet ./...
+
+test: vet
+	go test -race -cover ./...
+
+build: test
 	go build -v ./example/sample.go
+
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 update:
 	go get -u ./...

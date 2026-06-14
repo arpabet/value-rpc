@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2025 Karagatan LLC.
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 package valueclient
@@ -10,12 +10,12 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
-	"go.uber.org/atomic"
 )
 
 type responseHandler func(resp value.Map)
@@ -209,10 +209,10 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 		t.requestCtxMap.Delete(requestCtx.requestId)
 
 	case valuerpc.ThrottleIncrease:
-		requestCtx.throttleOutgoing.Inc()
+		requestCtx.throttleOutgoing.Add(1)
 
 	case valuerpc.ThrottleDecrease:
-		requestCtx.throttleOutgoing.Dec()
+		requestCtx.throttleOutgoing.Add(-1)
 
 	default:
 		t.getErrorHandler().ProtocolError(resp, ErrUnsupportedMessageType)
@@ -225,10 +225,10 @@ func (t *rpcClient) regulateIncomingStream(requestCtx *rpcRequestCtx) {
 	used, cap := requestCtx.Stats()
 	if used*3 > cap {
 		t.sendSystemRequest(requestCtx.requestId, valuerpc.ThrottleIncrease)
-		requestCtx.throttleOnServer.Inc()
+		requestCtx.throttleOnServer.Add(1)
 	} else if used == 0 && requestCtx.throttleOnServer.Load() > 0 {
 		t.sendSystemRequest(requestCtx.requestId, valuerpc.ThrottleDecrease)
-		requestCtx.throttleOnServer.Dec()
+		requestCtx.throttleOnServer.Add(-1)
 	}
 }
 
@@ -287,7 +287,7 @@ func (t *rpcClient) sendRequest(kind streamKind, req value.Map, receiveCap int) 
 		return nil, err
 	}
 
-	requestId := t.lastRequest.Inc()
+	requestId := t.lastRequest.Add(1)
 	req = req.Put(valuerpc.RequestIdField, value.Long(requestId))
 
 	requestCtx := t.newRequestCtx(requestId, kind, req, receiveCap)

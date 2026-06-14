@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2025 Karagatan LLC.
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 package valuerpc
@@ -12,11 +12,11 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
 	"go.arpabet.com/value"
-	"go.uber.org/atomic"
 )
 
 var (

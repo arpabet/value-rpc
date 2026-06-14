@@ -1,17 +1,17 @@
 /*
  * Copyright (c) 2025 Karagatan LLC.
- * SPDX-License-Identifier: BUSL-1.1
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 package valueclient
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
-	"go.uber.org/atomic"
 )
 
 type streamKind int
@@ -44,7 +44,7 @@ type rpcRequestCtx struct {
 	getClosed atomic.Bool // no more server->client values will be delivered
 	putClosed atomic.Bool // client->server side (streamOut) has finished
 
-	resultErr        atomic.Error
+	resultErr        atomic.Pointer[error] // stdlib has no atomic.Error
 	throttleOutgoing atomic.Int64
 	throttleOnServer atomic.Int64
 }
@@ -138,13 +138,12 @@ func (t *rpcRequestCtx) TryPutClose() bool {
 }
 
 func (t *rpcRequestCtx) SetError(err error) {
-	t.resultErr.Store(err)
+	t.resultErr.Store(&err)
 }
 
 func (t *rpcRequestCtx) Error(defaultError error) error {
-	e := t.resultErr.Load()
-	if e != nil {
-		return e
+	if e := t.resultErr.Load(); e != nil {
+		return *e
 	}
 	return defaultError
 }
