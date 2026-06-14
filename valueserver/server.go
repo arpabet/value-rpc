@@ -101,8 +101,6 @@ func (t *rpcServer) Run() error {
 		}
 	}
 
-	return nil
-
 }
 
 func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
