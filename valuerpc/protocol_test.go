@@ -136,6 +136,66 @@ func TestVerify_Params(t *testing.T) {
 	}
 }
 
+func TestVerify_AnyAcceptsNull(t *testing.T) {
+	if !vrpc.Verify(nil, vrpc.Any) {
+		t.Error("Any must accept Go nil")
+	}
+	if !vrpc.Verify(value.Null, vrpc.Any) {
+		t.Error("Any must accept value.Null (the on-wire form of nil args)")
+	}
+}
+
+// TestVerify_VoidVariants pins BUG-2: Void must accept Go nil, value.Null, and
+// empty collections, and reject anything non-empty.
+func TestVerify_VoidVariants(t *testing.T) {
+	accept := []value.Value{
+		nil,
+		value.Null,
+		value.EmptyList(true),
+		value.EmptyMap(true),
+	}
+	for i, v := range accept {
+		if !vrpc.Verify(v, vrpc.Void) {
+			t.Errorf("Void must accept case %d (%v)", i, v)
+		}
+	}
+	if vrpc.Verify(value.Tuple(value.Long(1)), vrpc.Void) {
+		t.Error("Void must reject a non-empty list")
+	}
+}
+
+// TestVerify_ArgsNull pins BUG-2 for the args path: an empty ArgsDef must accept
+// value.Null (nil args on the wire), while a non-empty one must reject it.
+func TestVerify_ArgsNull(t *testing.T) {
+	if !vrpc.Verify(value.Null, vrpc.List()) {
+		t.Error("empty ArgsDef must accept Null (no args)")
+	}
+	if vrpc.Verify(value.Null, vrpc.List(vrpc.String)) {
+		t.Error("non-empty ArgsDef must reject Null")
+	}
+}
+
+func TestVerify_OptionalParam(t *testing.T) {
+	def := vrpc.Map(
+		vrpc.Param("name", value.STRING, true),
+		vrpc.Param("nick", value.STRING, false), // optional
+	)
+
+	// optional param absent: OK
+	ok := value.EmptyMap(true).Put("name", value.Utf8("alex"))
+	if !vrpc.Verify(ok, def) {
+		t.Error("an absent optional param must be allowed")
+	}
+
+	// optional param present but wrong type: rejected
+	wrong := value.EmptyMap(true).
+		Put("name", value.Utf8("alex")).
+		Put("nick", value.Long(5))
+	if vrpc.Verify(wrong, def) {
+		t.Error("a present optional param with the wrong type must be rejected")
+	}
+}
+
 func TestMessageTypeLong(t *testing.T) {
 	for _, mt := range []vrpc.MessageType{
 		vrpc.HandshakeRequest, vrpc.FunctionRequest, vrpc.ChatRequest, vrpc.StreamEnd,

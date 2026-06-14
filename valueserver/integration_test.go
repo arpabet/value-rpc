@@ -7,7 +7,6 @@ package valueserver_test
 
 import (
 	"fmt"
-	"net"
 	"sync"
 	"testing"
 	"time"
@@ -19,33 +18,17 @@ import (
 	"go.uber.org/zap"
 )
 
-// freeAddr returns a loopback address that is free at call time. There is a
-// tiny race between releasing it and the server re-binding, which is acceptable
-// for tests.
-func freeAddr(t testing.TB) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve port: %v", err)
-	}
-	defer l.Close()
-	return l.Addr().String()
-}
-
-// newServer starts a server with the given setup and returns its address plus a
-// cleanup func.
+// newServer starts a server bound to an ephemeral port and returns its actual
+// address plus a cleanup func. Using Addr() avoids any reserve/rebind race.
 func newServer(t testing.TB, setup func(s valueserver.Server)) (string, func()) {
 	t.Helper()
-	addr := freeAddr(t)
-	srv, err := valueserver.NewServer(addr, zap.NewNop())
+	srv, err := valueserver.NewServer("127.0.0.1:0", zap.NewNop())
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
 	setup(srv)
 	go srv.Run()
-	// give the listener a moment to start accepting
-	time.Sleep(50 * time.Millisecond)
-	return addr, func() { srv.Close() }
+	return srv.Addr().String(), func() { srv.Close() }
 }
 
 func dialClient(t testing.TB, addr string) valueclient.Client {
@@ -376,4 +359,272 @@ func BenchmarkUnaryCallParallel(b *testing.B) {
 			}
 		}
 	})
+}
+
+// TestServerSurvivesHandlerPanic verifies the recover added to the request
+// goroutine (BUG-3 family): a panicking handler must not crash the server, and
+// subsequent calls must still succeed.
+func TestServerSurvivesHandlerPanic(t *testing.T) {
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("boom", valuerpc.Any, valuerpc.Any,
+			func(args value.Value) (value.Value, error) {
+				panic("handler exploded")
+			})
+		s.AddFunction("ok", valuerpc.Any, valuerpc.String,
+			func(args value.Value) (value.Value, error) {
+				return value.Utf8("alive"), nil
+			})
+	})
+	defer stop()
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+	cli.SetTimeout(500)
+
+	// The panicking call gets no response and times out — but must not crash
+	// the server.
+	_, _ = cli.CallFunction("boom", nil)
+
+	cli.SetTimeout(3000)
+	res, err := cli.CallFunction("ok", nil)
+	if err != nil {
+		t.Fatalf("server did not survive a handler panic: %v", err)
+	}
+	if got := res.(value.String).String(); got != "alive" {
+		t.Fatalf("result = %q, want %q", got, "alive")
+	}
+}
+
+// TestGracefulShutdown verifies Close() drains and returns promptly (BUG-14).
+func TestGracefulShutdown(t *testing.T) {
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("ping", valuerpc.Any, valuerpc.String,
+			func(args value.Value) (value.Value, error) {
+				return value.Utf8("pong"), nil
+			})
+	})
+
+	cli := dialClient(t, addr)
+	if _, err := cli.CallFunction("ping", nil); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	cli.Close()
+
+	done := make(chan struct{})
+	go func() { stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close() did not return within 5s — graceful drain hung")
+	}
+}
+
+func TestWrongArgTypeRejected(t *testing.T) {
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("needsNumber", valuerpc.List(valuerpc.Number), valuerpc.Number,
+			func(args value.Value) (value.Value, error) {
+				return args.(value.List).GetNumberAt(0), nil
+			})
+	})
+	defer stop()
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+
+	if _, err := cli.CallFunction("needsNumber", value.Tuple(value.Utf8("not a number"))); err == nil {
+		t.Fatal("expected arg verification to reject a wrong-typed argument")
+	}
+}
+
+// TestLargeServerStream pushes enough values to overflow the receive buffer,
+// exercising the throttle/backpressure path, and checks every value arrives in
+// order with no loss and no phantom Null.
+func TestLargeServerStream(t *testing.T) {
+	const n = 10000
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddOutgoingStream("range", valuerpc.Any,
+			func(args value.Value) (<-chan value.Value, error) {
+				out := make(chan value.Value)
+				go func() {
+					defer close(out)
+					for i := 0; i < n; i++ {
+						out <- value.Long(int64(i))
+					}
+				}()
+				return out, nil
+			})
+	})
+	defer stop()
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+	cli.SetTimeout(5000)
+
+	readC, _, err := cli.GetStream("range", nil, 256)
+	if err != nil {
+		t.Fatalf("get stream: %v", err)
+	}
+	count := 0
+	for v := range readC {
+		if v == nil || v.Kind() == value.NULL {
+			t.Fatalf("BUG-4: phantom Null on large stream")
+		}
+		if got := v.(value.Number).Long(); got != int64(count) {
+			t.Fatalf("value %d out of order: got %d", count, got)
+		}
+		count++
+	}
+	if count != n {
+		t.Fatalf("received %d values, want %d", count, n)
+	}
+}
+
+// TestMultipleConcurrentStreams opens several server streams over one client
+// connection at once; each must receive exactly its own ordered values (correct
+// requestId multiplexing under load).
+func TestMultipleConcurrentStreams(t *testing.T) {
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddOutgoingStream("seq", valuerpc.List(valuerpc.Number, valuerpc.Number),
+			func(args value.Value) (<-chan value.Value, error) {
+				l := args.(value.List)
+				start := l.GetNumberAt(0).Long()
+				cnt := l.GetNumberAt(1).Long()
+				out := make(chan value.Value)
+				go func() {
+					defer close(out)
+					for i := int64(0); i < cnt; i++ {
+						out <- value.Long(start + i)
+					}
+				}()
+				return out, nil
+			})
+	})
+	defer stop()
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+	cli.SetTimeout(5000)
+
+	const streams = 8
+	const per = 500
+	var wg sync.WaitGroup
+	errc := make(chan error, streams)
+
+	for s := 0; s < streams; s++ {
+		wg.Add(1)
+		go func(base int64) {
+			defer wg.Done()
+			readC, _, err := cli.GetStream("seq", value.Tuple(value.Long(base*per), value.Long(per)), 64)
+			if err != nil {
+				errc <- fmt.Errorf("stream %d: %w", base, err)
+				return
+			}
+			want := base * per
+			for v := range readC {
+				if v == nil || v.Kind() == value.NULL {
+					continue
+				}
+				if got := v.(value.Number).Long(); got != want {
+					errc <- fmt.Errorf("stream %d: got %d want %d (cross-talk?)", base, got, want)
+					return
+				}
+				want++
+			}
+			if want != base*per+per {
+				errc <- fmt.Errorf("stream %d incomplete: ended at %d", base, want)
+			}
+		}(int64(s))
+	}
+
+	wg.Wait()
+	close(errc)
+	for err := range errc {
+		t.Error(err)
+	}
+}
+
+// BenchmarkServerStreamRecv measures per-value server-streaming throughput: a
+// single stream delivers b.N values over loopback.
+func BenchmarkServerStreamRecv(b *testing.B) {
+	addr, stop := newServer(b, func(s valueserver.Server) {
+		s.AddOutgoingStream("range", valuerpc.List(valuerpc.Number),
+			func(args value.Value) (<-chan value.Value, error) {
+				n := args.(value.List).GetNumberAt(0).Long()
+				out := make(chan value.Value, 256)
+				go func() {
+					defer close(out)
+					for i := int64(0); i < n; i++ {
+						out <- value.Long(i)
+					}
+				}()
+				return out, nil
+			})
+	})
+	defer stop()
+
+	cli := dialClient(b, addr)
+	defer cli.Close()
+	cli.SetTimeout(60000)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	readC, _, err := cli.GetStream("range", value.Tuple(value.Long(int64(b.N))), 256)
+	if err != nil {
+		b.Fatal(err)
+	}
+	got := 0
+	for v := range readC {
+		if v != nil && v.Kind() != value.NULL {
+			got++
+		}
+	}
+	if got != b.N {
+		b.Fatalf("received %d values, want %d", got, b.N)
+	}
+}
+
+// BenchmarkChatEcho measures bidirectional round-trip throughput: b.N messages
+// are echoed back over a single chat.
+func BenchmarkChatEcho(b *testing.B) {
+	addr, stop := newServer(b, func(s valueserver.Server) {
+		s.AddChat("echo", valuerpc.Any,
+			func(args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
+				out := make(chan value.Value, 64)
+				go func() {
+					defer close(out)
+					for v := range inC {
+						out <- v
+					}
+				}()
+				return out, nil
+			})
+	})
+	defer stop()
+
+	cli := dialClient(b, addr)
+	defer cli.Close()
+	cli.SetTimeout(60000)
+
+	sendC := make(chan value.Value, 64)
+	readC, _, err := cli.Chat("echo", nil, 64, sendC)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	msg := value.Utf8("ping")
+	b.ReportAllocs()
+	b.ResetTimer()
+	go func() {
+		for i := 0; i < b.N; i++ {
+			sendC <- msg
+		}
+		close(sendC)
+	}()
+	got := 0
+	for range readC {
+		got++
+	}
+	if got != b.N {
+		b.Fatalf("received %d echoes, want %d", got, b.N)
+	}
 }

@@ -38,9 +38,15 @@ type MsgConn interface {
 
 	WriteMessage(msg value.Map) error
 
-	Close() error
+	// SetReadDeadline bounds the next ReadMessage; the zero time clears it. Used
+	// by the handshake timeout. Transports without a meaningful deadline may
+	// implement this as a best-effort no-op.
+	SetReadDeadline(deadline time.Time) error
 
-	Conn() net.Conn
+	// RemoteAddr is the peer address, for logging.
+	RemoteAddr() string
+
+	Close() error
 }
 
 func NewMsgConn(conn net.Conn, timeout time.Duration) MsgConn {
@@ -110,11 +116,18 @@ func (t *messageConnAdapter) doWriteFrame(payload []byte) error {
 	return err
 }
 
+func (t *messageConnAdapter) SetReadDeadline(deadline time.Time) error {
+	return t.conn.SetReadDeadline(deadline)
+}
+
+func (t *messageConnAdapter) RemoteAddr() string {
+	if addr := t.conn.RemoteAddr(); addr != nil {
+		return addr.String()
+	}
+	return ""
+}
+
 func (t *messageConnAdapter) Close() error {
 	t.shutdown.Store(true)
 	return t.conn.Close()
-}
-
-func (t *messageConnAdapter) Conn() net.Conn {
-	return t.conn
 }

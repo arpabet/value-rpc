@@ -25,11 +25,12 @@ var DefaultTimeout = 10 * time.Second
 var HandshakeTimeout = 10 * time.Second
 
 // KeepAlivePeriod enables TCP keepalive on accepted connections so dead peers
-// are reclaimed without killing idle streams (BUG-10).
+// are reclaimed without killing idle streams (BUG-10). Ignored for non-TCP
+// transports (e.g. Unix sockets).
 var KeepAlivePeriod = 15 * time.Second
 
 type rpcServer struct {
-	listener net.Listener
+	listener valuerpc.Listener
 	shutdown chan struct{}
 	wg       sync.WaitGroup
 	logger   *zap.Logger
@@ -46,24 +47,34 @@ func NewDevelopmentServer(address string) (Server, error) {
 	return NewServer(address, logger)
 }
 
+// NewServer creates a TCP server bound to address ("host:port"). For other
+// transports use NewServerWithListener.
 func NewServer(address string, logger *zap.Logger) (Server, error) {
-
-	t := &rpcServer{
-		shutdown: make(chan struct{}),
-		logger:   logger,
-	}
-	lis, err := net.Listen("tcp", address)
+	lis, err := valuerpc.NewStreamListener("tcp", address, KeepAlivePeriod, DefaultTimeout)
 	if err != nil {
 		logger.Error("bind the server port",
 			zap.String("addr", address),
 			zap.Error(err))
 		return nil, err
 	}
-	t.listener = lis
-	t.wg.Add(1)
-	logger.Info("start vRPC server", zap.String("addr", address))
-	return t, nil
+	return NewServerWithListener(lis, logger)
+}
 
+// NewServerWithListener creates a server over any transport (TCP, Unix socket,
+// WebSocket, …) supplied as a valuerpc.Listener.
+func NewServerWithListener(lis valuerpc.Listener, logger *zap.Logger) (Server, error) {
+	t := &rpcServer{
+		shutdown: make(chan struct{}),
+		logger:   logger,
+		listener: lis,
+	}
+	t.wg.Add(1)
+	logger.Info("start vRPC server", zap.String("addr", lis.Addr().String()))
+	return t, nil
+}
+
+func (t *rpcServer) Addr() net.Addr {
+	return t.listener.Addr()
 }
 
 func (t *rpcServer) Close() error {
@@ -100,7 +111,7 @@ func (t *rpcServer) Run() error {
 
 	var backoff time.Duration
 	for {
-		conn, err := t.listener.Accept()
+		msgConn, err := t.listener.Accept()
 		if err != nil {
 			select {
 			case <-t.shutdown:
@@ -124,15 +135,14 @@ func (t *rpcServer) Run() error {
 		}
 		backoff = 0
 
-		enableKeepAlive(conn)
-		msgConn := valuerpc.NewMsgConn(conn, DefaultTimeout)
+		// The Listener has already applied transport framing and keepalive.
 		t.connMap.Store(msgConn, struct{}{})
 
 		t.wg.Add(1)
 		go func() {
 			defer t.wg.Done()
 			defer t.connMap.Delete(msgConn)
-			t.logger.Info("new connection", zap.String("from", conn.RemoteAddr().String()))
+			t.logger.Info("new connection", zap.String("from", msgConn.RemoteAddr()))
 			if err := t.handleConnection(msgConn); err != nil {
 				select {
 				case <-t.shutdown:
@@ -140,7 +150,7 @@ func (t *rpcServer) Run() error {
 					t.logger.Debug("connection closed on shutdown", zap.Error(err))
 				default:
 					t.logger.Error("handle connection",
-						zap.String("from", conn.RemoteAddr().String()),
+						zap.String("from", msgConn.RemoteAddr()),
 						zap.Error(err),
 					)
 				}
@@ -150,20 +160,13 @@ func (t *rpcServer) Run() error {
 
 }
 
-func enableKeepAlive(conn net.Conn) {
-	if tcp, ok := conn.(*net.TCPConn); ok && KeepAlivePeriod > 0 {
-		_ = tcp.SetKeepAlive(true)
-		_ = tcp.SetKeepAlivePeriod(KeepAlivePeriod)
-	}
-}
-
 func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 
 	// Bound the time to receive a valid handshake (BUG-10), then clear the
 	// deadline so steady-state reads (which may idle on long streams) are not
 	// affected.
 	if HandshakeTimeout > 0 {
-		_ = conn.Conn().SetReadDeadline(time.Now().Add(HandshakeTimeout))
+		_ = conn.SetReadDeadline(time.Now().Add(HandshakeTimeout))
 	}
 
 	req, err := conn.ReadMessage()
@@ -172,7 +175,7 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 	}
 
 	if HandshakeTimeout > 0 {
-		_ = conn.Conn().SetReadDeadline(time.Time{})
+		_ = conn.SetReadDeadline(time.Time{})
 	}
 
 	mt, ok := valuerpc.GetNumberField(req, valuerpc.MessageTypeField)

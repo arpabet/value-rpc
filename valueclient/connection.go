@@ -6,19 +6,19 @@
 package valueclient
 
 import (
-	"net"
 	"sync"
 	"time"
 
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
-	"golang.org/x/net/proxy"
 )
 
+// DefaultTimeout bounds each message write on the connection.
 var DefaultTimeout = 10 * time.Second
 
 // KeepAlivePeriod enables TCP keepalive so dead peers are detected and their
 // goroutines/fds reclaimed without killing idle-but-healthy streams (BUG-10).
+// Ignored for non-TCP transports (e.g. Unix sockets).
 var KeepAlivePeriod = 15 * time.Second
 
 type rpcConn struct {
@@ -30,39 +30,15 @@ type rpcConn struct {
 	closeOnce    sync.Once
 }
 
-func dial(address, socks5 string) (net.Conn, error) {
-	if socks5 != "" {
-		d, err := proxy.SOCKS5("tcp", socks5, nil, proxy.Direct)
-		if err != nil {
-			return nil, err
-		}
-		return d.Dial("tcp", address)
-	} else {
-		conn, err := net.Dial("tcp", address)
-		if err != nil {
-			return nil, err
-		}
-		enableKeepAlive(conn)
-		return conn, nil
-	}
-}
+func newConn(dialer valuerpc.Dialer, clientId int64, sendingCap int64, respHandler responseHandler, errorHandler ErrorHandler) (*rpcConn, error) {
 
-func enableKeepAlive(conn net.Conn) {
-	if tcp, ok := conn.(*net.TCPConn); ok && KeepAlivePeriod > 0 {
-		_ = tcp.SetKeepAlive(true)
-		_ = tcp.SetKeepAlivePeriod(KeepAlivePeriod)
-	}
-}
-
-func newConn(address, socks5 string, clientId int64, sendingCap int64, respHandler responseHandler, errorHandler ErrorHandler) (*rpcConn, error) {
-
-	conn, err := dial(address, socks5)
+	conn, err := dialer.Dial()
 	if err != nil {
 		return nil, err
 	}
 
 	t := &rpcConn{
-		conn:         valuerpc.NewMsgConn(conn, DefaultTimeout),
+		conn:         conn,
 		reqCh:        make(chan value.Map, sendingCap),
 		respHandler:  respHandler,
 		errorHandler: errorHandler,

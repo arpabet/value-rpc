@@ -6,6 +6,8 @@
 package valueserver
 
 import (
+	"net"
+
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
 )
@@ -27,6 +29,10 @@ type Server interface {
 
 	// Dual channel chat
 	AddChat(name string, args valuerpc.TypeDef, cb Chat) error
+
+	// Addr returns the address the server is listening on. Useful when binding
+	// to an ephemeral port (":0").
+	Addr() net.Addr
 
 	Run() error
 

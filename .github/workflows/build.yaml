@@ -29,6 +29,21 @@ jobs:
       - name: Test
         run: go test -race -cover ./...
 
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      # Smoke-run every benchmark a few iterations so they keep compiling and
+      # running; this is a correctness gate, not a measurement.
+      - name: Benchmarks
+        run: go test -run='^$' -bench=. -benchmem -benchtime=20x ./...
+
   govulncheck:
     runs-on: ubuntu-latest
     steps:

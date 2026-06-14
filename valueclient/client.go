@@ -24,8 +24,7 @@ var DefaultSendingCap = int64(1024)
 var DefaultTimeoutMls = int64(1000) // one second
 
 type rpcClient struct {
-	address           string
-	socks5            string
+	dialer            valuerpc.Dialer
 	clientId          int64
 	sendingCap        int64
 	conn              *syncConn
@@ -39,11 +38,18 @@ type rpcClient struct {
 	shuttingDown      atomic.Bool
 }
 
+// NewClient creates a TCP client. address is "host:port"; a non-empty socks5
+// routes through a SOCKS5 proxy. For other transports use NewClientWithDialer.
 func NewClient(address, socks5 string) Client {
+	return NewClientWithDialer(valuerpc.NewStreamDialer("tcp", address, socks5, KeepAlivePeriod, DefaultTimeout))
+}
+
+// NewClientWithDialer creates a client over any transport (TCP, Unix socket,
+// WebSocket, …) supplied as a valuerpc.Dialer.
+func NewClientWithDialer(dialer valuerpc.Dialer) Client {
 
 	t := &rpcClient{
-		address:    address,
-		socks5:     socks5,
+		dialer:     dialer,
 		clientId:   rand.Int63(),
 		sendingCap: DefaultSendingCap,
 		conn:       NewSyncConn(),
@@ -145,7 +151,7 @@ func (t *rpcClient) Connect() error {
 	if t.conn.hasConn() {
 		return nil
 	}
-	return t.conn.connect(t.address, t.socks5, t.clientId, t.sendingCap, t.getResponseHandler(), t.getErrorHandler())
+	return t.conn.connect(t.dialer, t.clientId, t.sendingCap, t.getResponseHandler(), t.getErrorHandler())
 }
 
 func (t *rpcClient) Reconnect() error {

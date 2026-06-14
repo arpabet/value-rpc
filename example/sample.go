@@ -18,8 +18,6 @@ import (
 )
 
 
-var testAddress = "localhost:9999"
-
 var firstName = ""
 var lastName = ""
 
@@ -104,9 +102,14 @@ func echoChat(args value.Value, inC <-chan value.Value) (<-chan value.Value, err
 	return outC, nil
 }
 
+// run is an end-to-end demo of all four interaction patterns: a unary call
+// (setName/getName), a server stream (scanNames), a client stream (uploadNames),
+// and a bidirectional chat (echoChat). The "Timeout received" line is expected —
+// getName is called once with SetTimeout(0) on purpose to show the timeout path.
 func run() error {
 
-	srv, err := valueserver.NewDevelopmentServer(testAddress)
+	// Bind an ephemeral port and read the actual address back via Addr().
+	srv, err := valueserver.NewDevelopmentServer("127.0.0.1:0")
 	if err != nil {
 		return err
 	}
@@ -125,7 +128,7 @@ func run() error {
 
 	var wg sync.WaitGroup
 
-	cli := valueclient.NewClient(testAddress, "")
+	cli := valueclient.NewClient(srv.Addr().String(), "")
 	err = cli.Connect()
 	if err != nil {
 		return err
@@ -151,7 +154,7 @@ func run() error {
 	cli.SetTimeout(0)
 	name, err := cli.CallFunction("getName", nil)
 	if err == valueclient.ErrTimeoutError {
-		fmt.Println("TImeout received")
+		fmt.Println("Timeout received")
 	} else {
 		fmt.Println(name)
 	}

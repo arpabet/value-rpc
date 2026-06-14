@@ -8,8 +8,9 @@ package valueclient
 import (
 	"sync"
 	"sync/atomic"
-)
 
+	"go.arpabet.com/value-rpc/valuerpc"
+)
 
 type syncConn struct {
 	connecting sync.Mutex
@@ -29,7 +30,7 @@ func NewSyncConn() *syncConn {
 	return t
 }
 
-func (t *syncConn) connect(address, socks5 string, clientId, sendingCap int64, respHandler responseHandler, errorHandler ErrorHandler) error {
+func (t *syncConn) connect(dialer valuerpc.Dialer, clientId, sendingCap int64, respHandler responseHandler, errorHandler ErrorHandler) error {
 
 	t.connecting.Lock()
 	defer t.connecting.Unlock()
@@ -38,7 +39,7 @@ func (t *syncConn) connect(address, socks5 string, clientId, sendingCap int64, r
 		return nil
 	}
 
-	conn, err := newConn(address, socks5, clientId, sendingCap, respHandler, errorHandler)
+	conn, err := newConn(dialer, clientId, sendingCap, respHandler, errorHandler)
 	if err != nil {
 		return err
 	}
