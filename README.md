@@ -237,7 +237,10 @@ once a consumer falls behind; size the receive buffers for your workload.
 
 ## Project status
 
-Pre‑1.0. The library was recently hardened — see [FINDINGS.md](FINDINGS.md) for
+See [CHANGELOG.md](CHANGELOG.md) for release notes (the current release, **v1.2.0**,
+adds the three transports plus a major hardening pass).
+
+Pre‑1.0 in maturity. The library was recently hardened — see [FINDINGS.md](FINDINGS.md) for
 the bugs that were found and fixed (crash, correctness, DoS, and lifecycle
 issues) and [RESEARCH.md](RESEARCH.md) for how it compares to gRPC / WebSocket /
 msgpack‑rpc and a high‑load/concurrency analysis. Known larger items still open:
