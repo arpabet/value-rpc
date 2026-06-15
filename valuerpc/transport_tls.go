@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Karagatan LLC.
+ * Copyright (c) 2025-2026 Karagatan LLC.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -58,10 +58,12 @@ func (d *tlsDialer) Dial() (MsgConn, error) {
 	return NewMsgConn(conn, d.writeTimeout), nil
 }
 
-// tlsState reports the TLS connection state when the underlying connection is a
-// *tls.Conn, completing the handshake first. Handshake errors (e.g. an mTLS
-// client with no valid certificate) surface on the subsequent read.
-func (t *messageConnAdapter) tlsState() (tls.ConnectionState, bool) {
+// TLSConnectionState reports the TLS connection state when the underlying
+// connection is a *tls.Conn, completing the handshake first. Handshake errors
+// (e.g. an mTLS client with no valid certificate) surface on the subsequent
+// read. It is exported so transports in other packages (e.g. the QUIC submodule)
+// can implement the same hook for PeerCertificates.
+func (t *messageConnAdapter) TLSConnectionState() (tls.ConnectionState, bool) {
 	tc, ok := t.conn.(*tls.Conn)
 	if !ok {
 		return tls.ConnectionState{}, false
@@ -70,19 +72,23 @@ func (t *messageConnAdapter) tlsState() (tls.ConnectionState, bool) {
 	return tc.ConnectionState(), true
 }
 
+// TLSStateConn is implemented by MsgConns whose transport is TLS-backed (TLS over
+// TCP, or QUIC). PeerCertificates uses it to expose the verified peer chain.
+type TLSStateConn interface {
+	TLSConnectionState() (tls.ConnectionState, bool)
+}
+
 // PeerCertificates returns the verified peer (client) certificate chain for a
-// TLS MsgConn, completing the handshake if needed. ok is false for non-TLS
-// transports and when the peer presented no certificate. Use it inside a
-// valueserver connect-authorizer for certificate-based authorization — the TLS
-// analogue of PeerCredOf for Unix sockets.
+// TLS-backed MsgConn (TLS or QUIC), completing the handshake if needed. ok is
+// false for non-TLS transports and when the peer presented no certificate. Use
+// it inside a valueserver connect-authorizer for certificate-based authorization
+// — the TLS analogue of PeerCredOf for Unix sockets.
 func PeerCertificates(conn MsgConn) (certs []*x509.Certificate, ok bool) {
-	ts, isTLS := conn.(interface {
-		tlsState() (tls.ConnectionState, bool)
-	})
+	ts, isTLS := conn.(TLSStateConn)
 	if !isTLS {
 		return nil, false
 	}
-	st, has := ts.tlsState()
+	st, has := ts.TLSConnectionState()
 	if !has || len(st.PeerCertificates) == 0 {
 		return nil, false
 	}

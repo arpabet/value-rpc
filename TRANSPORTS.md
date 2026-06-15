@@ -386,9 +386,10 @@ The public seam (`valuerpc.NewMsgConn`, `NewStreamListener`/`NewStreamDialer`,
    composition (swap the address to a real socket later with no other call-site
    changes). Covered by the transport-matrix test (all four patterns) plus
    round-trip/scheme/duplicate-name/unregistered-dial tests.
-3. **QUIC — ✅ DONE (2026-06-15), seam-fit variant.** `valueserver.NewQUICServer`
-   / `valueclient.NewQUICClient` (and the `quic://` scheme) on
-   `github.com/quic-go/quic-go`. TLS-mandatory (reuses the TLS config model;
+3. **QUIC — ✅ DONE (2026-06-15), seam-fit variant, in a separate module.**
+   `valuequic.NewServer` / `valuequic.NewClient` in the **`go.arpabet.com/value-rpc/quic`**
+   submodule (so `github.com/quic-go/quic-go` stays out of the core module — only
+   programs that use QUIC pull it in). TLS-mandatory (reuses the TLS config model;
    mutual TLS + `PeerCertificates` work over QUIC too), with TLS 1.3, 0-RTT, and
    connection migration. **Each RPC request maps to its own QUIC stream** — the
    client opens a stream per request, the server accepts one per request, with

@@ -28,7 +28,7 @@ transport:  TCP  ·  Unix socket  ·  WebSocket        (optional SOCKS5 / wss TL
 - **SOCKS5** client support; **Unix peer authentication** (`SO_PEERCRED`) via a connect‑authorizer hook.
 - **Bounded frames** (`MaxFrameSize`), **keepalive**, **handshake deadline**,
   and **graceful shutdown** out of the box.
-- Dependencies: `value`, `zap`, `golang.org/x/net`, `golang.org/x/sys`, `coder/websocket`, and `quic-go` (QUIC only).
+- Core dependencies: `value`, `zap`, `golang.org/x/net`, `golang.org/x/sys`, `coder/websocket`. QUIC lives in a **separate module** (`go.arpabet.com/value-rpc/quic`) so `quic-go` is pulled in only if you use it.
 
 ## Install
 
@@ -183,18 +183,20 @@ The RPC layer is decoupled from the wire transport behind a small seam
 | WebSocket | `ws://host:port/path` (client also `wss://`) | `NewWebSocketServer` / `NewWebSocketClient` |
 | TLS / mTLS | `tls://host:port` (needs a `*tls.Config`) | `NewTLSServer` / `NewTLSClient` |
 | In-memory | `mem://name` (same process) | `NewMemServer` / `NewMemClient` |
-| QUIC | `quic://host:port` (needs a `*tls.Config`) | `NewQUICServer` / `NewQUICClient` |
+| QUIC | (separate module, needs a `*tls.Config`) | `valuequic.NewServer` / `valuequic.NewClient` |
 
 ```go
 valueserver.NewServer("unix:///run/vrpc.sock", logger) // or NewUnixServer(path, logger)
 valueserver.NewServer("ws://:9000/rpc", logger)        // or NewWebSocketServer(":9000", "/rpc", logger)
 valueserver.NewTLSServer(":9000", tlsConf, logger)     // tls.Config with a server cert (+ ClientAuth for mTLS)
-valueserver.NewQUICServer(":9000", tlsConf, logger)    // QUIC (TLS-mandatory); each request = its own stream
 valueserver.NewServer("mem://billing", logger)         // or NewMemServer("billing", logger)
 valueclient.NewClient("ws://host:9000/rpc", "")        // or NewWebSocketClient(url)
 valueclient.NewTLSClient("host:9000", clientConf)      // or NewClient("tls://host:9000", "") for public CAs
-valueclient.NewQUICClient("host:9000", clientConf)     // or NewClient("quic://host:9000", "")
 valueclient.NewMemClient("billing")                    // or NewClient("mem://billing", "")
+
+// QUIC is in its own module: import go.arpabet.com/value-rpc/quic
+valuequic.NewServer(":9000", tlsConf, logger)          // each request = its own QUIC stream
+valuequic.NewClient("host:9000", clientConf)
 ```
 
 TCP and Unix sockets share the 4-byte length-prefix framing; WebSocket carries
@@ -336,27 +338,38 @@ cli := valueclient.NewMemClient("billing")
 
 ### QUIC (per-request streams)
 
-QUIC runs over UDP and **mandates TLS**, so `NewQUICServer` / `NewQUICClient`
-take a `*tls.Config` exactly like the TLS transport (mutual TLS via `ClientAuth`
-+ `ClientCAs`, with `valuerpc.PeerCertificates` in the connect-authorizer). On
-top of that it adds **TLS 1.3, 0-RTT, and connection migration** (a connection
-survives the client's IP changing), and it maps **each RPC request to its own
-QUIC stream** — so requests have independent flow control and ordering on the
-wire, and a cancelled request can drop its stream without disturbing others.
+QUIC lives in its **own module** so its heavyweight dependency
+(`github.com/quic-go/quic-go`) only enters builds that use it:
+
+```sh
+go get go.arpabet.com/value-rpc/quic
+```
 
 ```go
-srv, _ := valueserver.NewQUICServer(":9000", &tls.Config{
+import valuequic "go.arpabet.com/value-rpc/quic"
+```
+
+QUIC runs over UDP and **mandates TLS**, so `valuequic.NewServer` /
+`valuequic.NewClient` take a `*tls.Config` exactly like the TLS transport (mutual
+TLS via `ClientAuth` + `ClientCAs`, with `valuerpc.PeerCertificates` in the
+connect-authorizer). On top of that it adds **TLS 1.3, 0-RTT, and connection
+migration** (a connection survives the client's IP changing), and it maps **each
+RPC request to its own QUIC stream** — so requests have independent flow control
+and ordering on the wire, and a cancelled request can drop its stream without
+disturbing others.
+
+```go
+srv, _ := valuequic.NewServer(":9000", &tls.Config{
     Certificates: []tls.Certificate{cert}, // + ClientAuth/ClientCAs for mTLS
 }, logger)
-cli := valueclient.NewQUICClient("host:9000", &tls.Config{RootCAs: roots})
+cli := valuequic.NewClient("host:9000", &tls.Config{RootCAs: roots})
 ```
 
 > **Scope note.** This is the "seam-fit" integration: requests are per-stream on
 > the wire, but inbound frames still funnel through one read loop per connection,
 > so *application-level* slow-consumer head-of-line blocking is reduced, not
 > eliminated. Fully eliminating it needs the async per-request demux in
-> [RESEARCH.md](RESEARCH.md) §5. QUIC also pulls in `github.com/quic-go/quic-go`
-> (a larger dependency than the other transports).
+> [RESEARCH.md](RESEARCH.md) §5.
 
 ## Performance
 

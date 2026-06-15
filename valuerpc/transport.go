@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Karagatan LLC.
+ * Copyright (c) 2025-2026 Karagatan LLC.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -154,7 +154,7 @@ func NewListener(address string, keepAlive, writeTimeout time.Duration) (Listene
 	case "tls":
 		return nil, fmt.Errorf("tls:// server needs a *tls.Config with a certificate; use valueserver.NewTLSServer")
 	case "quic":
-		return nil, fmt.Errorf("quic:// server needs a *tls.Config with a certificate; use valueserver.NewQUICServer")
+		return nil, fmt.Errorf("quic:// is provided by the separate module go.arpabet.com/value-rpc/quic (valuequic.NewServer)")
 	case "mem":
 		return NewMemListener(addr)
 	default:
@@ -180,9 +180,7 @@ func NewDialer(address, socks5 string, keepAlive, writeTimeout time.Duration) Di
 		// client certificate (mTLS), or test options.
 		return NewTLSDialer(addr, nil, keepAlive, writeTimeout)
 	case "quic":
-		// Default config like tls://; use NewQUICDialer / NewQUICClient for
-		// custom CAs or a client certificate (mTLS).
-		return NewQUICDialer(addr, nil, writeTimeout)
+		return errDialer{fmt.Errorf("quic:// is provided by the separate module go.arpabet.com/value-rpc/quic (valuequic.NewClient)")}
 	case "mem":
 		return NewMemDialer(addr)
 	default:

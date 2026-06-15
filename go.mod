@@ -3,12 +3,11 @@ module go.arpabet.com/value-rpc
 go 1.25.0
 
 require (
-	github.com/coder/websocket v1.8.14
+	github.com/coder/websocket v1.8.15
 	github.com/pkg/errors v0.9.1
-	github.com/quic-go/quic-go v0.60.0
 	go.arpabet.com/value v1.2.0
 	go.uber.org/zap v1.28.0
-	golang.org/x/net v0.55.0
+	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.46.0
 )
 

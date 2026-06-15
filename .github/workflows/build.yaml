@@ -29,6 +29,20 @@ jobs:
       - name: Test
         run: go test -race -cover ./...
 
+      # The QUIC transport is a separate module (keeps quic-go out of the core),
+      # so it is built and tested on its own.
+      - name: Build (quic submodule)
+        working-directory: quic
+        run: go build ./...
+
+      - name: Vet (quic submodule)
+        working-directory: quic
+        run: go vet ./...
+
+      - name: Test (quic submodule)
+        working-directory: quic
+        run: go test -race -cover ./...
+
   bench:
     runs-on: ubuntu-latest
     steps:
@@ -55,4 +69,8 @@ jobs:
           go-version: '1.25.x'
 
       - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: govulncheck (quic submodule)
+        working-directory: quic
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

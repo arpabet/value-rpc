@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Karagatan LLC.
+ * Copyright (c) 2025-2026 Karagatan LLC.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -113,21 +113,6 @@ func NewTLSServer(addr string, config *tls.Config, logger *zap.Logger) (Server, 
 	lis, err := valuerpc.NewTLSListener(addr, config, KeepAlivePeriod, DefaultTimeout)
 	if err != nil {
 		logger.Error("bind the tls server",
-			zap.String("addr", addr),
-			zap.Error(err))
-		return nil, err
-	}
-	return NewServerWithListener(lis, logger)
-}
-
-// NewQUICServer creates a server listening for QUIC connections (each request
-// travels on its own QUIC stream). QUIC mandates TLS: config must carry a server
-// certificate; set config.ClientAuth + config.ClientCAs for mutual TLS, then
-// inspect the verified client certificate via valuerpc.PeerCertificates.
-func NewQUICServer(addr string, config *tls.Config, logger *zap.Logger) (Server, error) {
-	lis, err := valuerpc.NewQUICListener(addr, config, DefaultTimeout)
-	if err != nil {
-		logger.Error("bind the quic server",
 			zap.String("addr", addr),
 			zap.Error(err))
 		return nil, err

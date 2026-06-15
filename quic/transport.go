@@ -1,9 +1,25 @@
 /*
- * Copyright (c) 2025 Karagatan LLC.
+ * Copyright (c) 2025-2026 Karagatan LLC.
  * SPDX-License-Identifier: Apache-2.0
  */
 
-package valuerpc
+// Package valuequic provides a QUIC transport for value-rpc. It lives in its own
+// module (go.arpabet.com/value-rpc/quic) so that the heavyweight
+// github.com/quic-go/quic-go dependency is only pulled in by programs that
+// actually use QUIC; the core value-rpc module stays free of it.
+//
+// Each vRPC request maps to its own QUIC stream on the wire — the client opens a
+// stream per request, the server accepts one per request — so requests have
+// independent QUIC flow control and ordering, plus TLS 1.3 and connection
+// migration. To keep the core single-MsgConn RPC layer unchanged, inbound frames
+// from all streams are funneled into one ReadMessage queue; that funnel means
+// application-level slow-consumer head-of-line blocking is reduced but not fully
+// eliminated (see TRANSPORTS.md §9).
+//
+// QUIC mandates TLS: NewServer needs a *tls.Config with a certificate; set
+// ClientAuth + ClientCAs for mutual TLS and read the verified client certificate
+// via valuerpc.PeerCertificates in a connect-authorizer.
+package valuequic
 
 import (
 	"bufio"
@@ -21,54 +37,46 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"go.arpabet.com/value"
+	"go.arpabet.com/value-rpc/valueclient"
+	"go.arpabet.com/value-rpc/valuerpc"
+	"go.arpabet.com/value-rpc/valueserver"
+	"go.uber.org/zap"
 )
 
-// QUIC transport (seam-fit, per-request streams). Each vRPC request maps to its
-// own QUIC stream on the wire — the client opens a stream per request, the
-// server accepts one per request — so requests have independent QUIC flow
-// control and ordering, plus TLS 1.3 and connection migration for free. To keep
-// the existing single-MsgConn RPC layer unchanged, inbound frames from all
-// streams are funneled into one ReadMessage queue; that funnel means
-// application-level slow-consumer head-of-line blocking is reduced but not fully
-// eliminated (see TRANSPORTS.md §9).
-//
-// QUIC mandates TLS: NewQUICServer needs a *tls.Config with a certificate, and
-// the client verifies it (system roots by default).
-
 var (
-	// QUICDialTimeout bounds the QUIC opening handshake on the client.
-	QUICDialTimeout = 30 * time.Second
-	// QUICKeepAlive is the QUIC keep-alive ping period (0 disables).
-	QUICKeepAlive = 15 * time.Second
-	// QUICMaxStreams caps concurrent requests (streams) per connection.
-	QUICMaxStreams = int64(1 << 16)
+	// DialTimeout bounds the QUIC opening handshake on the client.
+	DialTimeout = 30 * time.Second
+	// KeepAlivePeriod is the QUIC keep-alive ping period (0 disables).
+	KeepAlivePeriod = 15 * time.Second
+	// MaxStreams caps concurrent requests (streams) per connection.
+	MaxStreams = int64(1 << 16)
 
-	quicALPN = []string{"vrpc"}
+	alpn = []string{"vrpc"}
 )
 
 func quicConfig() *quic.Config {
 	return &quic.Config{
-		MaxIncomingStreams: QUICMaxStreams,
+		MaxIncomingStreams: MaxStreams,
 		MaxIdleTimeout:     30 * time.Second,
-		KeepAlivePeriod:    QUICKeepAlive,
+		KeepAlivePeriod:    KeepAlivePeriod,
 	}
 }
 
-func quicServerTLS(conf *tls.Config) *tls.Config {
+func serverTLS(conf *tls.Config) *tls.Config {
 	c := conf.Clone()
 	if len(c.NextProtos) == 0 {
-		c.NextProtos = quicALPN
+		c.NextProtos = alpn
 	}
 	return c
 }
 
-func quicClientTLS(conf *tls.Config, addr string) *tls.Config {
+func clientTLS(conf *tls.Config, addr string) *tls.Config {
 	if conf == nil {
 		conf = &tls.Config{}
 	}
 	c := conf.Clone()
 	if len(c.NextProtos) == 0 {
-		c.NextProtos = quicALPN
+		c.NextProtos = alpn
 	}
 	if c.ServerName == "" {
 		if host, _, err := net.SplitHostPort(addr); err == nil {
@@ -78,16 +86,54 @@ func quicClientTLS(conf *tls.Config, addr string) *tls.Config {
 	return c
 }
 
+// --- public constructors ---
+
+// NewServer creates a value-rpc server listening for QUIC connections. config
+// must carry a server certificate; set config.ClientAuth + config.ClientCAs for
+// mutual TLS.
+func NewServer(addr string, config *tls.Config, logger *zap.Logger) (valueserver.Server, error) {
+	lis, err := NewListener(addr, config, valueserver.DefaultTimeout)
+	if err != nil {
+		logger.Error("bind the quic server", zap.String("addr", addr), zap.Error(err))
+		return nil, err
+	}
+	return valueserver.NewServerWithListener(lis, logger)
+}
+
+// NewClient creates a value-rpc client that dials a QUIC server. A nil config
+// verifies against the system root CAs (server name derived from the address);
+// supply a config for custom CAs, a client certificate (mTLS), or test options.
+func NewClient(addr string, config *tls.Config) valueclient.Client {
+	return valueclient.NewClientWithDialer(NewDialer(addr, config, valueclient.DefaultTimeout))
+}
+
+// NewListener listens for QUIC connections, returning a valuerpc.Listener.
+func NewListener(addr string, config *tls.Config, writeTimeout time.Duration) (valuerpc.Listener, error) {
+	if config == nil {
+		return nil, fmt.Errorf("quic listener requires a non-nil *tls.Config with a server certificate")
+	}
+	ql, err := quic.ListenAddr(addr, serverTLS(config), quicConfig())
+	if err != nil {
+		return nil, err
+	}
+	return &quicListener{ql: ql, writeTO: writeTimeout}, nil
+}
+
+// NewDialer returns a valuerpc.Dialer for a QUIC server.
+func NewDialer(addr string, config *tls.Config, writeTimeout time.Duration) valuerpc.Dialer {
+	return &quicDialer{addr: addr, config: config, writeTO: writeTimeout}
+}
+
 // --- per-stream state ---
 
 type quicStreamState struct {
 	s          *quic.Stream
 	br         *bufio.Reader
 	rid        int64
-	reqType    MessageType
+	reqType    valuerpc.MessageType
 	registered bool
-	localDone  bool // we FIN'd our write side
-	remoteDone bool // peer FIN'd / reset (reader hit EOF)
+	localDone  bool
+	remoteDone bool
 }
 
 type quicMsgConn struct {
@@ -132,7 +178,7 @@ func (t *quicMsgConn) serverAcceptLoop() {
 		return
 	}
 	st0 := &quicStreamState{s: s0, br: bufio.NewReader(s0)}
-	if m, err := quicReadFrame(st0.br); err == nil {
+	if m, err := readFrame(st0.br); err == nil {
 		t.register(m, st0)
 		if !t.funnel(m) {
 			return
@@ -157,7 +203,7 @@ func (t *quicMsgConn) serverAcceptLoop() {
 func (t *quicMsgConn) streamReader(st *quicStreamState) {
 	defer t.wg.Done()
 	for {
-		m, err := quicReadFrame(st.br)
+		m, err := readFrame(st.br)
 		if err != nil {
 			t.markRemoteDone(st)
 			return
@@ -169,7 +215,6 @@ func (t *quicMsgConn) streamReader(st *quicStreamState) {
 	}
 }
 
-// register binds a stream to its request id and request type on the first frame.
 func (t *quicMsgConn) register(m value.Map, st *quicStreamState) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -177,8 +222,8 @@ func (t *quicMsgConn) register(m value.Map, st *quicStreamState) {
 		return
 	}
 	st.registered = true
-	st.reqType = quicMsgType(m)
-	if rid, ok := quicRid(m); ok {
+	st.reqType = msgType(m)
+	if rid, ok := ridOf(m); ok {
 		st.rid = rid
 		t.streams[rid] = st
 	}
@@ -213,15 +258,15 @@ func (t *quicMsgConn) ReadMessage() (value.Map, error) {
 func (t *quicMsgConn) WriteMessage(m value.Map) error {
 	select {
 	case <-t.done:
-		return ErrClientClosed
+		return valuerpc.ErrClientClosed
 	default:
 	}
 
-	rid, ok := quicRid(m)
+	rid, ok := ridOf(m)
 	if !ok {
 		return errors.New("quic: outgoing message has no request id")
 	}
-	mt := quicMsgType(m)
+	mt := msgType(m)
 
 	st, reqType, err := t.streamForWrite(rid, mt)
 	if err != nil {
@@ -231,7 +276,7 @@ func (t *quicMsgConn) WriteMessage(m value.Map) error {
 	if t.writeTO > 0 {
 		_ = st.s.SetWriteDeadline(time.Now().Add(t.writeTO))
 	}
-	if err := quicWriteFrame(st.s, m); err != nil {
+	if err := writeFrame(st.s, m); err != nil {
 		return err
 	}
 
@@ -242,9 +287,7 @@ func (t *quicMsgConn) WriteMessage(m value.Map) error {
 	return nil
 }
 
-// streamForWrite returns the stream carrying rid, opening a new one on the
-// client for a new request. It also returns the request type (read under lock).
-func (t *quicMsgConn) streamForWrite(rid int64, mt MessageType) (*quicStreamState, MessageType, error) {
+func (t *quicMsgConn) streamForWrite(rid int64, mt valuerpc.MessageType) (*quicStreamState, valuerpc.MessageType, error) {
 	t.mu.Lock()
 	if st, ok := t.streams[rid]; ok {
 		reqType := st.reqType
@@ -257,8 +300,6 @@ func (t *quicMsgConn) streamForWrite(rid int64, mt MessageType) (*quicStreamStat
 		return nil, 0, fmt.Errorf("quic: no stream for response to request %d", rid)
 	}
 
-	// New client request: open a stream (not under the lock — OpenStreamSync may
-	// block on the peer's stream limit).
 	s, err := t.conn.OpenStreamSync(context.Background())
 	if err != nil {
 		return nil, 0, err
@@ -273,21 +314,21 @@ func (t *quicMsgConn) streamForWrite(rid int64, mt MessageType) (*quicStreamStat
 }
 
 // localTerminal reports whether mt is the last message this side sends on the
-// stream, so the write half can be FIN'd.
-func (t *quicMsgConn) localTerminal(mt, reqType MessageType) bool {
+// stream, so its write half can be FIN'd.
+func (t *quicMsgConn) localTerminal(mt, reqType valuerpc.MessageType) bool {
 	if t.isClient {
 		switch mt {
-		case HandshakeRequest, FunctionRequest, GetStreamRequest, StreamEnd, CancelRequest:
+		case valuerpc.HandshakeRequest, valuerpc.FunctionRequest, valuerpc.GetStreamRequest,
+			valuerpc.StreamEnd, valuerpc.CancelRequest:
 			return true
 		}
 		return false
 	}
 	switch mt {
-	case HandshakeResponse, FunctionResponse, ErrorResponse, StreamEnd:
+	case valuerpc.HandshakeResponse, valuerpc.FunctionResponse, valuerpc.ErrorResponse, valuerpc.StreamEnd:
 		return true
-	case StreamReady:
-		// A put-stream server sends only StreamReady, then nothing.
-		return reqType == PutStreamRequest
+	case valuerpc.StreamReady:
+		return reqType == valuerpc.PutStreamRequest
 	}
 	return false
 }
@@ -330,52 +371,52 @@ func (t *quicMsgConn) Close() error {
 	return nil
 }
 
-// tlsState exposes the QUIC connection's TLS state so valuerpc.PeerCertificates
-// works over QUIC (mutual-TLS authorization).
-func (t *quicMsgConn) tlsState() (tls.ConnectionState, bool) {
+// TLSConnectionState exposes the QUIC connection's TLS state so
+// valuerpc.PeerCertificates works over QUIC (mutual-TLS authorization).
+func (t *quicMsgConn) TLSConnectionState() (tls.ConnectionState, bool) {
 	return t.conn.ConnectionState().TLS, true
 }
 
-// --- message helpers ---
+// --- message + framing helpers ---
 
-func quicMsgType(m value.Map) MessageType {
-	if n, ok := GetNumberField(m, MessageTypeField); ok {
-		return MessageType(n.Long())
+func msgType(m value.Map) valuerpc.MessageType {
+	if n, ok := valuerpc.GetNumberField(m, valuerpc.MessageTypeField); ok {
+		return valuerpc.MessageType(n.Long())
 	}
-	return MessageType(-1)
+	return valuerpc.MessageType(-1)
 }
 
-func quicRid(m value.Map) (int64, bool) {
-	if n, ok := GetNumberField(m, RequestIdField); ok {
+func ridOf(m value.Map) (int64, bool) {
+	if n, ok := valuerpc.GetNumberField(m, valuerpc.RequestIdField); ok {
 		return n.Long(), true
 	}
 	return 0, false
 }
 
-func quicReadFrame(r *bufio.Reader) (value.Map, error) {
+func readFrame(r *bufio.Reader) (value.Map, error) {
 	var lenBuf [4]byte
 	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
 		return nil, err
 	}
 	n := binary.BigEndian.Uint32(lenBuf[:])
-	if MaxFrameSize > 0 && int64(n) > int64(MaxFrameSize) {
-		return nil, fmt.Errorf("frame too large: %d bytes (max %d)", n, MaxFrameSize)
+	if valuerpc.MaxFrameSize > 0 && int64(n) > int64(valuerpc.MaxFrameSize) {
+		return nil, fmt.Errorf("frame too large: %d bytes (max %d)", n, valuerpc.MaxFrameSize)
 	}
 	payload := make([]byte, int(n))
 	if _, err := io.ReadFull(r, payload); err != nil {
 		return nil, err
 	}
-	msg, err := value.Unpack(payload, true)
+	m, err := value.Unpack(payload, true)
 	if err != nil {
 		return nil, fmt.Errorf("msgpack unpack, %v", err)
 	}
-	if msg.Kind() != value.MAP {
+	if m.Kind() != value.MAP {
 		return nil, errors.New("expected msgpack map")
 	}
-	return msg.(value.Map), nil
+	return m.(value.Map), nil
 }
 
-func quicWriteFrame(w io.Writer, m value.Map) error {
+func writeFrame(w io.Writer, m value.Map) error {
 	payload, err := value.Pack(m)
 	if err != nil {
 		return fmt.Errorf("msgpack pack, %v", err)
@@ -394,20 +435,7 @@ type quicListener struct {
 	writeTO time.Duration
 }
 
-// NewQUICListener listens for QUIC connections. config must carry a server
-// certificate; set config.ClientAuth + config.ClientCAs for mutual TLS.
-func NewQUICListener(addr string, config *tls.Config, writeTimeout time.Duration) (Listener, error) {
-	if config == nil {
-		return nil, fmt.Errorf("quic listener requires a non-nil *tls.Config with a server certificate")
-	}
-	ql, err := quic.ListenAddr(addr, quicServerTLS(config), quicConfig())
-	if err != nil {
-		return nil, err
-	}
-	return &quicListener{ql: ql, writeTO: writeTimeout}, nil
-}
-
-func (l *quicListener) Accept() (MsgConn, error) {
+func (l *quicListener) Accept() (valuerpc.MsgConn, error) {
 	conn, err := l.ql.Accept(context.Background())
 	if err != nil {
 		return nil, err
@@ -425,17 +453,10 @@ type quicDialer struct {
 	writeTO time.Duration
 }
 
-// NewQUICDialer dials a QUIC server. A nil config verifies against the system
-// root CAs (server name derived from the address); supply a config for custom
-// CAs, a client certificate (mTLS), or test options.
-func NewQUICDialer(addr string, config *tls.Config, writeTimeout time.Duration) Dialer {
-	return &quicDialer{addr: addr, config: config, writeTO: writeTimeout}
-}
-
-func (d *quicDialer) Dial() (MsgConn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), QUICDialTimeout)
+func (d *quicDialer) Dial() (valuerpc.MsgConn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), DialTimeout)
 	defer cancel()
-	conn, err := quic.DialAddr(ctx, d.addr, quicClientTLS(d.config, d.addr), quicConfig())
+	conn, err := quic.DialAddr(ctx, d.addr, clientTLS(d.config, d.addr), quicConfig())
 	if err != nil {
 		return nil, err
 	}

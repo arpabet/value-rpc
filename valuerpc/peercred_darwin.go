@@ -1,7 +1,7 @@
 //go:build darwin
 
 /*
- * Copyright (c) 2025 Karagatan LLC.
+ * Copyright (c) 2025-2026 Karagatan LLC.
  * SPDX-License-Identifier: Apache-2.0
  */
 

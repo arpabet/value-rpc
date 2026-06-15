@@ -22,14 +22,19 @@ All notable changes to this project are documented here. The format is based on
   reference — no sockets, no MessagePack. For deterministic tests and for
   composing a monolith that can later split onto a real socket by changing only
   the address.
-- **QUIC transport** (`quic://`) on `github.com/quic-go/quic-go`.
-  `valueserver.NewQUICServer` / `valueclient.NewQUICClient` take a `*tls.Config`
-  (QUIC mandates TLS; mutual TLS + `valuerpc.PeerCertificates` supported). Each
-  RPC request maps to its own QUIC stream (independent flow control; streams
-  freed when both halves finish), plus TLS 1.3, 0-RTT, and connection migration.
+- **QUIC transport** in a **separate module**, `go.arpabet.com/value-rpc/quic`
+  (`valuequic.NewServer` / `valuequic.NewClient`), on
+  `github.com/quic-go/quic-go`. Kept out of the core module so only programs that
+  use QUIC pull in that heavyweight dependency — the core requires just `value`,
+  `zap`, `golang.org/x/net`, `golang.org/x/sys`, and `coder/websocket`. QUIC
+  mandates TLS (mutual TLS + `valuerpc.PeerCertificates` supported); each RPC
+  request maps to its own QUIC stream (independent flow control; streams freed
+  when both halves finish), plus TLS 1.3, 0-RTT, and connection migration.
   Seam-fit integration: inbound frames funnel through the existing per-connection
   read loop, so application-level slow-consumer head-of-line blocking is reduced,
-  not eliminated (see TRANSPORTS.md §9).
+  not eliminated (see TRANSPORTS.md §9). To expose the TLS state across packages,
+  the `PeerCertificates` hook is now the exported `valuerpc.TLSStateConn`
+  interface (`TLSConnectionState`).
 - **Transport candidates research** — [TRANSPORTS.md](TRANSPORTS.md) §9 surveys
   further transports (QUIC, vsock, named pipes, stdio, in-memory, WebTransport,
   NATS, …) with a fit/effort table and recommendations.
@@ -46,6 +51,9 @@ All notable changes to this project are documented here. The format is based on
 - **README** and **RESEARCH.md** rewritten to document all three transports
   (intro, architecture diagram, features, dependencies, configuration) instead
   of describing the library as TCP-only.
+- **Dependencies updated** to latest: `github.com/coder/websocket` v1.8.15,
+  `golang.org/x/net` v0.56.0 (`value` v1.2.0, `quic-go` v0.60.0, `zap` v1.28.0
+  and the rest already current).
 
 ### Fixed
 

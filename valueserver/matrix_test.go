@@ -1,12 +1,11 @@
 /*
- * Copyright (c) 2025 Karagatan LLC.
+ * Copyright (c) 2025-2026 Karagatan LLC.
  * SPDX-License-Identifier: Apache-2.0
  */
 
 package valueserver_test
 
 import (
-	"crypto/tls"
 	"os"
 	"sync"
 	"testing"
@@ -68,17 +67,8 @@ func allTransports() []transportFactory {
 			go srv.Run()
 			return srv, valueclient.NewMemClient(name)
 		}},
-		{"quic", func(t *testing.T, setup func(valueserver.Server)) (valueserver.Server, valueclient.Client) {
-			caPool, serverCert, _ := genCertPair(t)
-			srv, err := valueserver.NewQUICServer("127.0.0.1:0",
-				&tls.Config{Certificates: []tls.Certificate{serverCert}}, zap.NewNop())
-			if err != nil {
-				t.Fatalf("server: %v", err)
-			}
-			setup(srv)
-			go srv.Run()
-			return srv, valueclient.NewQUICClient(srv.Addr().String(), &tls.Config{RootCAs: caPool})
-		}},
+		// QUIC lives in the go.arpabet.com/value-rpc/quic submodule (to keep
+		// quic-go out of the core); its four-pattern matrix is tested there.
 	}
 }
 
