@@ -57,6 +57,16 @@ func allTransports() []transportFactory {
 			go srv.Run()
 			return srv, valueclient.NewWebSocketClient("ws://" + srv.Addr().String() + "/rpc")
 		}},
+		{"mem", func(t *testing.T, setup func(valueserver.Server)) (valueserver.Server, valueclient.Client) {
+			name := t.Name() // unique per subtest
+			srv, err := valueserver.NewMemServer(name, zap.NewNop())
+			if err != nil {
+				t.Fatalf("server: %v", err)
+			}
+			setup(srv)
+			go srv.Run()
+			return srv, valueclient.NewMemClient(name)
+		}},
 	}
 }
 

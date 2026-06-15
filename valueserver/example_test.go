@@ -216,3 +216,36 @@ func Example_webSocket() {
 	// Output:
 	// Hello, websocket!
 }
+
+// Example_inMemory wires a client and server together in one process over the
+// "mem://" transport (no sockets, no serialization). Switching to "tcp://host:port"
+// later needs no other code changes.
+func Example_inMemory() {
+	srv, err := valueserver.NewMemServer("billing", zap.NewNop())
+	if err != nil {
+		panic(err)
+	}
+	defer srv.Close()
+
+	srv.AddFunction("greet", valuerpc.List(valuerpc.String), valuerpc.String,
+		func(args value.Value) (value.Value, error) {
+			return value.Utf8("Hello, " + args.(value.List).GetStringAt(0).String() + "!"), nil
+		})
+	go srv.Run()
+
+	cli := valueclient.NewMemClient("billing")
+	if err := cli.Connect(); err != nil {
+		panic(err)
+	}
+	defer cli.Close()
+	cli.SetTimeout(5000)
+
+	res, err := cli.CallFunction("greet", value.Tuple(value.Utf8("in-process")))
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(res.(value.String).String())
+
+	// Output:
+	// Hello, in-process!
+}

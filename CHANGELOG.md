@@ -16,6 +16,12 @@ All notable changes to this project are documented here. The format is based on
   `valuerpc.PeerCertificates` for use in a connect-authorizer — the network
   analogue of Unix peer credentials. The `tls://` scheme works through plain
   `NewClient` (system root CAs).
+- **In-memory transport** (`mem://`). `valueserver.NewMemServer(name)` /
+  `valueclient.NewMemClient(name)` connect a client and server in the same
+  process over Go channels (a process-wide name registry); messages pass by
+  reference — no sockets, no MessagePack. For deterministic tests and for
+  composing a monolith that can later split onto a real socket by changing only
+  the address.
 - **Transport candidates research** — [TRANSPORTS.md](TRANSPORTS.md) §9 surveys
   further transports (QUIC, vsock, named pipes, stdio, in-memory, WebTransport,
   NATS, …) with a fit/effort table and recommendations.
@@ -32,6 +38,12 @@ All notable changes to this project are documented here. The format is based on
 - **README** and **RESEARCH.md** rewritten to document all three transports
   (intro, architecture diagram, features, dependencies, configuration) instead
   of describing the library as TCP-only.
+
+### Fixed
+
+- `valueserver.Server.Close()` no longer hangs when `Run()` was never called —
+  the accept loop was over-counted in the shutdown `WaitGroup`, which now tracks
+  only connection-handler goroutines.
 
 ## [1.2.0] — 2026-06-14
 

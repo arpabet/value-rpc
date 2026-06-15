@@ -182,19 +182,24 @@ The RPC layer is decoupled from the wire transport behind a small seam
 | Unix socket | `unix:///path.sock` | `NewUnixServer` / `NewUnixClient` |
 | WebSocket | `ws://host:port/path` (client also `wss://`) | `NewWebSocketServer` / `NewWebSocketClient` |
 | TLS / mTLS | `tls://host:port` (needs a `*tls.Config`) | `NewTLSServer` / `NewTLSClient` |
+| In-memory | `mem://name` (same process) | `NewMemServer` / `NewMemClient` |
 
 ```go
 valueserver.NewServer("unix:///run/vrpc.sock", logger) // or NewUnixServer(path, logger)
 valueserver.NewServer("ws://:9000/rpc", logger)        // or NewWebSocketServer(":9000", "/rpc", logger)
 valueserver.NewTLSServer(":9000", tlsConf, logger)     // tls.Config with a server cert (+ ClientAuth for mTLS)
+valueserver.NewServer("mem://billing", logger)         // or NewMemServer("billing", logger)
 valueclient.NewClient("ws://host:9000/rpc", "")        // or NewWebSocketClient(url)
 valueclient.NewTLSClient("host:9000", clientConf)      // or NewClient("tls://host:9000", "") for public CAs
+valueclient.NewMemClient("billing")                    // or NewClient("mem://billing", "")
 ```
 
 TCP and Unix sockets share the 4-byte length-prefix framing; WebSocket carries
-one MessagePack message per **binary** frame (no length prefix). For full control,
-build a transport yourself and pass it to `NewServerWithListener` /
-`NewClientWithDialer`. See [TRANSPORTS.md](TRANSPORTS.md) for the design.
+one MessagePack message per **binary** frame (no length prefix); the in-memory
+transport passes messages **by reference** (no sockets, no serialization —
+same-process only). For full control, build a transport yourself and pass it to
+`NewServerWithListener` / `NewClientWithDialer`. See [TRANSPORTS.md](TRANSPORTS.md)
+for the design.
 
 WebSocket can also share a port with your other HTTP routes (and serve `wss://`
 from your own TLS server) by mounting the vRPC handler on your `http.ServeMux`:
@@ -306,6 +311,23 @@ srv.SetConnectAuthorizer(func(conn valuerpc.MsgConn) error {
     }
     return nil // accept the connection
 })
+```
+
+### In-memory composition
+
+`mem://` connects a client and server **in the same process** over Go channels —
+no sockets and no serialization (messages pass by reference). It's ideal for fast,
+deterministic tests, and for building a monolith as in-process services that you
+can later split onto a real transport by changing **only the address**:
+
+```go
+// today: everything in one binary
+srv, _ := valueserver.NewMemServer("billing", logger)
+cli := valueclient.NewMemClient("billing")
+
+// later: billing moves to its own host — call sites are unchanged
+// srv, _ := valueserver.NewTLSServer(":9000", tlsConf, logger)
+// cli := valueclient.NewTLSClient("billing.internal:9000", clientConf)
 ```
 
 ## Performance

@@ -120,6 +120,21 @@ func NewTLSServer(addr string, config *tls.Config, logger *zap.Logger) (Server, 
 	return NewServerWithListener(lis, logger)
 }
 
+// NewMemServer creates an in-process server registered under name. A client in
+// the same process reaches it with valueclient.NewMemClient(name) (or the
+// "mem://name" address). No sockets, no serialization — ideal for tests and for
+// composing services in one binary before splitting them onto a real transport.
+func NewMemServer(name string, logger *zap.Logger) (Server, error) {
+	lis, err := valuerpc.NewMemListener(name)
+	if err != nil {
+		logger.Error("register the mem listener",
+			zap.String("name", name),
+			zap.Error(err))
+		return nil, err
+	}
+	return NewServerWithListener(lis, logger)
+}
+
 // NewWebSocketHandler returns a server plus an http.Handler to mount on your own
 // http.ServeMux (e.g. mux.Handle("/rpc", h)). The server does not listen on its
 // own port; register functions and call Run() to serve upgraded connections.
@@ -142,7 +157,8 @@ func NewServerWithListener(lis valuerpc.Listener, logger *zap.Logger) (Server, e
 		logger:   logger,
 		listener: lis,
 	}
-	t.wg.Add(1)
+	// wg tracks only connection-handler goroutines, so Close() drains in-flight
+	// connections and does not hang when Run() was never called.
 	logger.Info("start vRPC server", zap.String("addr", lis.Addr().String()))
 	return t, nil
 }
@@ -180,8 +196,6 @@ func (t *rpcServer) Close() error {
 }
 
 func (t *rpcServer) Run() error {
-
-	defer t.wg.Done()
 
 	var backoff time.Duration
 	for {

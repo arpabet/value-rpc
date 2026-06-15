@@ -351,7 +351,7 @@ The public seam (`valuerpc.NewMsgConn`, `NewStreamListener`/`NewStreamDialer`,
 | Transport | What it adds (vs. today) | Seam fit | Effort | Library |
 |-----------|--------------------------|----------|--------|---------|
 | **TLS / mTLS over TCP** (`tls://`) ✅ | encryption + **certificate client auth** for TCP | stream (reuse framing) | low | stdlib `crypto/tls` |
-| **In-memory** (`mem://`) | zero-network loopback for tests & monolith→services composition | native (can skip pack/unpack) | low | stdlib (`chan`/`net.Pipe`) |
+| **In-memory** (`mem://`) ✅ | zero-network loopback for tests & monolith→services composition | native (skips pack/unpack) | low | stdlib (`chan`) |
 | **QUIC** (`quic://`) | TLS 1.3 built-in, 0-RTT, **connection migration**, per-stream mux (**no slow-consumer HOL**) | single-stream (easy) or per-request stream (bigger) | med–high | `quic-go` |
 | **AF_VSOCK** (`vsock://`) | host↔guest / **enclave** RPC (Firecracker, AWS Nitro, KVM) | stream | low | `mdlayher/vsock` |
 | **Windows named pipes** (`npipe://`) | Windows local IPC | stream | low | `Microsoft/go-winio` |
@@ -376,11 +376,15 @@ The public seam (`valuerpc.NewMsgConn`, `NewStreamListener`/`NewStreamDialer`,
    works through plain `NewClient` (system root CAs); `NewListener` rejects
    `tls://` (a server needs a certificate). Tested: server-auth round-trip, mTLS
    round-trip + client-cert authz, and mTLS rejection of an uncertified client.
-2. **In-memory transport — cheap and high-leverage.** A channel- or
-   `net.Pipe`-based `Listener`/`Dialer` pair (the framing tests already use
-   `net.Pipe`) gives fast, deterministic tests and lets a monolith wire services
-   together in-process now and split them across a real socket later with no call-
-   site changes. A same-process variant can skip MessagePack entirely.
+2. **In-memory transport — ✅ DONE (2026-06-15).** `valueserver.NewMemServer(name)`
+   / `valueclient.NewMemClient(name)` (and the `mem://name` scheme) connect a
+   client and server in the same process over Go channels via a process-wide
+   name registry. Messages pass **by reference** — no sockets and no MessagePack
+   (safe because vRPC messages are immutable `value.Map`s) — making it the
+   fastest transport and the basis for fast, deterministic tests and monolith
+   composition (swap the address to a real socket later with no other call-site
+   changes). Covered by the transport-matrix test (all four patterns) plus
+   round-trip/scheme/duplicate-name/unregistered-dial tests.
 3. **QUIC — the strategic one.** Built-in TLS 1.3, 0-RTT reconnect, and
    **connection migration** (survives client IP changes — mobile/roaming).
    Two integration modes: (a) one bidirectional QUIC stream, a near drop-in for

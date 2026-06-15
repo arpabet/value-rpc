@@ -65,6 +65,12 @@ func NewTLSClient(address string, config *tls.Config) Client {
 	return NewClientWithDialer(valuerpc.NewTLSDialer(address, config, KeepAlivePeriod, DefaultTimeout))
 }
 
+// NewMemClient creates a client that connects to an in-process server registered
+// under name (see valueserver.NewMemServer). Same-process only.
+func NewMemClient(name string) Client {
+	return NewClientWithDialer(valuerpc.NewMemDialer(name))
+}
+
 // NewClientWithDialer creates a client over any transport (TCP, Unix socket,
 // WebSocket, …) supplied as a valuerpc.Dialer.
 func NewClientWithDialer(dialer valuerpc.Dialer) Client {
