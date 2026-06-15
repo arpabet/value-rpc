@@ -199,13 +199,34 @@ valuequic.NewServer(":9000", tlsConf, logger)          // each request = its own
 valuequic.NewClient("host:9000", clientConf)
 ```
 
-TCP and Unix sockets share the 4-byte length-prefix framing; WebSocket carries
-one MessagePack message per **binary** frame (no length prefix); the in-memory
-transport passes messages **by reference** (no sockets, no serialization —
-same-process only); **QUIC** maps each request to its own stream (TLS 1.3 +
-connection migration; see the note below). For full control, build a transport
-yourself and pass it to `NewServerWithListener` / `NewClientWithDialer`. See
-[TRANSPORTS.md](TRANSPORTS.md) for the design.
+For full control, build a transport yourself and pass it to
+`NewServerWithListener` / `NewClientWithDialer`. See [TRANSPORTS.md](TRANSPORTS.md)
+for the design.
+
+### Comparison
+
+All transports speak the identical MessagePack message protocol and support all
+four call patterns; they differ only in reach, security, framing, and
+dependencies:
+
+| Transport | Reach | Encryption | Client auth | Wire framing | Extra dependency | Best for |
+|-----------|-------|------------|-------------|--------------|------------------|----------|
+| **TCP** | host ↔ host | — (add TLS) | — (SOCKS5 proxy only) | 4-byte length prefix | none | general networked RPC |
+| **Unix socket** | same host | local-only | **OS uid/gid/pid** (peer creds) | 4-byte length prefix | none | local IPC: sidecars, agents, CLI ↔ daemon |
+| **WebSocket** | host ↔ host, through proxies/firewalls, browsers | `wss://` (TLS) | HTTP headers/cookies; mTLS on your TLS server | one binary frame / message | `coder/websocket` | sharing a port with HTTP, traversing 443 |
+| **TLS / mTLS** | host ↔ host | **TLS 1.3** | **X.509 cert** (mutual TLS) | 4-byte length prefix | none (stdlib) | encrypted, certificate-authenticated TCP |
+| **in-memory** | same process | n/a | n/a | none (by reference) | none | tests; a monolith you can later split |
+| **QUIC** | host ↔ host | **TLS 1.3** (mandatory) | **X.509 cert** (mutual TLS) | one QUIC **stream per request** | `quic-go` (separate module) | mobility/roaming, per-request streams |
+
+Notes:
+- **Multiplexing:** every transport except QUIC multiplexes all concurrent
+  requests over a single connection (keyed by request id); QUIC additionally
+  gives each request its own stream with independent flow control.
+- **Plain TCP and Unix sockets are unencrypted** — use TLS or QUIC over the
+  network, and filesystem permissions (plus peer creds) for Unix sockets.
+- **Dependency footprint:** the core module needs none of the heavy ones; only
+  WebSocket pulls `coder/websocket` (zero-dep) and only QUIC pulls `quic-go`
+  (and it's a separate module, so non-QUIC users never compile it).
 
 WebSocket can also share a port with your other HTTP routes (and serve `wss://`
 from your own TLS server) by mounting the vRPC handler on your `http.ServeMux`:
@@ -359,11 +380,44 @@ and ordering on the wire, and a cancelled request can drop its stream without
 disturbing others.
 
 ```go
-srv, _ := valuequic.NewServer(":9000", &tls.Config{
-    Certificates: []tls.Certificate{cert}, // + ClientAuth/ClientCAs for mTLS
-}, logger)
+import (
+    "crypto/tls"
+    "go.arpabet.com/value"
+    valuequic "go.arpabet.com/value-rpc/quic"
+    "go.arpabet.com/value-rpc/valuerpc"
+)
+
+// Server — QUIC requires a certificate (add ClientAuth + ClientCAs for mTLS).
+cert, _ := tls.LoadX509KeyPair("server.crt", "server.key")
+srv, err := valuequic.NewServer(":9000",
+    &tls.Config{Certificates: []tls.Certificate{cert}}, logger)
+if err != nil {
+    panic(err)
+}
+defer srv.Close()
+srv.AddFunction("greet", valuerpc.List(valuerpc.String), valuerpc.String,
+    func(args value.Value) (value.Value, error) {
+        return value.Utf8("Hello, " + args.(value.List).GetStringAt(0).String() + "!"), nil
+    })
+go srv.Run()
+
+// Client — trust the server's CA (omit RootCAs for a publicly-trusted cert).
 cli := valuequic.NewClient("host:9000", &tls.Config{RootCAs: roots})
+if err := cli.Connect(); err != nil {
+    panic(err)
+}
+defer cli.Close()
+cli.SetTimeout(5000)
+
+res, _ := cli.CallFunction("greet", value.Tuple(value.Utf8("quic")))
+fmt.Println(res.(value.String).String()) // Hello, quic!
 ```
+
+For **mutual TLS** over QUIC, give the server `ClientAuth: tls.RequireAndVerifyClientCert`
++ `ClientCAs`, give the client a `Certificates` entry, and read the verified
+identity with `valuerpc.PeerCertificates` in `srv.SetConnectAuthorizer` — exactly
+as in the [TLS section](#tls-and-mutual-tls). Streaming works the same too: e.g.
+`cli.GetStream(...)` server-streams over its own QUIC stream.
 
 > **Scope note.** This is the "seam-fit" integration: requests are per-stream on
 > the wire, but inbound frames still funnel through one read loop per connection,
