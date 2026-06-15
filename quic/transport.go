@@ -127,13 +127,14 @@ func NewDialer(addr string, config *tls.Config, writeTimeout time.Duration) valu
 // --- per-stream state ---
 
 type quicStreamState struct {
-	s          *quic.Stream
-	br         *bufio.Reader
-	rid        int64
-	reqType    valuerpc.MessageType
-	registered bool
-	localDone  bool
-	remoteDone bool
+	s           *quic.Stream
+	br          *bufio.Reader
+	rid         int64
+	reqType     valuerpc.MessageType
+	registered  bool
+	writeClosed bool // our write half has been FIN'd
+	localDone   bool // == writeClosed; kept for the both-done check
+	remoteDone  bool // peer FIN'd / reset (reader hit EOF)
 }
 
 type quicMsgConn struct {
@@ -212,6 +213,12 @@ func (t *quicMsgConn) streamReader(st *quicStreamState) {
 		if !t.funnel(m) {
 			return
 		}
+		// The client has nothing more to send on a unary/get/handshake request
+		// once the server's terminal response arrives; FIN the write half then
+		// (not after sending the request — throttle/cancel may follow it).
+		if t.isClient && finOnRead(msgType(m), st.reqType) {
+			t.finWrite(st)
+		}
 	}
 }
 
@@ -273,18 +280,82 @@ func (t *quicMsgConn) WriteMessage(m value.Map) error {
 		return err
 	}
 
+	// The write half may already be FIN'd (e.g. a best-effort throttle arriving
+	// after the request finished). Swallow it — it is not connection-fatal, and
+	// propagating would make the core requestLoop reconnect the whole client.
+	t.mu.Lock()
+	closed := st.writeClosed
+	t.mu.Unlock()
+	if closed {
+		return nil
+	}
+
 	if t.writeTO > 0 {
 		_ = st.s.SetWriteDeadline(time.Now().Add(t.writeTO))
 	}
 	if err := writeFrame(st.s, m); err != nil {
+		// If the stream was FIN'd concurrently (by the reader on the server's
+		// terminal), the failure is not fatal; otherwise the connection is bad.
+		t.mu.Lock()
+		raced := st.writeClosed
+		t.mu.Unlock()
+		if raced {
+			return nil
+		}
 		return err
 	}
 
-	if t.localTerminal(mt, reqType) {
-		_ = st.s.Close() // FIN our write side
-		t.markLocalDone(st)
+	if t.finOnWrite(mt, reqType) {
+		t.finWrite(st)
 	}
 	return nil
+}
+
+// finOnWrite reports whether mt is the last message this side will *send* on the
+// stream (so its write half can be FIN'd). The client's request is NOT terminal
+// (throttle/cancel may follow); see finOnRead.
+func (t *quicMsgConn) finOnWrite(mt, reqType valuerpc.MessageType) bool {
+	if t.isClient {
+		return mt == valuerpc.StreamEnd || mt == valuerpc.CancelRequest
+	}
+	switch mt {
+	case valuerpc.HandshakeResponse, valuerpc.FunctionResponse, valuerpc.ErrorResponse, valuerpc.StreamEnd:
+		return true
+	case valuerpc.StreamReady:
+		return reqType == valuerpc.PutStreamRequest // put-stream server sends nothing after StreamReady
+	}
+	return false
+}
+
+// finOnRead reports whether receiving mt means the client will send no more on
+// this (request-only) stream, so the client can FIN its write half.
+func finOnRead(mt, reqType valuerpc.MessageType) bool {
+	switch reqType {
+	case valuerpc.FunctionRequest:
+		return mt == valuerpc.FunctionResponse || mt == valuerpc.ErrorResponse
+	case valuerpc.GetStreamRequest:
+		return mt == valuerpc.StreamEnd || mt == valuerpc.ErrorResponse
+	case valuerpc.HandshakeRequest:
+		return mt == valuerpc.HandshakeResponse
+	}
+	return false
+}
+
+// finWrite FINs (gracefully closes) the write half once, marking local done.
+func (t *quicMsgConn) finWrite(st *quicStreamState) {
+	t.mu.Lock()
+	if st.writeClosed {
+		t.mu.Unlock()
+		return
+	}
+	st.writeClosed = true
+	st.localDone = true
+	bothDone := st.remoteDone
+	if bothDone {
+		delete(t.streams, st.rid)
+	}
+	t.mu.Unlock()
+	_ = st.s.Close() // FIN: delivers buffered data, then signals end-of-write
 }
 
 func (t *quicMsgConn) streamForWrite(rid int64, mt valuerpc.MessageType) (*quicStreamState, valuerpc.MessageType, error) {
@@ -313,35 +384,6 @@ func (t *quicMsgConn) streamForWrite(rid int64, mt valuerpc.MessageType) (*quicS
 	return st, mt, nil
 }
 
-// localTerminal reports whether mt is the last message this side sends on the
-// stream, so its write half can be FIN'd.
-func (t *quicMsgConn) localTerminal(mt, reqType valuerpc.MessageType) bool {
-	if t.isClient {
-		switch mt {
-		case valuerpc.HandshakeRequest, valuerpc.FunctionRequest, valuerpc.GetStreamRequest,
-			valuerpc.StreamEnd, valuerpc.CancelRequest:
-			return true
-		}
-		return false
-	}
-	switch mt {
-	case valuerpc.HandshakeResponse, valuerpc.FunctionResponse, valuerpc.ErrorResponse, valuerpc.StreamEnd:
-		return true
-	case valuerpc.StreamReady:
-		return reqType == valuerpc.PutStreamRequest
-	}
-	return false
-}
-
-func (t *quicMsgConn) markLocalDone(st *quicStreamState) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	st.localDone = true
-	if st.remoteDone {
-		delete(t.streams, st.rid)
-	}
-}
-
 func (t *quicMsgConn) markRemoteDone(st *quicStreamState) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -365,8 +407,9 @@ func (t *quicMsgConn) RemoteAddr() string {
 
 func (t *quicMsgConn) Close() error {
 	t.closeOnce.Do(func() {
-		close(t.done)
-		_ = t.conn.CloseWithError(0, "")
+		close(t.done)                    // unblock funneling readers
+		_ = t.conn.CloseWithError(0, "") // error out blocked stream reads
+		t.wg.Wait()                      // wait for accept loop + stream readers to exit
 	})
 	return nil
 }

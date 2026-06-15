@@ -29,17 +29,30 @@ jobs:
       - name: Test
         run: go test -race -cover ./...
 
-      # The QUIC transport is a separate module (keeps quic-go out of the core),
-      # so it is built and tested on its own.
-      - name: Build (quic submodule)
+  # The QUIC transport is a separate module (go.arpabet.com/value-rpc/quic) so
+  # quic-go stays out of the core; it gets its own job.
+  quic:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: [ '1.25.x', '1.26.x' ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Build
         working-directory: quic
         run: go build ./...
 
-      - name: Vet (quic submodule)
+      - name: Vet
         working-directory: quic
         run: go vet ./...
 
-      - name: Test (quic submodule)
+      - name: Test
         working-directory: quic
         run: go test -race -cover ./...
 
@@ -56,6 +69,10 @@ jobs:
       # Smoke-run every benchmark a few iterations so they keep compiling and
       # running; this is a correctness gate, not a measurement.
       - name: Benchmarks
+        run: go test -run='^$' -bench=. -benchmem -benchtime=20x ./...
+
+      - name: Benchmarks (quic submodule)
+        working-directory: quic
         run: go test -run='^$' -bench=. -benchmem -benchtime=20x ./...
 
   govulncheck:
