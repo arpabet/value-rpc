@@ -208,24 +208,90 @@ mux.Handle("/rpc", handler) // alongside /healthz, REST, metrics, …
 
 ### TLS and mutual TLS
 
-`NewTLSServer` / `NewTLSClient` take a `*tls.Config`. Give the server a
-certificate; for **mutual TLS**, set `ClientAuth` + `ClientCAs` on the server and
-a client certificate on the client. The verified client certificate is then
-available to a connect-authorizer (the network analogue of Unix peer creds):
+Plain TCP is unencrypted and unauthenticated — anyone on the network path can
+read the traffic, and the server has no idea who connected. TLS fixes the first
+half; **mutual TLS (mTLS)** fixes both.
+
+| | What it proves | Encrypted? | Who is authenticated |
+|---|---|---|---|
+| Plain TCP | nothing | ❌ | nobody |
+| **TLS** | client checks the **server's** cert (like HTTPS) | ✅ | the server only |
+| **mTLS** | client checks the server **and** server checks the **client's** cert | ✅ | **both sides** |
+
+`valueserver.NewTLSServer` / `valueclient.NewTLSClient` each take a standard
+`*tls.Config`.
+
+**TLS (server authentication).** The client confirms it's talking to the real
+server and the link is encrypted; the server still doesn't know who the client is.
 
 ```go
+import ("crypto/tls"; "crypto/x509"; "os")
+
+// Server presents its certificate.
+cert, _ := tls.LoadX509KeyPair("server.crt", "server.key")
+srv, _ := valueserver.NewTLSServer(":9000",
+    &tls.Config{Certificates: []tls.Certificate{cert}}, logger)
+
+// Client trusts the CA that signed it (omit RootCAs for a public/Let's Encrypt CA).
+caPEM, _ := os.ReadFile("ca.crt")
+roots := x509.NewCertPool()
+roots.AppendCertsFromPEM(caPEM)
+cli := valueclient.NewTLSClient("server.example:9000", &tls.Config{RootCAs: roots})
+```
+
+**mTLS (both sides authenticated).** The server *requires* a client certificate
+signed by a CA it trusts, so an unknown client is rejected during the TLS
+handshake — before any RPC runs. You then authorize by the client's certified
+identity:
+
+```go
+// Server: present a cert AND require + verify a client cert.
+serverCert, _ := tls.LoadX509KeyPair("server.crt", "server.key")
+clientCAs := x509.NewCertPool()
+clientCAs.AppendCertsFromPEM(caPEM)
+
+srv, _ := valueserver.NewTLSServer(":9000", &tls.Config{
+    Certificates: []tls.Certificate{serverCert},
+    ClientCAs:    clientCAs,
+    ClientAuth:   tls.RequireAndVerifyClientCert, // <- the "mutual" part
+}, logger)
+
+// Allow/deny by the verified client identity (the analogue of Unix peer creds).
 srv.SetConnectAuthorizer(func(conn valuerpc.MsgConn) error {
     certs, ok := valuerpc.PeerCertificates(conn)
     if !ok || certs[0].Subject.CommonName != "billing-service" {
         return fmt.Errorf("client not allowed")
     }
-    return nil // accept the connection
+    return nil // accept
+})
+
+// Client: present its own certificate and trust the server's CA.
+clientCert, _ := tls.LoadX509KeyPair("client.crt", "client.key")
+cli := valueclient.NewTLSClient("server.example:9000", &tls.Config{
+    RootCAs:      roots,
+    Certificates: []tls.Certificate{clientCert},
 })
 ```
 
-The `tls://` scheme via plain `NewClient` verifies against the system root CAs
-(for publicly-trusted servers); use `NewTLSClient` for custom CAs, a client
-certificate, or test options.
+**Why prefer mTLS for service-to-service RPC?**
+
+- **Both ends are proven.** The server knows *exactly* which service connected
+  (its certificate identity), not just "someone who reached the port".
+- **No shared secrets to leak.** No API keys or passwords to embed, rotate, or
+  accidentally commit — identity is a certificate signed by your CA.
+- **Network position isn't enough.** An attacker who can reach the port still
+  can't open a connection without a valid client cert; it's refused at the
+  handshake, before a single request is processed.
+- **Zero-trust by default.** Every connection is mutually authenticated and
+  encrypted, with no implicit trust from "being on the internal network".
+- **Identity drives authorization.** `valuerpc.PeerCertificates` hands the
+  verified cert to your `SetConnectAuthorizer`, so per-client allow/deny is a few
+  lines (mTLS is the network analogue of the Unix peer-credential check below).
+
+> The `tls://` scheme via plain `NewClient("tls://host:443", "")` verifies against
+> the system root CAs — handy for publicly-trusted servers. For local testing
+> only, `&tls.Config{InsecureSkipVerify: true}` skips verification — never use it
+> in production. Generate dev certs with `mkcert` or `openssl`.
 
 ### Unix peer authentication
 
