@@ -181,11 +181,14 @@ The RPC layer is decoupled from the wire transport behind a small seam
 | TCP | `host:port` or `tcp://host:port` | `NewServer` / `NewClient` |
 | Unix socket | `unix:///path.sock` | `NewUnixServer` / `NewUnixClient` |
 | WebSocket | `ws://host:port/path` (client also `wss://`) | `NewWebSocketServer` / `NewWebSocketClient` |
+| TLS / mTLS | `tls://host:port` (needs a `*tls.Config`) | `NewTLSServer` / `NewTLSClient` |
 
 ```go
 valueserver.NewServer("unix:///run/vrpc.sock", logger) // or NewUnixServer(path, logger)
 valueserver.NewServer("ws://:9000/rpc", logger)        // or NewWebSocketServer(":9000", "/rpc", logger)
+valueserver.NewTLSServer(":9000", tlsConf, logger)     // tls.Config with a server cert (+ ClientAuth for mTLS)
 valueclient.NewClient("ws://host:9000/rpc", "")        // or NewWebSocketClient(url)
+valueclient.NewTLSClient("host:9000", clientConf)      // or NewClient("tls://host:9000", "") for public CAs
 ```
 
 TCP and Unix sockets share the 4-byte length-prefix framing; WebSocket carries
@@ -202,6 +205,27 @@ srv.AddFunction(...)
 go srv.Run()
 mux.Handle("/rpc", handler) // alongside /healthz, REST, metrics, …
 ```
+
+### TLS and mutual TLS
+
+`NewTLSServer` / `NewTLSClient` take a `*tls.Config`. Give the server a
+certificate; for **mutual TLS**, set `ClientAuth` + `ClientCAs` on the server and
+a client certificate on the client. The verified client certificate is then
+available to a connect-authorizer (the network analogue of Unix peer creds):
+
+```go
+srv.SetConnectAuthorizer(func(conn valuerpc.MsgConn) error {
+    certs, ok := valuerpc.PeerCertificates(conn)
+    if !ok || certs[0].Subject.CommonName != "billing-service" {
+        return fmt.Errorf("client not allowed")
+    }
+    return nil // accept the connection
+})
+```
+
+The `tls://` scheme via plain `NewClient` verifies against the system root CAs
+(for publicly-trusted servers); use `NewTLSClient` for custom CAs, a client
+certificate, or test options.
 
 ### Unix peer authentication
 

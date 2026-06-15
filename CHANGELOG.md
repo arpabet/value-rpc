@@ -9,6 +9,16 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **TLS / mutual-TLS transport** (`tls://`). `valueserver.NewTLSServer` and
+  `valueclient.NewTLSClient` take a `*tls.Config` and reuse the length-prefix
+  framing (a `*tls.Conn` is a `net.Conn`). Mutual TLS via `ClientAuth` +
+  `ClientCAs`; the verified client certificate is exposed through
+  `valuerpc.PeerCertificates` for use in a connect-authorizer — the network
+  analogue of Unix peer credentials. The `tls://` scheme works through plain
+  `NewClient` (system root CAs).
+- **Transport candidates research** — [TRANSPORTS.md](TRANSPORTS.md) §9 surveys
+  further transports (QUIC, vsock, named pipes, stdio, in-memory, WebTransport,
+  NATS, …) with a fit/effort table and recommendations.
 - **Transport matrix tests** — all four interaction patterns exercised over every
   transport (TCP, Unix socket, WebSocket) in one table-driven test.
 - Runnable, output-checked **godoc examples for Unix sockets and WebSocket**

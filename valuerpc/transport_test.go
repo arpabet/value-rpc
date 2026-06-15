@@ -40,6 +40,28 @@ func TestNewListener_UnsupportedScheme(t *testing.T) {
 	}
 }
 
+func TestNewTLSListener_RequiresConfig(t *testing.T) {
+	if _, err := vrpc.NewTLSListener("127.0.0.1:0", nil, 0, time.Second); err == nil {
+		t.Fatal("NewTLSListener must require a non-nil *tls.Config")
+	}
+}
+
+func TestNewListener_TLSNeedsConfig(t *testing.T) {
+	if _, err := vrpc.NewListener("tls://127.0.0.1:0", 0, time.Second); err == nil {
+		t.Fatal("tls:// listener must require NewTLSServer (a *tls.Config)")
+	}
+}
+
+func TestPeerCertificates_NonTLS(t *testing.T) {
+	c1, c2 := net.Pipe()
+	mc := vrpc.NewMsgConn(c1, time.Second)
+	defer mc.Close()
+	defer c2.Close()
+	if _, ok := vrpc.PeerCertificates(mc); ok {
+		t.Error("PeerCertificates must be false for a non-TLS connection")
+	}
+}
+
 func TestNewDialer_UnsupportedSchemeErrorsOnDial(t *testing.T) {
 	d := vrpc.NewDialer("bogus://addr", "", 0, time.Second)
 	if _, err := d.Dial(); err == nil {

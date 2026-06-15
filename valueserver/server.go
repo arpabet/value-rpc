@@ -6,6 +6,7 @@
 package valueserver
 
 import (
+	"crypto/tls"
 	"io"
 	"net"
 	"net/http"
@@ -97,6 +98,21 @@ func NewWebSocketServer(addr, path string, logger *zap.Logger) (Server, error) {
 	lis, err := valuerpc.NewWebSocketListener(addr, path, DefaultTimeout)
 	if err != nil {
 		logger.Error("bind the websocket server",
+			zap.String("addr", addr),
+			zap.Error(err))
+		return nil, err
+	}
+	return NewServerWithListener(lis, logger)
+}
+
+// NewTLSServer creates a server listening on TCP with TLS. config must carry a
+// server certificate; set config.ClientAuth (e.g. tls.RequireAndVerifyClientCert)
+// and config.ClientCAs for mutual TLS, then inspect the verified client
+// certificate in a connect-authorizer via valuerpc.PeerCertificates.
+func NewTLSServer(addr string, config *tls.Config, logger *zap.Logger) (Server, error) {
+	lis, err := valuerpc.NewTLSListener(addr, config, KeepAlivePeriod, DefaultTimeout)
+	if err != nil {
+		logger.Error("bind the tls server",
 			zap.String("addr", addr),
 			zap.Error(err))
 		return nil, err
@@ -276,6 +292,12 @@ func (t *rpcServer) handleConnection(conn valuerpc.MsgConn) error {
 	}()
 
 	if authz := t.getConnectAuthorizer(); authz != nil {
+		// Bound the read deadline first: an authorizer that inspects TLS peer
+		// certificates (valuerpc.PeerCertificates) triggers the TLS handshake,
+		// which we must not let a stalled peer block indefinitely.
+		if HandshakeTimeout > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(HandshakeTimeout))
+		}
 		if err := authz(conn); err != nil {
 			return errors.Errorf("connection rejected by authorizer: %v", err)
 		}

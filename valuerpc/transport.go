@@ -6,6 +6,7 @@
 package valuerpc
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"os"
@@ -111,8 +112,12 @@ func (d *streamDialer) Dial() (MsgConn, error) {
 }
 
 // enableKeepAlive turns on TCP keepalive for *net.TCPConn; it is a no-op for
-// other connection types (e.g. Unix sockets), which need no keepalive.
+// other connection types (e.g. Unix sockets), which need no keepalive. A
+// *tls.Conn is unwrapped so keepalive reaches the underlying TCP socket.
 func enableKeepAlive(conn net.Conn, period time.Duration) {
+	if tc, ok := conn.(*tls.Conn); ok {
+		conn = tc.NetConn()
+	}
 	if tcp, ok := conn.(*net.TCPConn); ok && period > 0 {
 		_ = tcp.SetKeepAlive(true)
 		_ = tcp.SetKeepAlivePeriod(period)
@@ -146,6 +151,8 @@ func NewListener(address string, keepAlive, writeTimeout time.Duration) (Listene
 		return NewWebSocketListener(host, path, writeTimeout)
 	case "wss":
 		return nil, fmt.Errorf("wss:// server needs TLS; mount valueserver.NewWebSocketHandler on your own TLS http.Server")
+	case "tls":
+		return nil, fmt.Errorf("tls:// server needs a *tls.Config with a certificate; use valueserver.NewTLSServer")
 	default:
 		return nil, fmt.Errorf("unsupported listen network %q in address %q", network, address)
 	}
@@ -163,6 +170,11 @@ func NewDialer(address, socks5 string, keepAlive, writeTimeout time.Duration) Di
 		return NewStreamDialer(network, addr, socks5, keepAlive, writeTimeout)
 	case "ws", "wss":
 		return newWSDialer(network+"://"+addr, writeTimeout)
+	case "tls":
+		// Default config: verify against the system roots, server name derived
+		// from the address. Use NewTLSDialer / NewTLSClient for custom CAs, a
+		// client certificate (mTLS), or test options.
+		return NewTLSDialer(addr, nil, keepAlive, writeTimeout)
 	default:
 		return errDialer{fmt.Errorf("unsupported dial network %q in address %q", network, address)}
 	}

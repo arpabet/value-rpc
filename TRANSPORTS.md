@@ -324,12 +324,104 @@ SOCKS5 stays a TCP-only option (already its own argument).
 Risk is low: phase 1 is mechanical and fully covered by the current test suite;
 phases 2–3 are additive.
 
-## 9. Future transports (out of scope, but the seam enables them)
+## 9. Candidate transports — what's missing and what could be added
 
-- **TLS over TCP**: a `tls.Listener`/`tls.Dial` wrapper around the stream
-  transport (mutual-TLS auth) — no framing change.
-- **QUIC / HTTP-3**: stream-per-request multiplexing at the transport layer
-  (e.g. `quic-go`); larger change because vRPC currently multiplexes itself over
-  one stream, but interesting for head-of-line-blocking-free streaming.
-- **In-process / `net.Pipe`**: a zero-copy loopback transport for tests and
-  same-process composition (the framing tests already use `net.Pipe`).
+Implemented today: **TCP** (+ SOCKS5), **Unix domain sockets** (+ peer creds),
+**WebSocket** (+ `wss`). This section surveys everything else worth considering.
+
+### 9.0 The one requirement
+
+vRPC multiplexes all four patterns, cancellation, and throttling over a **single**
+`MsgConn`, so any transport must provide one **reliable, ordered, full-duplex**
+message channel. That immediately sorts candidates into three buckets:
+
+- **Stream transports** — a reliable ordered byte stream; reuse the existing
+  4-byte length-prefix framing unchanged. Adding one is ~a file.
+- **Message-framed transports** — already delimit messages (like WebSocket); one
+  MessagePack map per frame, no length prefix.
+- **Connectionless / broker / unreliable** — UDP, Kafka, etc.; need an adapter
+  that manufactures a reliable ordered channel, or don't fit at all.
+
+The public seam (`valuerpc.NewMsgConn`, `NewStreamListener`/`NewStreamDialer`,
+`NewServerWithListener`/`NewClientWithDialer`) already lets you add any
+`net.Conn`-based transport **without forking the library**.
+
+### 9.1 Catalog
+
+| Transport | What it adds (vs. today) | Seam fit | Effort | Library |
+|-----------|--------------------------|----------|--------|---------|
+| **TLS / mTLS over TCP** (`tls://`) ✅ | encryption + **certificate client auth** for TCP | stream (reuse framing) | low | stdlib `crypto/tls` |
+| **In-memory** (`mem://`) | zero-network loopback for tests & monolith→services composition | native (can skip pack/unpack) | low | stdlib (`chan`/`net.Pipe`) |
+| **QUIC** (`quic://`) | TLS 1.3 built-in, 0-RTT, **connection migration**, per-stream mux (**no slow-consumer HOL**) | single-stream (easy) or per-request stream (bigger) | med–high | `quic-go` |
+| **AF_VSOCK** (`vsock://`) | host↔guest / **enclave** RPC (Firecracker, AWS Nitro, KVM) | stream | low | `mdlayher/vsock` |
+| **Windows named pipes** (`npipe://`) | Windows local IPC | stream | low | `Microsoft/go-winio` |
+| **stdio / subprocess** (`stdio://`) | **subprocess-plugin** RPC (LSP / `hashicorp/go-plugin` style) | stream (single pre-connected conn, no listener) | low | stdlib (`os.Stdin/Stdout`) |
+| **SSH channel** (`ssh://`) | auth + encryption via SSH; jump-host / ops tooling | stream (`ssh.Channel` is `io.ReadWriteCloser`) | med | `x/crypto/ssh` |
+| **WebTransport** (HTTP/3) | modern **browser** full-duplex; successor to WebSocket | message-framed | med | `quic-go/webtransport-go` |
+| **NATS** (broker) | location independence, fan-out, no direct connectivity | adapter; model mismatch | med | `nats.go` |
+| **HTTP/2** (`h2://`) | "over HTTP", like WebSocket but HTTP/2 streams | message-ish | med | `x/net/http2` |
+| ~~Plain UDP~~ | — | unreliable/unordered → use QUIC | — | — |
+| ~~SSE~~ | server→client only (not full-duplex) | doesn't fit | — | — |
+| ~~Kafka / AMQP for RPC~~ | throughput broker, high latency | wrong tool for RPC | — | — |
+
+### 9.2 Recommended order
+
+1. **TLS / mTLS over TCP — ✅ DONE (2026-06-15).** `valueserver.NewTLSServer` /
+   `valueclient.NewTLSClient` take a `*tls.Config`; a `*tls.Conn` is a `net.Conn`,
+   so the length-prefix framing is reused unchanged (keepalive unwraps the TLS
+   conn to reach the TCP socket). With `tls.Config.ClientAuth` +
+   `ClientCAs` the server enforces **mutual TLS**, and the verified client
+   certificate is exposed to a connect-authorizer via `valuerpc.PeerCertificates`
+   — the network analogue of the Unix peer-credential check. The `tls://` scheme
+   works through plain `NewClient` (system root CAs); `NewListener` rejects
+   `tls://` (a server needs a certificate). Tested: server-auth round-trip, mTLS
+   round-trip + client-cert authz, and mTLS rejection of an uncertified client.
+2. **In-memory transport — cheap and high-leverage.** A channel- or
+   `net.Pipe`-based `Listener`/`Dialer` pair (the framing tests already use
+   `net.Pipe`) gives fast, deterministic tests and lets a monolith wire services
+   together in-process now and split them across a real socket later with no call-
+   site changes. A same-process variant can skip MessagePack entirely.
+3. **QUIC — the strategic one.** Built-in TLS 1.3, 0-RTT reconnect, and
+   **connection migration** (survives client IP changes — mobile/roaming).
+   Two integration modes: (a) one bidirectional QUIC stream, a near drop-in for
+   TCP but encrypted and migratable; (b) **one QUIC stream per RPC request**,
+   which pushes multiplexing into the transport and **eliminates the
+   slow-consumer head-of-line blocking** called out in [RESEARCH.md](RESEARCH.md)
+   §5 — the cleanest long-term answer to that limitation.
+
+### 9.3 Add on demand (niche but real, all low effort)
+
+- **vsock** — RPC between a hypervisor host and guest VMs / **confidential-compute
+  enclaves** (AWS Nitro Enclaves, Firecracker microVMs). `net.Conn`-compatible, so
+  it drops straight into the stream transport.
+- **Windows named pipes** — local IPC on Windows. (Less essential now that
+  `AF_UNIX` works on Windows 10+, which the existing `unix://` transport can use.)
+- **stdio** — a host process speaking vRPC to a **subprocess plugin** over its
+  stdin/stdout, the model used by LSP and `hashicorp/go-plugin`. It is a single
+  pre-connected `MsgConn` (no listener/accept), so it also motivates a small
+  `Dialer`/`Listener` adapter for pre-established `io.ReadWriteCloser` streams.
+
+### 9.4 Different model — evaluate before adopting
+
+- **NATS (or another broker).** You can tunnel a vRPC connection over a pair of
+  subjects (one per direction), gaining location independence, fan-out, and "no
+  direct connectivity required". But it inverts the model — vRPC is
+  connection/session-oriented, NATS is broker-mediated and connectionless — and
+  it adds a broker dependency and a hop of latency. Worth it only if you
+  specifically want broker semantics; otherwise prefer a direct transport.
+- **WebTransport** pairs naturally with a QUIC addition and is the modern
+  browser path, but only matters if browser clients become a goal (which also
+  needs a JS implementation of the vRPC message protocol).
+- **HTTP/2** buys little over the existing WebSocket transport (both are "RPC
+  over an HTTP upgrade"); skip unless an HTTP/2-only environment forces it.
+
+### 9.5 Two small enablers (independent of any single transport)
+
+- A `MsgConn` constructor from an arbitrary **`io.ReadWriteCloser`** (not just
+  `net.Conn`) would let users plug in `ssh.Channel`, `os` pipes, gVisor channels,
+  and custom tunnels with the standard length-prefix framing.
+- A **single-connection** `Dialer`/`Listener` adapter (wrap one already-open
+  conn) covers stdio and any externally-established connection.
+
+Both are a few lines on top of today's seam and would let most of §9.3–9.4 be
+implemented as out-of-tree packages.

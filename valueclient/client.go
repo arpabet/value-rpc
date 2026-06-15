@@ -6,6 +6,7 @@
 package valueclient
 
 import (
+	"crypto/tls"
 	"log"
 	"math/rand"
 	"strings"
@@ -55,6 +56,13 @@ func NewUnixClient(path string) Client {
 // "ws://host:9000/rpc" or "wss://host/rpc".
 func NewWebSocketClient(url string) Client {
 	return NewClientWithDialer(valuerpc.NewDialer(url, "", KeepAlivePeriod, DefaultTimeout))
+}
+
+// NewTLSClient creates a client that dials a TLS server over TCP. A nil config
+// verifies against the system root CAs (server name derived from the address);
+// supply a config for custom CAs, a client certificate (mTLS), or test options.
+func NewTLSClient(address string, config *tls.Config) Client {
+	return NewClientWithDialer(valuerpc.NewTLSDialer(address, config, KeepAlivePeriod, DefaultTimeout))
 }
 
 // NewClientWithDialer creates a client over any transport (TCP, Unix socket,
