@@ -120,6 +120,21 @@ func NewTLSServer(addr string, config *tls.Config, logger *zap.Logger) (Server, 
 	return NewServerWithListener(lis, logger)
 }
 
+// NewQUICServer creates a server listening for QUIC connections (each request
+// travels on its own QUIC stream). QUIC mandates TLS: config must carry a server
+// certificate; set config.ClientAuth + config.ClientCAs for mutual TLS, then
+// inspect the verified client certificate via valuerpc.PeerCertificates.
+func NewQUICServer(addr string, config *tls.Config, logger *zap.Logger) (Server, error) {
+	lis, err := valuerpc.NewQUICListener(addr, config, DefaultTimeout)
+	if err != nil {
+		logger.Error("bind the quic server",
+			zap.String("addr", addr),
+			zap.Error(err))
+		return nil, err
+	}
+	return NewServerWithListener(lis, logger)
+}
+
 // NewMemServer creates an in-process server registered under name. A client in
 // the same process reaches it with valueclient.NewMemClient(name) (or the
 // "mem://name" address). No sockets, no serialization — ideal for tests and for

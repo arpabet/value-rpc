@@ -71,6 +71,14 @@ func NewMemClient(name string) Client {
 	return NewClientWithDialer(valuerpc.NewMemDialer(name))
 }
 
+// NewQUICClient creates a client that dials a QUIC server (one stream per
+// request). A nil config verifies against the system root CAs (server name
+// derived from the address); supply a config for custom CAs, a client
+// certificate (mTLS), or test options.
+func NewQUICClient(address string, config *tls.Config) Client {
+	return NewClientWithDialer(valuerpc.NewQUICDialer(address, config, DefaultTimeout))
+}
+
 // NewClientWithDialer creates a client over any transport (TCP, Unix socket,
 // WebSocket, …) supplied as a valuerpc.Dialer.
 func NewClientWithDialer(dialer valuerpc.Dialer) Client {

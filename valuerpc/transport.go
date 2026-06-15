@@ -153,6 +153,8 @@ func NewListener(address string, keepAlive, writeTimeout time.Duration) (Listene
 		return nil, fmt.Errorf("wss:// server needs TLS; mount valueserver.NewWebSocketHandler on your own TLS http.Server")
 	case "tls":
 		return nil, fmt.Errorf("tls:// server needs a *tls.Config with a certificate; use valueserver.NewTLSServer")
+	case "quic":
+		return nil, fmt.Errorf("quic:// server needs a *tls.Config with a certificate; use valueserver.NewQUICServer")
 	case "mem":
 		return NewMemListener(addr)
 	default:
@@ -177,6 +179,10 @@ func NewDialer(address, socks5 string, keepAlive, writeTimeout time.Duration) Di
 		// from the address. Use NewTLSDialer / NewTLSClient for custom CAs, a
 		// client certificate (mTLS), or test options.
 		return NewTLSDialer(addr, nil, keepAlive, writeTimeout)
+	case "quic":
+		// Default config like tls://; use NewQUICDialer / NewQUICClient for
+		// custom CAs or a client certificate (mTLS).
+		return NewQUICDialer(addr, nil, writeTimeout)
 	case "mem":
 		return NewMemDialer(addr)
 	default:

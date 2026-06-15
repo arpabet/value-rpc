@@ -327,7 +327,8 @@ phases 2–3 are additive.
 ## 9. Candidate transports — what's missing and what could be added
 
 Implemented today: **TCP** (+ SOCKS5), **Unix domain sockets** (+ peer creds),
-**WebSocket** (+ `wss`). This section surveys everything else worth considering.
+**WebSocket** (+ `wss`), **TLS/mTLS**, **in-memory**, and **QUIC** (seam-fit,
+per-request streams). This section surveys everything else worth considering.
 
 ### 9.0 The one requirement
 
@@ -352,7 +353,7 @@ The public seam (`valuerpc.NewMsgConn`, `NewStreamListener`/`NewStreamDialer`,
 |-----------|--------------------------|----------|--------|---------|
 | **TLS / mTLS over TCP** (`tls://`) ✅ | encryption + **certificate client auth** for TCP | stream (reuse framing) | low | stdlib `crypto/tls` |
 | **In-memory** (`mem://`) ✅ | zero-network loopback for tests & monolith→services composition | native (skips pack/unpack) | low | stdlib (`chan`) |
-| **QUIC** (`quic://`) | TLS 1.3 built-in, 0-RTT, **connection migration**, per-stream mux (**no slow-consumer HOL**) | single-stream (easy) or per-request stream (bigger) | med–high | `quic-go` |
+| **QUIC** (`quic://`) ✅ | TLS 1.3 built-in, 0-RTT, **connection migration**, per-request streams (HOL reduced; see §9.2) | seam-fit done | med–high | `quic-go` |
 | **AF_VSOCK** (`vsock://`) | host↔guest / **enclave** RPC (Firecracker, AWS Nitro, KVM) | stream | low | `mdlayher/vsock` |
 | **Windows named pipes** (`npipe://`) | Windows local IPC | stream | low | `Microsoft/go-winio` |
 | **stdio / subprocess** (`stdio://`) | **subprocess-plugin** RPC (LSP / `hashicorp/go-plugin` style) | stream (single pre-connected conn, no listener) | low | stdlib (`os.Stdin/Stdout`) |
@@ -385,13 +386,20 @@ The public seam (`valuerpc.NewMsgConn`, `NewStreamListener`/`NewStreamDialer`,
    composition (swap the address to a real socket later with no other call-site
    changes). Covered by the transport-matrix test (all four patterns) plus
    round-trip/scheme/duplicate-name/unregistered-dial tests.
-3. **QUIC — the strategic one.** Built-in TLS 1.3, 0-RTT reconnect, and
-   **connection migration** (survives client IP changes — mobile/roaming).
-   Two integration modes: (a) one bidirectional QUIC stream, a near drop-in for
-   TCP but encrypted and migratable; (b) **one QUIC stream per RPC request**,
-   which pushes multiplexing into the transport and **eliminates the
-   slow-consumer head-of-line blocking** called out in [RESEARCH.md](RESEARCH.md)
-   §5 — the cleanest long-term answer to that limitation.
+3. **QUIC — ✅ DONE (2026-06-15), seam-fit variant.** `valueserver.NewQUICServer`
+   / `valueclient.NewQUICClient` (and the `quic://` scheme) on
+   `github.com/quic-go/quic-go`. TLS-mandatory (reuses the TLS config model;
+   mutual TLS + `PeerCertificates` work over QUIC too), with TLS 1.3, 0-RTT, and
+   connection migration. **Each RPC request maps to its own QUIC stream** — the
+   client opens a stream per request, the server accepts one per request, with
+   independent per-stream flow control and a handshake-first ordering guarantee;
+   streams are freed when both halves finish (verified by a tight stream-cap
+   test). It fits the existing `MsgConn` seam, so inbound frames still funnel
+   through one per-connection read loop — that reduces, but does not fully
+   eliminate, *application-level* slow-consumer HOL. The full fix (per-stream
+   readers dispatching directly, no funnel) is the async-demux rework below.
+   Covered by the transport-matrix test (all four patterns) plus
+   round-trip / mTLS / stream-freeing tests.
 
 ### 9.3 Add on demand (niche but real, all low effort)
 

@@ -22,6 +22,14 @@ All notable changes to this project are documented here. The format is based on
   reference — no sockets, no MessagePack. For deterministic tests and for
   composing a monolith that can later split onto a real socket by changing only
   the address.
+- **QUIC transport** (`quic://`) on `github.com/quic-go/quic-go`.
+  `valueserver.NewQUICServer` / `valueclient.NewQUICClient` take a `*tls.Config`
+  (QUIC mandates TLS; mutual TLS + `valuerpc.PeerCertificates` supported). Each
+  RPC request maps to its own QUIC stream (independent flow control; streams
+  freed when both halves finish), plus TLS 1.3, 0-RTT, and connection migration.
+  Seam-fit integration: inbound frames funnel through the existing per-connection
+  read loop, so application-level slow-consumer head-of-line blocking is reduced,
+  not eliminated (see TRANSPORTS.md §9).
 - **Transport candidates research** — [TRANSPORTS.md](TRANSPORTS.md) §9 surveys
   further transports (QUIC, vsock, named pipes, stdio, in-memory, WebTransport,
   NATS, …) with a fit/effort table and recommendations.
