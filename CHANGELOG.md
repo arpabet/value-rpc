@@ -38,6 +38,16 @@ All notable changes to this project are documented here. The format is based on
 - **Transport candidates research** — [TRANSPORTS.md](TRANSPORTS.md) §9 surveys
   further transports (QUIC, vsock, named pipes, stdio, in-memory, WebTransport,
   NATS, …) with a fit/effort table and recommendations.
+- **Bring-your-own-connection seam.** `valuerpc.NewMsgConn` now accepts any
+  `io.ReadWriteCloser` (not only `net.Conn`), so non-socket streams — pluggable /
+  obfuscated transports, `ssh.Channel`, WebRTC data channels — can carry the RPC
+  protocol. New adapters `NewFuncDialer`, `NewSingleConnDialer`, `NewAcceptListener`,
+  and `NewSingleConnListener` (`valuerpc/transport_conn.go`) turn an externally
+  established connection into a `Dialer`/`Listener` for `NewClientWithDialer` /
+  `NewServerWithListener` — the integration point for out-of-tree obfuscation and
+  broker/rendezvous flows. No new dependencies. Design: [TRANSPORTS.md](TRANSPORTS.md)
+  §10 (censorship-resistance research) and §11 (where obfuscation lives:
+  value-rpc seam vs. a standalone `obfs` module vs. servion orchestration).
 - **Transport matrix tests** — all four interaction patterns exercised over every
   transport (TCP, Unix socket, WebSocket) in one table-driven test.
 - Runnable, output-checked **godoc examples for Unix sockets and WebSocket**

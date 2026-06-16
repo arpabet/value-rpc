@@ -49,7 +49,16 @@ type MsgConn interface {
 	Close() error
 }
 
-func NewMsgConn(conn net.Conn, timeout time.Duration) MsgConn {
+// NewMsgConn frames an already-established byte stream with the length-prefix
+// wire format and returns it as a MsgConn. conn is an io.ReadWriteCloser rather
+// than only a net.Conn, so non-socket streams — a pluggable-transport / obfuscated
+// connection, an ssh.Channel, a WebRTC data channel, an io.Pipe — can carry the
+// RPC protocol unchanged. When conn also implements the optional net.Conn deadline
+// and address methods they are used; otherwise SetReadDeadline is a best-effort
+// no-op and RemoteAddr is empty. This is the lowest-level transport seam; a custom
+// Dialer or Listener (see NewFuncDialer, NewSingleConnDialer, NewAcceptListener)
+// usually wraps it.
+func NewMsgConn(conn io.ReadWriteCloser, timeout time.Duration) MsgConn {
 	return &messageConnAdapter{
 		conn:    conn,
 		reader:  bufio.NewReader(conn),
@@ -57,8 +66,16 @@ func NewMsgConn(conn net.Conn, timeout time.Duration) MsgConn {
 	}
 }
 
+// Optional capabilities a framed stream may also provide; a net.Conn provides all
+// three. They are probed per call so any io.ReadWriteCloser works as a MsgConn.
+type (
+	readDeadlineConn  interface{ SetReadDeadline(time.Time) error }
+	writeDeadlineConn interface{ SetWriteDeadline(time.Time) error }
+	remoteAddrConn    interface{ RemoteAddr() net.Addr }
+)
+
 type messageConnAdapter struct {
-	conn      net.Conn
+	conn      io.ReadWriteCloser
 	reader    *bufio.Reader
 	timeout   time.Duration
 	writeLock sync.Mutex
@@ -103,8 +120,10 @@ func (t *messageConnAdapter) doWriteFrame(payload []byte) error {
 	t.writeLock.Lock()
 	defer t.writeLock.Unlock()
 	if t.timeout > 0 {
-		if err := t.conn.SetWriteDeadline(time.Now().Add(t.timeout)); err != nil {
-			return err
+		if wd, ok := t.conn.(writeDeadlineConn); ok {
+			if err := wd.SetWriteDeadline(time.Now().Add(t.timeout)); err != nil {
+				return err
+			}
 		}
 	}
 	// Single buffer + single Write so the length prefix and payload cannot be
@@ -117,12 +136,17 @@ func (t *messageConnAdapter) doWriteFrame(payload []byte) error {
 }
 
 func (t *messageConnAdapter) SetReadDeadline(deadline time.Time) error {
-	return t.conn.SetReadDeadline(deadline)
+	if rd, ok := t.conn.(readDeadlineConn); ok {
+		return rd.SetReadDeadline(deadline)
+	}
+	return nil // best-effort no-op for streams without deadlines
 }
 
 func (t *messageConnAdapter) RemoteAddr() string {
-	if addr := t.conn.RemoteAddr(); addr != nil {
-		return addr.String()
+	if ra, ok := t.conn.(remoteAddrConn); ok {
+		if addr := ra.RemoteAddr(); addr != nil {
+			return addr.String()
+		}
 	}
 	return ""
 }
