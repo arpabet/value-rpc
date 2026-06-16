@@ -6,6 +6,7 @@
 package valueserver_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -43,7 +44,7 @@ func rawHandshake(t *testing.T, addr string, clientId int64, token string) (valu
 func TestSessionResumptionRequiresToken(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("ping", valuerpc.Any, valuerpc.Any,
-			func(args value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
+			func(_ context.Context, args value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
 	})
 	defer stop()
 
@@ -88,7 +89,7 @@ func TestSessionResumptionRequiresToken(t *testing.T) {
 func TestHijackAttemptLeavesVictimIntact(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("ping", valuerpc.Any, valuerpc.Any,
-			func(args value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
+			func(_ context.Context, args value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
 	})
 	defer stop()
 

@@ -108,7 +108,7 @@ if err != nil { log.Fatal(err) }
 srv.AddFunction("user.get",
     valuerpc.List(valuerpc.Number),          // args: [userID]
     valuerpc.Any,                             // result
-    func(args value.Value) (value.Value, error) {
+    func(ctx context.Context, args value.Value) (value.Value, error) {
         id := args.(value.List).GetNumberAt(0).Long()
         u, err := store.User(ctx, id)
         if err != nil { return nil, err }     // surfaces to client as ErrorResponse
@@ -119,7 +119,7 @@ srv.AddFunction("user.get",
 
 srv.AddOutgoingStream("events.tail",          // server-streaming
     valuerpc.List(valuerpc.String),
-    func(args value.Value) (<-chan value.Value, error) {
+    func(ctx context.Context, args value.Value) (<-chan value.Value, error) {
         topic := args.(value.List).GetStringAt(0).String()
         return tailTopic(topic), nil           // close the chan to end the stream
     })
@@ -154,8 +154,10 @@ _ = reqID                                     // use with cli.CancelRequest
 - **Wrap handlers defensively.** A handler panic in a streamer goroutine is not
   recovered and can crash the server (BUG-3). Add your own `recover` and never
   block forever inside a handler.
-- **Put a deadline/timeout in front of every handler yourself** — the server
-  does not enforce the client's `sla` (BUG-10).
+- **Honour the handler `context.Context`** — it carries the client's `sla` as a
+  deadline and is cancelled on disconnect/shutdown/cancel. The server cannot
+  force-stop a handler that ignores it, so a handler that blocks forever still
+  holds a goroutine; check `ctx.Done()` in long operations.
 - **Terminate TLS and authenticate at a layer you add** (e.g. wrap with
   `tls.Server`/`tls.Client`, or run behind a mesh). There is no built-in
   transport TLS or peer authz beyond the connect-authorizer hook. Session
@@ -280,9 +282,10 @@ problems are correctness/robustness, not raw unary speed.
 
 ### Bigger-picture suggestions
 
-- **Add `context.Context`** to handler signatures and to the client API for
-  deadline/cancellation propagation (today cancellation is best-effort and only
-  client-driven).
+- **`context.Context` is now in handler signatures** — cancelled on
+  disconnect/shutdown/cancel and carrying the client's SLA deadline. Remaining:
+  surface it on the client API too, and add forced cancellation of handlers that
+  ignore their context.
 - **Add TLS + auth hooks** at the `MsgConn` boundary.
 - **Consider replacing `go.uber.org/atomic`** with Go 1.25 generic
   `sync/atomic` types, and the per-message immutable-map building with a small

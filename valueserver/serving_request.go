@@ -6,6 +6,7 @@
 package valueserver
 
 import (
+	"context"
 	"sync/atomic"
 	"time"
 
@@ -19,8 +20,9 @@ var IncomingQueueCap = 4096
 type servingRequest struct {
 	ft               functionType
 	requestId        value.Number
-	inC              chan value.Value // handler-facing inbound channel (pump output)
-	inPump           *vrpc.StreamPump // drains into inC; nil for non-inbound requests
+	inC              chan value.Value   // handler-facing inbound channel (pump output)
+	inPump           *vrpc.StreamPump   // drains into inC; nil for non-inbound requests
+	cancel           context.CancelFunc // cancels the handler's request context on teardown
 	throttleOutgoing atomic.Int64
 
 	closed   atomic.Bool
@@ -50,12 +52,21 @@ func NewServingRequest(ft functionType, requestId value.Number) *servingRequest 
 func (t *servingRequest) Close() {
 	if t.closed.CompareAndSwap(false, true) {
 		close(t.done)
+		t.cancelCtx()
 		// Hard teardown: abandon any buffered inbound values and unblock a pump
 		// stuck delivering to a handler that stopped reading.
 		t.inClosed.Store(true)
 		if t.inPump != nil {
 			t.inPump.Stop()
 		}
+	}
+}
+
+// cancelCtx cancels the handler's request context. Safe to call repeatedly and
+// when no context was attached (e.g. an outgoing stream torn down before setup).
+func (t *servingRequest) cancelCtx() {
+	if t.cancel != nil {
+		t.cancel()
 	}
 }
 
@@ -146,16 +157,13 @@ func (t *servingRequest) incomingStreamEnd(req value.Map, cli *servingClient) er
 	// would Stop the pump and drop values a lagging consumer has not read yet.
 	t.closeInboundChan()
 	cli.deleteRequest(t.requestId)
-	cli.canceledRequests.Delete(t.requestId.Long())
+	t.cancelCtx() // end of client input: release the handler's request context
 	return nil
 }
 
 func (t *servingRequest) closeRequest(cli *servingClient) error {
 	cli.deleteRequest(t.requestId)
-	t.Close()
-	// BUG-13 fix: canceledRequests is keyed by int64 (reqId.Long()), not by the
-	// value.Number; deleting with the wrong key type leaked entries forever.
-	cli.canceledRequests.Delete(t.requestId.Long())
+	t.Close() // also cancels the handler's request context
 	return nil
 }
 

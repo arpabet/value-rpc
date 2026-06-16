@@ -6,9 +6,11 @@
 package valueserver
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/pkg/errors"
 	"go.arpabet.com/value"
@@ -34,17 +36,20 @@ type servingClient struct {
 
 	logger *zap.Logger
 
+	ctx    context.Context    // session context; parent of every request context
+	cancel context.CancelFunc // cancels all in-flight handlers when the session ends
+
 	outgoingQueue chan value.Map
 	done          chan struct{} // closed by Close(); never close outgoingQueue (BUG-3)
 
-	requestMap       sync.Map
-	canceledRequests sync.Map
-	inFlight         atomic.Int64 // concurrent request handlers (MaxConcurrentRequests)
+	requestMap     sync.Map
+	requestCancels sync.Map     // reqId(int64) -> context.CancelFunc for in-flight unary calls
+	inFlight       atomic.Int64 // concurrent request handlers (MaxConcurrentRequests)
 
 	closeOnce sync.Once
 }
 
-func NewServingClient(clientId int64, sessionToken string, conn vrpc.MsgConn, functionMap *sync.Map, logger *zap.Logger) *servingClient {
+func NewServingClient(parent context.Context, clientId int64, sessionToken string, conn vrpc.MsgConn, functionMap *sync.Map, logger *zap.Logger) *servingClient {
 
 	client := &servingClient{
 		clientId:      clientId,
@@ -54,6 +59,7 @@ func NewServingClient(clientId int64, sessionToken string, conn vrpc.MsgConn, fu
 		done:          make(chan struct{}),
 		logger:        logger,
 	}
+	client.ctx, client.cancel = context.WithCancel(parent)
 	client.activeConn.Store(conn)
 
 	// Exactly one long-lived sender for the lifetime of the serving client; it
@@ -67,9 +73,11 @@ func NewServingClient(clientId int64, sessionToken string, conn vrpc.MsgConn, fu
 func (t *servingClient) Close() {
 
 	t.closeOnce.Do(func() {
-		// Signal the sender and any blocked producers to stop. We must NOT
-		// close(outgoingQueue): producers (handlers, streamers) may still send
-		// and would panic on a closed channel (BUG-3).
+		// Cancel every in-flight handler's context, then signal the sender and
+		// any blocked producers to stop. We must NOT close(outgoingQueue):
+		// producers (handlers, streamers) may still send and would panic on a
+		// closed channel (BUG-3).
+		t.cancel()
 		close(t.done)
 
 		// Unblock the connection read loop so it can exit.
@@ -233,14 +241,21 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		return FunctionError(reqId, "function wrong type %s, expected %d, actual %d", name.String(), fn.ft, ft)
 	}
 
-	if _, ok := t.canceledRequests.Load(reqId.Long()); ok {
-		t.canceledRequests.Delete(reqId.Long())
-		return FunctionError(reqId, "function '%s' canceled request %d", name.String(), reqId.Long())
-	}
+	// Per-request context: derived from the session context (cancelled on
+	// disconnect/shutdown) and bounded by the client's SLA when one is supplied,
+	// so deadlines and cancellation propagate to handlers.
+	reqCtx, cancel := t.newRequestContext(req)
 
 	switch fn.ft {
 	case singleFunction:
-		res, err := fn.singleFn(args)
+		// Register the cancel so a CancelRequest for this in-flight unary call
+		// cancels its context; always clean up so the map cannot grow unbounded.
+		t.requestCancels.Store(reqId.Long(), cancel)
+		defer func() {
+			cancel()
+			t.requestCancels.Delete(reqId.Long())
+		}()
+		res, err := fn.singleFn(reqCtx, args)
 		if err != nil {
 			return FunctionError(reqId, "single function %s call, %v", name.String(), err)
 		}
@@ -250,8 +265,11 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		return FunctionResult(reqId, res)
 
 	case outgoingStream:
+		// Streams outlive this call: the cancel belongs to the serving request
+		// and fires when the stream is torn down (closeRequest / cancel / SLA).
 		sr := t.newServingRequest(ft, reqId)
-		outC, err := fn.outStream(args)
+		sr.cancel = cancel
+		outC, err := fn.outStream(reqCtx, args)
 		if err != nil {
 			sr.closeRequest(t)
 			return FunctionError(reqId, "out stream function %s call, %v", name.String(), err)
@@ -261,7 +279,8 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 
 	case incomingStream:
 		sr := t.newServingRequest(ft, reqId)
-		err := fn.inStream(args, sr.inC)
+		sr.cancel = cancel
+		err := fn.inStream(reqCtx, args, sr.inC)
 		if err != nil {
 			sr.closeRequest(t)
 			return FunctionError(reqId, "in stream function %s call, %v", name.String(), err)
@@ -270,7 +289,8 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 
 	case chat:
 		sr := t.newServingRequest(ft, reqId)
-		outC, err := fn.chat(args, sr.inC)
+		sr.cancel = cancel
+		outC, err := fn.chat(reqCtx, args, sr.inC)
 		if err != nil {
 			sr.closeRequest(t)
 			return FunctionError(reqId, "chat function %s call, %v", name.String(), err)
@@ -279,8 +299,19 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		return nil
 	}
 
+	cancel()
 	return FunctionError(reqId, "unsupported function %s type", name.String())
 
+}
+
+// newRequestContext derives a handler context from the session context. When the
+// request carries a positive SLA (TimeoutField, ms) the context also carries
+// that deadline, so a cooperating handler observes the client's timeout.
+func (t *servingClient) newRequestContext(req value.Map) (context.Context, context.CancelFunc) {
+	if sla, ok := vrpc.GetNumberField(req, vrpc.TimeoutField); ok && sla.Long() > 0 {
+		return context.WithTimeout(t.ctx, time.Duration(sla.Long())*time.Millisecond)
+	}
+	return context.WithCancel(t.ctx)
 }
 
 func (t *servingClient) newServingRequest(ft functionType, reqId value.Number) *servingRequest {
@@ -322,7 +353,11 @@ func (t *servingClient) processRequest(req value.Map) error {
 		return sr.serveRunningRequest(msgType, req, t)
 	} else {
 		if msgType == vrpc.CancelRequest {
-			t.canceledRequests.Store(reqId.Long(), req)
+			// Cancel an in-flight unary call (best-effort) by cancelling its
+			// context. Streams are handled above via their serving request.
+			if c, ok := t.requestCancels.Load(reqId.Long()); ok {
+				c.(context.CancelFunc)()
+			}
 			return nil
 		}
 		return t.serveNewRequest(msgType, req)

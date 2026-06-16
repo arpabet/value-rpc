@@ -6,6 +6,7 @@
 package valueserver_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,7 +29,7 @@ func Example_unary() {
 	srv.AddFunction("greet",
 		valuerpc.List(valuerpc.String), // args: [name]
 		valuerpc.String,                // result: string
-		func(args value.Value) (value.Value, error) {
+		func(_ context.Context, args value.Value) (value.Value, error) {
 			name := args.(value.List).GetStringAt(0).String()
 			return value.Utf8("Hello, " + name + "!"), nil
 		})
@@ -60,7 +61,7 @@ func Example_serverStreaming() {
 	defer srv.Close()
 
 	srv.AddOutgoingStream("count", valuerpc.List(valuerpc.Number),
-		func(args value.Value) (<-chan value.Value, error) {
+		func(_ context.Context, args value.Value) (<-chan value.Value, error) {
 			n := args.(value.List).GetNumberAt(0).Long()
 			out := make(chan value.Value)
 			go func() {
@@ -106,7 +107,7 @@ func Example_chat() {
 	defer srv.Close()
 
 	srv.AddChat("echo", valuerpc.Any,
-		func(args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
+		func(_ context.Context, args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
 			out := make(chan value.Value)
 			go func() {
 				defer close(out)
@@ -162,7 +163,7 @@ func Example_unixSocket() {
 	defer os.Remove(sock)
 
 	srv.AddFunction("greet", valuerpc.List(valuerpc.String), valuerpc.String,
-		func(args value.Value) (value.Value, error) {
+		func(_ context.Context, args value.Value) (value.Value, error) {
 			return value.Utf8("Hello, " + args.(value.List).GetStringAt(0).String() + "!"), nil
 		})
 	go srv.Run()
@@ -195,7 +196,7 @@ func Example_webSocket() {
 	defer srv.Close()
 
 	srv.AddFunction("greet", valuerpc.List(valuerpc.String), valuerpc.String,
-		func(args value.Value) (value.Value, error) {
+		func(_ context.Context, args value.Value) (value.Value, error) {
 			return value.Utf8("Hello, " + args.(value.List).GetStringAt(0).String() + "!"), nil
 		})
 	go srv.Run()
@@ -228,7 +229,7 @@ func Example_inMemory() {
 	defer srv.Close()
 
 	srv.AddFunction("greet", valuerpc.List(valuerpc.String), valuerpc.String,
-		func(args value.Value) (value.Value, error) {
+		func(_ context.Context, args value.Value) (value.Value, error) {
 			return value.Utf8("Hello, " + args.(value.List).GetStringAt(0).String() + "!"), nil
 		})
 	go srv.Run()

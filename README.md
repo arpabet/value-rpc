@@ -24,6 +24,9 @@ transport:  TCP  ·  Unix socket  ·  WebSocket        (optional SOCKS5 / wss TL
 - **Pluggable transports**: TCP, Unix domain sockets, and WebSocket (MessagePack) — one API, pick by address scheme.
 - **Runtime type checking** via `TypeDef` / `Verify` (`Arg`, `List`, `Map`, `Void`, `Any`).
 - **Cancellation**, **timeouts**, and a **throttle**-based flow‑control mechanism.
+- **`context.Context` in every handler**, cancelled on disconnect, shutdown,
+  client cancel, or the client's SLA deadline — for deadline/cancellation
+  propagation to downstream work.
 - **No head‑of‑line blocking**: each stream is delivered through a non‑blocking
   per‑request pump, so one slow consumer can't stall other multiplexed requests.
 - **Authenticated session resumption**: the server issues a per-session token at
@@ -50,6 +53,8 @@ Requires **Go 1.25+**.
 package main
 
 import (
+    "context"
+
     "go.arpabet.com/value"
     "go.arpabet.com/value-rpc/valuerpc"
     "go.arpabet.com/value-rpc/valueserver"
@@ -65,9 +70,10 @@ func main() {
     defer srv.Close()
 
     // args: [name] (one string)   result: string
+    // ctx is cancelled on disconnect, shutdown, client cancel, or SLA deadline.
     srv.AddFunction("greet",
         valuerpc.List(valuerpc.String), valuerpc.String,
-        func(args value.Value) (value.Value, error) {
+        func(ctx context.Context, args value.Value) (value.Value, error) {
             name := args.(value.List).GetStringAt(0).String()
             return value.Utf8("Hello, " + name + "!"), nil
         })
@@ -106,17 +112,17 @@ pkg.go.dev), and a full end‑to‑end demo is in [`example/sample.go`](example/
 
 | Pattern | gRPC analogue | Server registration | Server handler |
 |---------|---------------|----------------------|----------------|
-| Unary | unary | `AddFunction` | `func(args) (Value, error)` |
-| Server stream | server‑streaming | `AddOutgoingStream` | `func(args) (<-chan Value, error)` |
-| Client stream | client‑streaming | `AddIncomingStream` | `func(args, <-chan Value) error` |
-| Chat | bidirectional | `AddChat` | `func(args, <-chan Value) (<-chan Value, error)` |
+| Unary | unary | `AddFunction` | `func(ctx, args) (Value, error)` |
+| Server stream | server‑streaming | `AddOutgoingStream` | `func(ctx, args) (<-chan Value, error)` |
+| Client stream | client‑streaming | `AddIncomingStream` | `func(ctx, args, <-chan Value) error` |
+| Chat | bidirectional | `AddChat` | `func(ctx, args, <-chan Value) (<-chan Value, error)` |
 
 Client side: `CallFunction`, `GetStream`, `PutStream`, `Chat`.
 
 ```go
 // Server streaming: close the channel to end the stream.
 srv.AddOutgoingStream("count", valuerpc.List(valuerpc.Number),
-    func(args value.Value) (<-chan value.Value, error) {
+    func(ctx context.Context, args value.Value) (<-chan value.Value, error) {
         n := args.(value.List).GetNumberAt(0).Long()
         out := make(chan value.Value)
         go func() {
@@ -165,6 +171,7 @@ Package‑level knobs (set before constructing servers/clients):
 | `valueserver.OutgoingQueueCap` | 4096 | Per‑client server send buffer |
 | `valueserver.IncomingQueueCap` | 4096 | Per‑request inbound stream buffer |
 | `valueserver.MaxConcurrentRequests` | 4096 | Max concurrent request handlers per connection; over the limit requests are rejected with an error (`0` disables) |
+| `valueserver.MaxConnections` | 0 | Max simultaneously open connections; over the limit new connections are closed (`0` disables) |
 | `valuerpc.DefaultMaxPending` | 4096 | Per‑stream pending‑queue bound before a slow consumer is failed |
 | `valueclient.DefaultTimeoutMls` | 1000 | Default client call timeout (ms) |
 
@@ -403,7 +410,7 @@ if err != nil {
 }
 defer srv.Close()
 srv.AddFunction("greet", valuerpc.List(valuerpc.String), valuerpc.String,
-    func(args value.Value) (value.Value, error) {
+    func(ctx context.Context, args value.Value) (value.Value, error) {
         return value.Utf8("Hello, " + args.(value.List).GetStringAt(0).String() + "!"), nil
     })
 go srv.Run()
@@ -499,10 +506,12 @@ the bugs that were found and fixed (crash, correctness, DoS, and lifecycle
 issues) and [RESEARCH.md](RESEARCH.md) for how it compares to gRPC / WebSocket /
 msgpack‑rpc and a high‑load/concurrency analysis. Slow‑consumer head‑of‑line
 blocking has been resolved with a per‑request `StreamPump`; session resumption is
-authenticated with a server‑issued token; and a per‑connection
-`MaxConcurrentRequests` cap bounds handler goroutines under a flood. Known larger
-items still open: `context.Context` propagation, server‑side SLA enforcement,
-built‑in transport TLS/auth, a max‑connections cap, and a concurrent‑streams cap.
+authenticated with a server‑issued token; handlers now receive a
+`context.Context` (cancelled on disconnect/shutdown/cancel and carrying the
+client's SLA deadline); and `MaxConcurrentRequests` / `MaxConnections` caps bound
+goroutines and connections under a flood. Known larger items still open: built‑in
+transport TLS/auth, binding the client id to a verified principal, forced
+cancellation of handlers that ignore their context, and a concurrent‑streams cap.
 
 ## License
 

@@ -6,6 +6,7 @@
 package valuequic_test
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -100,7 +101,7 @@ func serverAuth(t testing.TB, setup func(valueserver.Server)) (valueserver.Serve
 func TestQUIC_RoundTrip(t *testing.T) {
 	srv, cli := serverAuth(t, func(s valueserver.Server) {
 		s.AddFunction("echo", valuerpc.List(valuerpc.String), valuerpc.String,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				return value.Utf8("q:" + args.(value.List).GetStringAt(0).String()), nil
 			})
 	})
@@ -126,7 +127,7 @@ func TestQUIC_Matrix(t *testing.T) {
 	t.Run("unary", func(t *testing.T) {
 		srv, cli := serverAuth(t, func(s valueserver.Server) {
 			s.AddFunction("sq", valuerpc.List(valuerpc.Number), valuerpc.Number,
-				func(a value.Value) (value.Value, error) {
+				func(_ context.Context, a value.Value) (value.Value, error) {
 					n := a.(value.List).GetNumberAt(0).Long()
 					return value.Long(n * n), nil
 				})
@@ -146,7 +147,7 @@ func TestQUIC_Matrix(t *testing.T) {
 	t.Run("serverStream", func(t *testing.T) {
 		srv, cli := serverAuth(t, func(s valueserver.Server) {
 			s.AddOutgoingStream("count", valuerpc.List(valuerpc.Number),
-				func(a value.Value) (<-chan value.Value, error) {
+				func(_ context.Context, a value.Value) (<-chan value.Value, error) {
 					n := a.(value.List).GetNumberAt(0).Long()
 					out := make(chan value.Value)
 					go func() {
@@ -186,7 +187,7 @@ func TestQUIC_Matrix(t *testing.T) {
 		done := make(chan struct{})
 		srv, cli := serverAuth(t, func(s valueserver.Server) {
 			s.AddIncomingStream("sum", valuerpc.Any,
-				func(a value.Value, inC <-chan value.Value) error {
+				func(_ context.Context, a value.Value, inC <-chan value.Value) error {
 					go func() {
 						for v := range inC {
 							if v != nil {
@@ -226,7 +227,7 @@ func TestQUIC_Matrix(t *testing.T) {
 	t.Run("chat", func(t *testing.T) {
 		srv, cli := serverAuth(t, func(s valueserver.Server) {
 			s.AddChat("echo", valuerpc.Any,
-				func(a value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
+				func(_ context.Context, a value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
 					out := make(chan value.Value)
 					go func() {
 						defer close(out)
@@ -296,7 +297,7 @@ func TestQUIC_MutualAuth(t *testing.T) {
 		return nil
 	})
 	srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
-		func(args value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
+		func(_ context.Context, args value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
 	go srv.Run()
 
 	cli := valuequic.NewClient(srv.Addr().String(), &tls.Config{
@@ -331,7 +332,7 @@ func TestQUIC_StreamsAreFreed(t *testing.T) {
 
 	srv, cli := serverAuth(t, func(s valueserver.Server) {
 		s.AddFunction("inc", valuerpc.List(valuerpc.Number), valuerpc.Number,
-			func(a value.Value) (value.Value, error) {
+			func(_ context.Context, a value.Value) (value.Value, error) {
 				return value.Long(a.(value.List).GetNumberAt(0).Long() + 1), nil
 			})
 	})
@@ -367,7 +368,7 @@ func mustConnect(t testing.TB, cli valueclient.Client) {
 func TestQUIC_Concurrent(t *testing.T) {
 	srv, cli := serverAuth(t, func(s valueserver.Server) {
 		s.AddFunction("square", valuerpc.List(valuerpc.Number), valuerpc.Number,
-			func(a value.Value) (value.Value, error) {
+			func(_ context.Context, a value.Value) (value.Value, error) {
 				n := a.(value.List).GetNumberAt(0).Long()
 				return value.Long(n * n), nil
 			})
@@ -411,7 +412,7 @@ func TestQUIC_Concurrent(t *testing.T) {
 func TestQUIC_MultipleConcurrentStreams(t *testing.T) {
 	srv, cli := serverAuth(t, func(s valueserver.Server) {
 		s.AddOutgoingStream("seq", valuerpc.List(valuerpc.Number, valuerpc.Number),
-			func(a value.Value) (<-chan value.Value, error) {
+			func(_ context.Context, a value.Value) (<-chan value.Value, error) {
 				l := a.(value.List)
 				start := l.GetNumberAt(0).Long()
 				cnt := l.GetNumberAt(1).Long()
@@ -471,7 +472,7 @@ func TestQUIC_LargeServerStream(t *testing.T) {
 	const n = 5000
 	srv, cli := serverAuth(t, func(s valueserver.Server) {
 		s.AddOutgoingStream("range", valuerpc.Any,
-			func(a value.Value) (<-chan value.Value, error) {
+			func(_ context.Context, a value.Value) (<-chan value.Value, error) {
 				out := make(chan value.Value)
 				go func() {
 					defer close(out)
@@ -520,7 +521,7 @@ func TestQUIC_RejectsClientWithoutCert(t *testing.T) {
 	}
 	defer srv.Close()
 	srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
-		func(a value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
+		func(_ context.Context, a value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
 	go srv.Run()
 
 	cli := valuequic.NewClient(srv.Addr().String(), &tls.Config{RootCAs: caPool}) // no client cert
@@ -541,7 +542,7 @@ func TestQUIC_MaxFrameSize(t *testing.T) {
 
 	srv, cli := serverAuth(t, func(s valueserver.Server) {
 		s.AddFunction("recv", valuerpc.Any, valuerpc.String,
-			func(a value.Value) (value.Value, error) { return value.Utf8("ok"), nil })
+			func(_ context.Context, a value.Value) (value.Value, error) { return value.Utf8("ok"), nil })
 	})
 	defer srv.Close()
 	mustConnect(t, cli)
@@ -560,7 +561,7 @@ func TestQUIC_MaxFrameSize(t *testing.T) {
 func BenchmarkQUICUnary(b *testing.B) {
 	srv, cli := serverAuth(b, func(s valueserver.Server) {
 		s.AddFunction("noop", valuerpc.List(valuerpc.Number), valuerpc.Number,
-			func(a value.Value) (value.Value, error) { return a.(value.List).GetNumberAt(0), nil })
+			func(_ context.Context, a value.Value) (value.Value, error) { return a.(value.List).GetNumberAt(0), nil })
 	})
 	defer srv.Close()
 	if err := cli.Connect(); err != nil {

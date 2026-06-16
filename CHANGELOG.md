@@ -58,6 +58,14 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **BREAKING: handlers now take a `context.Context` first argument.** All four
+  handler types gained `ctx`: `Function`, `OutgoingStream`, `IncomingStream`,
+  `Chat`. The context is cancelled on disconnect, server shutdown, request
+  cancellation, or when the client's SLA deadline elapses, and carries that
+  deadline — so handlers can propagate cancellation/deadlines to downstream work.
+  Update existing handlers to `func(ctx context.Context, args value.Value) ...`.
+  The wire protocol is unchanged. Tests: `valueserver.TestHandlerReceivesSLADeadline`,
+  `TestUnaryHandlerContextCanceled`.
 - **README** and **RESEARCH.md** rewritten to document all three transports
   (intro, architecture diagram, features, dependencies, configuration) instead
   of describing the library as TCP-only.
@@ -79,6 +87,11 @@ All notable changes to this project are documented here. The format is based on
   pinning unbounded memory. (The earlier pass only stopped the related
   send-on-closed panic; the blocking itself remained.) Regression tests:
   `valueserver.TestSlowStreamConsumerDoesNotBlockOthers`, `valuerpc.TestStreamPump_*`.
+- **Unary cancellation leak.** The `canceledRequests` map (which grew unbounded
+  when a cancel arrived for an already-running unary call) was replaced by
+  context-based cancellation: an in-flight unary handler's context is cancelled
+  on `CancelRequest`, and the tracking entry is always cleaned up when the
+  handler returns.
 
 - **Concurrent-request cap (DoS hardening).** `valueserver.MaxConcurrentRequests`
   (default 4096, per serving client; `0` disables) bounds how many request
@@ -86,6 +99,11 @@ All notable changes to this project are documented here. The format is based on
   response instead of spawning an unbounded goroutine or blocking the read loop —
   a request flood can no longer exhaust goroutines/memory. Regression test:
   `valueserver.TestMaxConcurrentRequestsRejectsFlood`.
+- **Max-connections cap.** `valueserver.MaxConnections` (default `0` = unlimited)
+  caps simultaneously open connections; connections over the limit are closed
+  immediately.
+- **`time.After` → `time.NewTimer` + `Stop`** in the client unary wait path
+  (`SingleResp`), so a timer is no longer leaked per call when the response wins.
 
 ### Security
 

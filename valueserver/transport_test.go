@@ -6,6 +6,7 @@
 package valueserver_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,7 +36,7 @@ func TestSeam_NewServerWithListener_TCP(t *testing.T) {
 	}
 	defer srv.Close()
 	srv.AddFunction("echo", valuerpc.List(valuerpc.String), valuerpc.String,
-		func(args value.Value) (value.Value, error) {
+		func(_ context.Context, args value.Value) (value.Value, error) {
 			return value.Utf8("t:" + args.(value.List).GetStringAt(0).String()), nil
 		})
 	go srv.Run()
@@ -78,7 +79,7 @@ func TestSeam_UnixSocketTransport(t *testing.T) {
 	}
 	defer srv.Close()
 	srv.AddFunction("echo", valuerpc.List(valuerpc.String), valuerpc.String,
-		func(args value.Value) (value.Value, error) {
+		func(_ context.Context, args value.Value) (value.Value, error) {
 			return value.Utf8("u:" + args.(value.List).GetStringAt(0).String()), nil
 		})
 	go srv.Run()
@@ -118,7 +119,7 @@ func TestUnixScheme_RoundTrip(t *testing.T) {
 	}
 	defer srv.Close()
 	srv.AddFunction("echo", valuerpc.List(valuerpc.String), valuerpc.String,
-		func(args value.Value) (value.Value, error) {
+		func(_ context.Context, args value.Value) (value.Value, error) {
 			return value.Utf8(args.(value.List).GetStringAt(0).String()), nil
 		})
 	go srv.Run()
@@ -151,7 +152,7 @@ func TestNewUnixServerClient_RoundTrip(t *testing.T) {
 	}
 	defer srv.Close()
 	srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
-		func(args value.Value) (value.Value, error) {
+		func(_ context.Context, args value.Value) (value.Value, error) {
 			return value.Utf8("pong"), nil
 		})
 	go srv.Run()
@@ -198,7 +199,7 @@ func TestPeerCredOverUnix(t *testing.T) {
 		return nil
 	})
 	srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
-		func(args value.Value) (value.Value, error) {
+		func(_ context.Context, args value.Value) (value.Value, error) {
 			return value.Utf8("pong"), nil
 		})
 	go srv.Run()
@@ -238,7 +239,7 @@ func TestConnectAuthorizerRejects(t *testing.T) {
 		return fmt.Errorf("denied")
 	})
 	srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
-		func(args value.Value) (value.Value, error) {
+		func(_ context.Context, args value.Value) (value.Value, error) {
 			return value.Utf8("pong"), nil
 		})
 	go srv.Run()

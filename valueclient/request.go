@@ -176,13 +176,18 @@ func (t *rpcRequestCtx) Error(defaultError error) error {
 }
 
 func (t *rpcRequestCtx) SingleResp(timeoutMls int64, onTimeout func()) (value.Value, error) {
+	// time.NewTimer + Stop instead of time.After: time.After cannot be cancelled
+	// and its timer lives until it fires, leaking a timer per call on the unary
+	// hot path when the response arrives first.
+	timer := time.NewTimer(time.Duration(timeoutMls) * time.Millisecond)
+	defer timer.Stop()
 	select {
 	case result, ok := <-t.resultCh:
 		if !ok {
 			return nil, t.Error(ErrNoResponse)
 		}
 		return result, nil
-	case <-time.After(time.Duration(timeoutMls) * time.Millisecond):
+	case <-timer.C:
 		onTimeout()
 		return nil, t.Error(ErrTimeoutError)
 	}

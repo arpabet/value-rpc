@@ -6,6 +6,7 @@
 package valueserver_test
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -44,7 +45,7 @@ func dialClient(t testing.TB, addr string) valueclient.Client {
 func TestUnaryCall(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("echo", valuerpc.List(valuerpc.String), valuerpc.String,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				in := args.(value.List).GetStringAt(0).String()
 				return value.Utf8("echo:" + in), nil
 			})
@@ -69,7 +70,7 @@ func TestUnaryCall_ServerError(t *testing.T) {
 		// args is rejected before it ever runs (see TestVoidArgsRejected /
 		// FINDINGS.md BUG-2), which would make this test pass for the wrong reason.
 		s.AddFunction("boom", valuerpc.Any, valuerpc.String,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				return nil, fmt.Errorf("kaboom")
 			})
 	})
@@ -89,7 +90,7 @@ func TestUnaryCall_ServerError(t *testing.T) {
 func TestVoidArgsAccepted(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("ping", valuerpc.Void, valuerpc.String,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				return value.Utf8("pong"), nil
 			})
 	})
@@ -122,7 +123,7 @@ func TestUnaryCall_UnknownFunction(t *testing.T) {
 func TestServerStreaming(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddOutgoingStream("count", valuerpc.List(valuerpc.Number),
-			func(args value.Value) (<-chan value.Value, error) {
+			func(_ context.Context, args value.Value) (<-chan value.Value, error) {
 				n := int(args.(value.List).GetNumberAt(0).Long())
 				out := make(chan value.Value, n)
 				go func() {
@@ -166,7 +167,7 @@ func TestClientStreaming(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		// valuerpc.Any (not Void) so the nil-args call passes verification; see BUG-2.
 		s.AddIncomingStream("sum", valuerpc.Any,
-			func(args value.Value, inC <-chan value.Value) error {
+			func(_ context.Context, args value.Value, inC <-chan value.Value) error {
 				go func() {
 					for v := range inC {
 						if v != nil {
@@ -223,7 +224,7 @@ func TestMaxConcurrentRequestsRejectsFlood(t *testing.T) {
 	var active, maxActive int64
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("hold", valuerpc.Any, valuerpc.Any,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				n := atomic.AddInt64(&active, 1)
 				for {
 					m := atomic.LoadInt64(&maxActive)
@@ -281,13 +282,69 @@ func TestMaxConcurrentRequestsRejectsFlood(t *testing.T) {
 	}
 }
 
+// TestHandlerReceivesSLADeadline verifies the client's SLA is propagated to the
+// handler as a context deadline.
+func TestHandlerReceivesSLADeadline(t *testing.T) {
+	hasDeadline := make(chan bool, 1)
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("checkDeadline", valuerpc.Any, valuerpc.Any,
+			func(ctx context.Context, args value.Value) (value.Value, error) {
+				_, ok := ctx.Deadline()
+				hasDeadline <- ok
+				return value.Utf8("ok"), nil
+			})
+	})
+	defer stop()
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+	cli.SetTimeout(2000) // sent as the SLA on the request
+
+	if _, err := cli.CallFunction("checkDeadline", nil); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if !<-hasDeadline {
+		t.Fatal("handler context carried no deadline despite the client SLA")
+	}
+}
+
+// TestUnaryHandlerContextCanceled verifies that cancelling an in-flight unary
+// call (here via the client's timeout, which sends CancelRequest) cancels the
+// handler's context — exercising the ctx-based unary cancellation that replaced
+// the leak-prone canceledRequests set.
+func TestUnaryHandlerContextCanceled(t *testing.T) {
+	canceled := make(chan struct{})
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("block", valuerpc.Any, valuerpc.Any,
+			func(ctx context.Context, args value.Value) (value.Value, error) {
+				<-ctx.Done() // block until the request is cancelled
+				close(canceled)
+				return nil, ctx.Err()
+			})
+	})
+	defer stop()
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+	cli.SetTimeout(200) // times out, which sends CancelRequest to the server
+
+	if _, err := cli.CallFunction("block", nil); err == nil {
+		t.Fatal("expected a timeout error from the blocked call")
+	}
+	select {
+	case <-canceled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler context was not cancelled after the client cancelled the request")
+	}
+}
+
 // TestConcurrentUnaryCalls exercises the multiplexing/dispatch path: many
 // goroutines share one client and one connection, and each must receive exactly
 // its own response (correct requestId routing under load).
 func TestConcurrentUnaryCalls(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("square", valuerpc.List(valuerpc.Number), valuerpc.Number,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				n := args.(value.List).GetNumberAt(0).Long()
 				return value.Long(n * n), nil
 			})
@@ -340,13 +397,13 @@ func TestSlowStreamConsumerDoesNotBlockOthers(t *testing.T) {
 	stopProducing := make(chan struct{})
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("square", valuerpc.List(valuerpc.Number), valuerpc.Number,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				n := args.(value.List).GetNumberAt(0).Long()
 				return value.Long(n * n), nil
 			})
 		// Emits continuously until the test ends or the request is cancelled.
 		s.AddOutgoingStream("firehose", valuerpc.Any,
-			func(args value.Value) (<-chan value.Value, error) {
+			func(_ context.Context, args value.Value) (<-chan value.Value, error) {
 				outC := make(chan value.Value)
 				go func() {
 					defer close(outC)
@@ -412,7 +469,7 @@ func TestSlowStreamConsumerDoesNotBlockOthers(t *testing.T) {
 func TestChatBidirectional(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddChat("echo", valuerpc.Any,
-			func(args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
+			func(_ context.Context, args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
 				outC := make(chan value.Value, 8)
 				go func() {
 					defer close(outC)
@@ -467,7 +524,7 @@ func TestChatBidirectional(t *testing.T) {
 func BenchmarkUnaryCallLoopback(b *testing.B) {
 	addr, stop := newServer(b, func(s valueserver.Server) {
 		s.AddFunction("noop", valuerpc.List(valuerpc.Number), valuerpc.Number,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				return args.(value.List).GetNumberAt(0), nil
 			})
 	})
@@ -490,7 +547,7 @@ func BenchmarkUnaryCallLoopback(b *testing.B) {
 func BenchmarkUnaryCallParallel(b *testing.B) {
 	addr, stop := newServer(b, func(s valueserver.Server) {
 		s.AddFunction("noop", valuerpc.List(valuerpc.Number), valuerpc.Number,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				return args.(value.List).GetNumberAt(0), nil
 			})
 	})
@@ -518,11 +575,11 @@ func BenchmarkUnaryCallParallel(b *testing.B) {
 func TestServerSurvivesHandlerPanic(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("boom", valuerpc.Any, valuerpc.Any,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				panic("handler exploded")
 			})
 		s.AddFunction("ok", valuerpc.Any, valuerpc.String,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				return value.Utf8("alive"), nil
 			})
 	})
@@ -550,7 +607,7 @@ func TestServerSurvivesHandlerPanic(t *testing.T) {
 func TestGracefulShutdown(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("ping", valuerpc.Any, valuerpc.String,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				return value.Utf8("pong"), nil
 			})
 	})
@@ -573,7 +630,7 @@ func TestGracefulShutdown(t *testing.T) {
 func TestWrongArgTypeRejected(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("needsNumber", valuerpc.List(valuerpc.Number), valuerpc.Number,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				return args.(value.List).GetNumberAt(0), nil
 			})
 	})
@@ -594,7 +651,7 @@ func TestLargeServerStream(t *testing.T) {
 	const n = 10000
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddOutgoingStream("range", valuerpc.Any,
-			func(args value.Value) (<-chan value.Value, error) {
+			func(_ context.Context, args value.Value) (<-chan value.Value, error) {
 				out := make(chan value.Value)
 				go func() {
 					defer close(out)
@@ -636,7 +693,7 @@ func TestLargeServerStream(t *testing.T) {
 func TestMultipleConcurrentStreams(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddOutgoingStream("seq", valuerpc.List(valuerpc.Number, valuerpc.Number),
-			func(args value.Value) (<-chan value.Value, error) {
+			func(_ context.Context, args value.Value) (<-chan value.Value, error) {
 				l := args.(value.List)
 				start := l.GetNumberAt(0).Long()
 				cnt := l.GetNumberAt(1).Long()
@@ -699,7 +756,7 @@ func TestMultipleConcurrentStreams(t *testing.T) {
 func BenchmarkServerStreamRecv(b *testing.B) {
 	addr, stop := newServer(b, func(s valueserver.Server) {
 		s.AddOutgoingStream("range", valuerpc.List(valuerpc.Number),
-			func(args value.Value) (<-chan value.Value, error) {
+			func(_ context.Context, args value.Value) (<-chan value.Value, error) {
 				n := args.(value.List).GetNumberAt(0).Long()
 				out := make(chan value.Value, 256)
 				go func() {
@@ -739,7 +796,7 @@ func BenchmarkServerStreamRecv(b *testing.B) {
 func BenchmarkChatEcho(b *testing.B) {
 	addr, stop := newServer(b, func(s valueserver.Server) {
 		s.AddChat("echo", valuerpc.Any,
-			func(args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
+			func(_ context.Context, args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
 				out := make(chan value.Value, 64)
 				go func() {
 					defer close(out)

@@ -6,22 +6,22 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"github.com/pkg/errors"
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valueclient"
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
-	"github.com/pkg/errors"
 	"os"
 	"sync"
 	"time"
 )
 
-
 var firstName = ""
 var lastName = ""
 
-func setName(args value.Value) (value.Value, error) {
+func setName(_ context.Context, args value.Value) (value.Value, error) {
 
 	listArgs := args.(value.List)
 	firstName = listArgs.GetStringAt(0).String()
@@ -30,11 +30,11 @@ func setName(args value.Value) (value.Value, error) {
 	return nil, nil
 }
 
-func getName(args value.Value) (value.Value, error) {
+func getName(_ context.Context, args value.Value) (value.Value, error) {
 	return value.Utf8(firstName + " " + lastName), nil
 }
 
-func scanNames(args value.Value) (<-chan value.Value, error) {
+func scanNames(_ context.Context, args value.Value) (<-chan value.Value, error) {
 
 	outC := make(chan value.Value, 2)
 
@@ -51,7 +51,7 @@ func scanNames(args value.Value) (<-chan value.Value, error) {
 	return outC, nil
 }
 
-func uploadNames(args value.Value, inC <-chan value.Value) error {
+func uploadNames(_ context.Context, args value.Value, inC <-chan value.Value) error {
 
 	go func() {
 
@@ -78,7 +78,7 @@ func reverse(s string) string {
 	return string(runes)
 }
 
-func echoChat(args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
+func echoChat(_ context.Context, args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
 
 	outC := make(chan value.Value, 20)
 

@@ -6,6 +6,7 @@
 package valueserver_test
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -97,7 +98,7 @@ func TestTLS_ServerAuth(t *testing.T) {
 	}
 	defer srv.Close()
 	srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
-		func(args value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
+		func(_ context.Context, args value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
 	go srv.Run()
 
 	cli := valueclient.NewTLSClient(srv.Addr().String(), &tls.Config{RootCAs: caPool})
@@ -144,7 +145,7 @@ func TestTLS_MutualAuth(t *testing.T) {
 		return nil
 	})
 	srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
-		func(args value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
+		func(_ context.Context, args value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
 	go srv.Run()
 
 	cli := valueclient.NewTLSClient(srv.Addr().String(), &tls.Config{
@@ -187,7 +188,7 @@ func TestTLS_RejectsClientWithoutCert(t *testing.T) {
 	}
 	defer srv.Close()
 	srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
-		func(args value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
+		func(_ context.Context, args value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
 	go srv.Run()
 
 	// Trusts the server, but presents no client certificate.

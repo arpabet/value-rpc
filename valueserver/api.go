@@ -6,16 +6,22 @@
 package valueserver
 
 import (
+	"context"
 	"net"
 
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
 )
 
-type Function func(args value.Value) (value.Value, error)
-type OutgoingStream func(args value.Value) (<-chan value.Value, error)
-type IncomingStream func(args value.Value, inC <-chan value.Value) error
-type Chat func(args value.Value, inC <-chan value.Value) (<-chan value.Value, error)
+// Handler signatures receive a context.Context as their first argument. The
+// context is cancelled when the connection drops, the server shuts down, the
+// request is cancelled (client CancelRequest), or the client's SLA deadline
+// elapses — handlers should honour it for cancellation and deadline propagation
+// to downstream work.
+type Function func(ctx context.Context, args value.Value) (value.Value, error)
+type OutgoingStream func(ctx context.Context, args value.Value) (<-chan value.Value, error)
+type IncomingStream func(ctx context.Context, args value.Value, inC <-chan value.Value) error
+type Chat func(ctx context.Context, args value.Value, inC <-chan value.Value) (<-chan value.Value, error)
 
 // ConnectAuthorizer is called once per new connection, before the handshake. If
 // it returns an error the connection is rejected and closed. Combine it with

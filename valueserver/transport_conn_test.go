@@ -6,6 +6,7 @@
 package valueserver_test
 
 import (
+	"context"
 	"net"
 	"testing"
 
@@ -62,7 +63,7 @@ func TestSeam_SingleConn_RoundTrip(t *testing.T) {
 	}
 	defer srv.Close()
 	srv.AddFunction("echo", valuerpc.List(valuerpc.String), valuerpc.String,
-		func(args value.Value) (value.Value, error) {
+		func(_ context.Context, args value.Value) (value.Value, error) {
 			return value.Utf8("t:" + args.(value.List).GetStringAt(0).String()), nil
 		})
 	go srv.Run()

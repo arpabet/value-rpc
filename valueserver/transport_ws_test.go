@@ -6,6 +6,7 @@
 package valueserver_test
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"strings"
@@ -34,7 +35,7 @@ func newWSServer(t testing.TB, path string, setup func(s valueserver.Server)) (v
 func TestWebSocket_Unary(t *testing.T) {
 	srv, url := newWSServer(t, "/rpc", func(s valueserver.Server) {
 		s.AddFunction("echo", valuerpc.List(valuerpc.String), valuerpc.String,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				return value.Utf8("ws:" + args.(value.List).GetStringAt(0).String()), nil
 			})
 	})
@@ -59,7 +60,7 @@ func TestWebSocket_Unary(t *testing.T) {
 func TestWebSocket_ServerStream(t *testing.T) {
 	srv, url := newWSServer(t, "/rpc", func(s valueserver.Server) {
 		s.AddOutgoingStream("count", valuerpc.List(valuerpc.Number),
-			func(args value.Value) (<-chan value.Value, error) {
+			func(_ context.Context, args value.Value) (<-chan value.Value, error) {
 				n := args.(value.List).GetNumberAt(0).Long()
 				out := make(chan value.Value)
 				go func() {
@@ -102,7 +103,7 @@ func TestWebSocket_ServerStream(t *testing.T) {
 func TestWebSocket_Chat(t *testing.T) {
 	srv, url := newWSServer(t, "/rpc", func(s valueserver.Server) {
 		s.AddChat("echo", valuerpc.Any,
-			func(args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
+			func(_ context.Context, args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
 				out := make(chan value.Value)
 				go func() {
 					defer close(out)
@@ -160,7 +161,7 @@ func TestWebSocket_SchemeViaNewServer(t *testing.T) {
 	}
 	defer srv.Close()
 	srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
-		func(args value.Value) (value.Value, error) {
+		func(_ context.Context, args value.Value) (value.Value, error) {
 			return value.Utf8("pong"), nil
 		})
 	go srv.Run()
@@ -190,7 +191,7 @@ func TestWebSocket_EmbeddedHandler(t *testing.T) {
 	}
 	defer srv.Close()
 	srv.AddFunction("echo", valuerpc.List(valuerpc.String), valuerpc.String,
-		func(args value.Value) (value.Value, error) {
+		func(_ context.Context, args value.Value) (value.Value, error) {
 			return value.Utf8(args.(value.List).GetStringAt(0).String()), nil
 		})
 	go srv.Run()
@@ -232,7 +233,7 @@ func TestWebSocket_MaxFrameSize(t *testing.T) {
 
 	srv, url := newWSServer(t, "/rpc", func(s valueserver.Server) {
 		s.AddFunction("recv", valuerpc.Any, valuerpc.String,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				return value.Utf8("ok"), nil
 			})
 	})
@@ -259,7 +260,7 @@ func TestWebSocket_MaxFrameSize(t *testing.T) {
 func BenchmarkWebSocketUnary(b *testing.B) {
 	srv, url := newWSServer(b, "/rpc", func(s valueserver.Server) {
 		s.AddFunction("noop", valuerpc.List(valuerpc.Number), valuerpc.Number,
-			func(args value.Value) (value.Value, error) {
+			func(_ context.Context, args value.Value) (value.Value, error) {
 				return args.(value.List).GetNumberAt(0), nil
 			})
 	})

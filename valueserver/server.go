@@ -6,6 +6,7 @@
 package valueserver
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"crypto/tls"
@@ -35,15 +36,24 @@ var HandshakeTimeout = 10 * time.Second
 // transports (e.g. Unix sockets).
 var KeepAlivePeriod = 15 * time.Second
 
+// MaxConnections caps the number of simultaneously open connections the server
+// accepts; connections beyond the limit are closed immediately. Set to 0
+// (default) for no limit.
+var MaxConnections int64 = 0
+
 type rpcServer struct {
 	listener valuerpc.Listener
 	shutdown chan struct{}
 	wg       sync.WaitGroup
 	logger   *zap.Logger
 
+	ctx    context.Context // base context for handlers; cancelled on Close
+	cancel context.CancelFunc
+
 	clientMap   sync.Map // key is clientId, value *servingClient
 	functionMap sync.Map // key is function name, value *function
 	connMap     sync.Map // key is valuerpc.MsgConn, tracks live conns for shutdown (BUG-14)
+	liveConns   atomic.Int64
 
 	authorizer atomic.Value // ConnectAuthorizer, optional
 
@@ -160,6 +170,9 @@ func NewServerWithListener(lis valuerpc.Listener, logger *zap.Logger) (Server, e
 		logger:   logger,
 		listener: lis,
 	}
+	// ctx is the parent of every handler's request context; cancelling it on
+	// Close signals all in-flight handlers that the server is shutting down.
+	t.ctx, t.cancel = context.WithCancel(context.Background())
 	// wg tracks only connection-handler goroutines, so Close() drains in-flight
 	// connections and does not hang when Run() was never called.
 	logger.Info("start vRPC server", zap.String("addr", lis.Addr().String()))
@@ -175,7 +188,9 @@ func (t *rpcServer) Close() error {
 	t.closeOnce.Do(func() {
 		t.logger.Info("shutdown vRPC server")
 
-		// Stop accepting and unblock Run().
+		// Signal all in-flight handlers (via their request contexts) that the
+		// server is going away, then stop accepting and unblock Run().
+		t.cancel()
 		close(t.shutdown)
 		err = t.listener.Close()
 
@@ -226,12 +241,24 @@ func (t *rpcServer) Run() error {
 		}
 		backoff = 0
 
+		// Cap simultaneously open connections so a connection flood cannot
+		// exhaust file descriptors / memory (DoS). Over the limit we close the
+		// new connection immediately and keep serving existing ones.
+		if max := MaxConnections; max > 0 && t.liveConns.Load() >= max {
+			t.logger.Warn("connection rejected: max connections reached",
+				zap.Int64("max", max), zap.String("from", msgConn.RemoteAddr()))
+			msgConn.Close()
+			continue
+		}
+
 		// The Listener has already applied transport framing and keepalive.
+		t.liveConns.Add(1)
 		t.connMap.Store(msgConn, struct{}{})
 
 		t.wg.Add(1)
 		go func() {
 			defer t.wg.Done()
+			defer t.liveConns.Add(-1)
 			defer t.connMap.Delete(msgConn)
 			t.logger.Info("new connection", zap.String("from", msgConn.RemoteAddr()))
 			if err := t.handleConnection(msgConn); err != nil {
@@ -379,7 +406,7 @@ func (t *rpcServer) createOrUpdateServingClient(clientId int64, presentedToken s
 		return nil, errors.Errorf("on handshake, generate session token: %v", err)
 	}
 
-	client := NewServingClient(clientId, token, conn, &t.functionMap, t.logger)
+	client := NewServingClient(t.ctx, clientId, token, conn, &t.functionMap, t.logger)
 	// LoadOrStore guards a reconnect race for the same (new) clientId: if another
 	// connection won the slot, validate against the winner and discard ours
 	// (closing it stops the sender goroutine NewServingClient started).

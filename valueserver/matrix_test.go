@@ -6,6 +6,7 @@
 package valueserver_test
 
 import (
+	"context"
 	"os"
 	"sync"
 	"testing"
@@ -81,7 +82,7 @@ func TestTransportMatrix(t *testing.T) {
 			t.Run("unary", func(t *testing.T) {
 				srv, cli := tr.start(t, func(s valueserver.Server) {
 					s.AddFunction("echo", valuerpc.List(valuerpc.String), valuerpc.String,
-						func(args value.Value) (value.Value, error) {
+						func(_ context.Context, args value.Value) (value.Value, error) {
 							return value.Utf8("e:" + args.(value.List).GetStringAt(0).String()), nil
 						})
 				})
@@ -104,7 +105,7 @@ func TestTransportMatrix(t *testing.T) {
 			t.Run("serverStream", func(t *testing.T) {
 				srv, cli := tr.start(t, func(s valueserver.Server) {
 					s.AddOutgoingStream("count", valuerpc.List(valuerpc.Number),
-						func(args value.Value) (<-chan value.Value, error) {
+						func(_ context.Context, args value.Value) (<-chan value.Value, error) {
 							n := args.(value.List).GetNumberAt(0).Long()
 							out := make(chan value.Value)
 							go func() {
@@ -150,7 +151,7 @@ func TestTransportMatrix(t *testing.T) {
 				)
 				srv, cli := tr.start(t, func(s valueserver.Server) {
 					s.AddIncomingStream("sum", valuerpc.Any,
-						func(args value.Value, inC <-chan value.Value) error {
+						func(_ context.Context, args value.Value, inC <-chan value.Value) error {
 							go func() {
 								for v := range inC {
 									if v != nil {
@@ -195,7 +196,7 @@ func TestTransportMatrix(t *testing.T) {
 			t.Run("chat", func(t *testing.T) {
 				srv, cli := tr.start(t, func(s valueserver.Server) {
 					s.AddChat("echo", valuerpc.Any,
-						func(args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
+						func(_ context.Context, args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
 							out := make(chan value.Value)
 							go func() {
 								defer close(out)

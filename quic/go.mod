@@ -9,6 +9,12 @@ require (
 	go.uber.org/zap v1.28.0
 )
 
+// Build/test this submodule against the local value-rpc working tree rather than
+// the last published release, so cross-module changes are validated before a
+// tag. Replace directives in a dependency are ignored by downstream consumers,
+// so this only affects building the quic module itself.
+replace go.arpabet.com/value-rpc => ../
+
 require (
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
