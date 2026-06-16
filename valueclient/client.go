@@ -224,7 +224,12 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 		// BUG-4 fix: an absent value field decodes as value.Null, not Go nil;
 		// only deliver a real payload.
 		if streamValue := resp.Get(valuerpc.ValueField); streamValue != nil && streamValue.Kind() != value.NULL {
-			requestCtx.notifyResult(streamValue)
+			// BUG-6: notifyResult never blocks the response loop. If it returns
+			// false the consumer fell too far behind; cancel once so the server
+			// stops producing instead of streaming into a dropped buffer.
+			if !requestCtx.notifyResult(streamValue) {
+				requestCtx.cancelOnce.Do(func() { t.CancelRequest(requestCtx.requestId) })
+			}
 		}
 		t.regulateIncomingStream(requestCtx)
 

@@ -254,6 +254,82 @@ func TestConcurrentUnaryCalls(t *testing.T) {
 	}
 }
 
+// TestSlowStreamConsumerDoesNotBlockOthers is the regression test for BUG-6
+// (head-of-line blocking). One client opens a server-stream and never reads it,
+// while the server pushes values as fast as it can. The stream's buffer fills,
+// but because the client's response loop delivers through a pump (non-blocking)
+// instead of a blocking channel send, every other multiplexed request on the
+// same connection must keep completing. Before the fix the full stream buffer
+// froze the single response loop and these unary calls all timed out.
+func TestSlowStreamConsumerDoesNotBlockOthers(t *testing.T) {
+	stopProducing := make(chan struct{})
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("square", valuerpc.List(valuerpc.Number), valuerpc.Number,
+			func(args value.Value) (value.Value, error) {
+				n := args.(value.List).GetNumberAt(0).Long()
+				return value.Long(n * n), nil
+			})
+		// Emits continuously until the test ends or the request is cancelled.
+		s.AddOutgoingStream("firehose", valuerpc.Any,
+			func(args value.Value) (<-chan value.Value, error) {
+				outC := make(chan value.Value)
+				go func() {
+					defer close(outC)
+					for i := int64(0); ; i++ {
+						select {
+						case outC <- value.Long(i):
+						case <-stopProducing:
+							return
+						}
+					}
+				}()
+				return outC, nil
+			})
+	})
+	defer stop()
+	defer close(stopProducing)
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+	cli.SetTimeout(5000)
+
+	// Open the firehose and deliberately never drain it: a stuck slow consumer.
+	stream, _, err := cli.GetStream("firehose", nil, 4)
+	if err != nil {
+		t.Fatalf("get stream: %v", err)
+	}
+	_ = stream // intentionally not read
+
+	// Give the server a moment to saturate the stream's buffer + pump.
+	time.Sleep(200 * time.Millisecond)
+
+	// Unary calls on the SAME connection must still complete promptly.
+	done := make(chan error, 1)
+	go func() {
+		for i := int64(1); i <= 200; i++ {
+			res, err := cli.CallFunction("square", value.Tuple(value.Long(i)))
+			if err != nil {
+				done <- fmt.Errorf("square(%d): %w", i, err)
+				return
+			}
+			if got := res.(value.Number).Long(); got != i*i {
+				done <- fmt.Errorf("square(%d) = %d, want %d", i, got, i*i)
+				return
+			}
+		}
+		done <- nil
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("unary calls blocked behind a slow stream consumer (BUG-6 head-of-line blocking)")
+	}
+}
+
 // TestChatBidirectional exercises the full bidirectional path end-to-end. It
 // also covers the chat half-close fix: the client closes its send side and must
 // still receive every echo the server produced (no dropped messages, no phantom

@@ -37,9 +37,11 @@ type rpcRequestCtx struct {
 	req       value.Map
 	start     time.Time
 
-	resultCh  chan value.Value
-	done      chan struct{} // closed together with resultCh
-	closeOnce sync.Once
+	resultCh   chan value.Value
+	resultPump *valuerpc.StreamPump // drains into resultCh for streaming kinds; nil for unary/put
+	done       chan struct{}        // closed together with resultCh
+	closeOnce  sync.Once
+	cancelOnce sync.Once // bounds a slow-consumer cancel to one per request
 
 	getClosed atomic.Bool // no more server->client values will be delivered
 	putClosed atomic.Bool // client->server side (streamOut) has finished
@@ -50,7 +52,7 @@ type rpcRequestCtx struct {
 }
 
 func NewRequestCtx(requestId int64, kind streamKind, req value.Map, receiveCap int) *rpcRequestCtx {
-	return &rpcRequestCtx{
+	t := &rpcRequestCtx{
 		requestId: requestId,
 		kind:      kind,
 		req:       req,
@@ -58,6 +60,14 @@ func NewRequestCtx(requestId int64, kind streamKind, req value.Map, receiveCap i
 		resultCh:  make(chan value.Value, receiveCap),
 		done:      make(chan struct{}),
 	}
+	// Server->client streams (get-stream, chat) deliver through a pump so a slow
+	// consumer cannot block the single response loop and every other request on
+	// the connection (BUG-6). Unary and put-stream receive a single value into a
+	// cap>=1 buffer and never head-of-line block, so they keep the direct path.
+	if kind == getStreamKind || kind == chatKind {
+		t.resultPump = valuerpc.NewStreamPump(t.resultCh, 0)
+	}
+	return t
 }
 
 func (t *rpcRequestCtx) Name() string {
@@ -77,29 +87,46 @@ func (t *rpcRequestCtx) Elapsed() int64 {
 	return elapsed.Microseconds()
 }
 
-// notifyResult delivers a server->client value. It never panics on a closed
-// channel (BUG-6) and never blocks forever once the request is done; it still
-// blocks while a live consumer is slow (backpressure, relieved by throttling).
-func (t *rpcRequestCtx) notifyResult(res value.Value) {
+// notifyResult delivers a server->client value. For streaming kinds it hands the
+// value to the pump (non-blocking, so the response loop never stalls on a slow
+// consumer — BUG-6); for unary/put it does a guarded send into the cap>=1
+// buffer. It returns false when the value could not be queued (request finished
+// or the consumer fell too far behind).
+func (t *rpcRequestCtx) notifyResult(res value.Value) bool {
+	if t.resultPump != nil {
+		return t.resultPump.Push(res)
+	}
 	defer func() { _ = recover() }() // resultCh may close concurrently
 	select {
 	case t.resultCh <- res:
+		return true
 	case <-t.done:
+		return false
 	}
 }
 
-// closeResult closes resultCh (and done) exactly once.
+// closeResult closes resultCh (and done) exactly once, draining any buffered
+// stream values to the consumer first.
 func (t *rpcRequestCtx) closeResult() {
 	t.closeOnce.Do(func() {
 		close(t.done)
-		close(t.resultCh)
+		if t.resultPump != nil {
+			t.resultPump.Close() // drain, then close resultCh
+		} else {
+			close(t.resultCh)
+		}
 	})
 }
 
-// Close force-closes the request: unary completion, error, or cancellation.
+// Close force-closes the request: unary completion, error, or cancellation. For
+// a streaming kind it stops the pump so a consumer that stopped reading cannot
+// leak the pump goroutine.
 func (t *rpcRequestCtx) Close() {
 	t.getClosed.Store(true)
 	t.putClosed.Store(true)
+	if t.resultPump != nil {
+		t.resultPump.Stop()
+	}
 	t.closeResult()
 }
 

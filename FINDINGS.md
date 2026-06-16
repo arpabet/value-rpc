@@ -21,7 +21,7 @@ Severity legend: **C** critical (panic / crash / corruption), **H** high
 | BUG-3 | C | Server `send()` on closed `outgoingQueue` → panic | fixed | covered by stress + example |
 | BUG-4 | H | Phantom `value.Null` at end of stream / void result | fixed | `valueserver.TestServerStreaming`, `TestChatBidirectional` |
 | BUG-5 | H | `GetNumber/GetString == nil` guards dead; malformed msgs mis-routed | fixed | `valuerpc.TestValidMagicAndVersion_MissingVersion` |
-| BUG-6 | H | Head-of-line blocking / send-on-closed in read/response loops | fixed | `valueserver.TestConcurrentUnaryCalls` |
+| BUG-6 | H | Head-of-line blocking / send-on-closed in read/response loops | fixed (StreamPump) | `valueserver.TestSlowStreamConsumerDoesNotBlockOthers`, `valuerpc.TestStreamPump_*` |
 | BUG-7 | C | `Chat` double-closes the response channel → panic | fixed | `valueclient.TestRequestCtx_ChatClosesOnce_*` |
 | BUG-8 | H | Reconnect starts a second `sender()` goroutine | fixed | — |
 | BUG-9 | M | Sender re-enqueues on write error → possible deadlock | fixed | — |
@@ -46,9 +46,27 @@ Severity legend: **C** critical (panic / crash / corruption), **H** high
   sender no longer re-enqueues or dies on a write error.
 - **BUG-4** — the client skips `value.Null` on `StreamValue`/`StreamEnd` and
   converts an absent unary result to Go `nil` (`valueclient/client.go`).
-- **BUG-6** — `notifyResult` (client) and `offer` (server) deliver via
-  `select { case ch <- v: case <-done: }` with a `recover`, so they neither
-  panic on a closed channel nor block forever after close.
+- **BUG-6** — *Initial pass* made `notifyResult` (client) and `offer` (server)
+  deliver via `select { case ch <- v: case <-done: }` with a `recover`, which
+  stopped the send-on-closed panic and the block-forever-after-close, but it
+  did **not** remove the actual head-of-line blocking: a live-but-slow stream
+  consumer still froze the single read/response loop (and every other
+  multiplexed request) once its buffer filled. The original
+  `TestConcurrentUnaryCalls` never exercised a slow stream, so it passed
+  regardless.
+  *Real fix* — `valuerpc.StreamPump` (`valuerpc/pump.go`) sits between the
+  shared loop and each server→client / inbound stream channel. The loop now
+  `Push`es (never blocks); a per-request pump goroutine drains a bounded
+  internal queue into the consumer channel at the consumer's pace, so
+  backpressure is isolated to the one slow request. The pump owns closing the
+  out channel (`Close` drains then closes; `Stop` abandons and closes), so
+  there is still no send-on-closed or double-close. A consumer that exceeds the
+  pending bound (`DefaultMaxPending`) is failed (stream closed; client cancels
+  once) rather than pinning unbounded memory. Used for client `getStream`/`chat`
+  (`valueclient/request.go`) and server incoming-stream/`chat`
+  (`valueserver/serving_request.go`); unary/put-stream keep the direct path.
+  Covered by `valueserver.TestSlowStreamConsumerDoesNotBlockOthers` and
+  `valuerpc.TestStreamPump_*`.
 - **BUG-7** — `valueclient/request.go` rewritten so `resultCh` is closed exactly
   once (`sync.Once`), on the get-side terminal for unary/get/chat and the
   put-side terminal for put-stream. Chat half-close is now correct on the server
