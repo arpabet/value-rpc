@@ -282,6 +282,65 @@ func TestMaxConcurrentRequestsRejectsFlood(t *testing.T) {
 	}
 }
 
+// TestMaxConcurrentStreamsRejectsExcess verifies that streams beyond
+// MaxConcurrentStreams are rejected, and that closing streams frees slots.
+func TestMaxConcurrentStreamsRejectsExcess(t *testing.T) {
+	const cap = 3
+	old := valueserver.MaxConcurrentStreams
+	valueserver.MaxConcurrentStreams = cap
+	defer func() { valueserver.MaxConcurrentStreams = old }()
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddOutgoingStream("hold", valuerpc.Any,
+			func(ctx context.Context, args value.Value) (<-chan value.Value, error) {
+				out := make(chan value.Value)
+				go func() {
+					defer close(out)
+					select {
+					case <-release: // held open until the test releases
+					case <-ctx.Done():
+					}
+				}()
+				return out, nil
+			})
+	})
+	defer stop()
+	defer closeRelease()
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+	cli.SetTimeout(5000)
+
+	// Open exactly cap streams; each stays open (its handler blocks).
+	for i := 0; i < cap; i++ {
+		if _, _, err := cli.GetStream("hold", nil, 1); err != nil {
+			t.Fatalf("stream %d should open under the cap: %v", i, err)
+		}
+	}
+	// One more must be rejected.
+	if _, _, err := cli.GetStream("hold", nil, 1); err == nil {
+		t.Fatal("a stream beyond MaxConcurrentStreams should be rejected")
+	}
+
+	// Releasing the held streams frees their slots; a new stream then opens.
+	closeRelease()
+	deadline := time.After(5 * time.Second)
+	for {
+		_, _, err := cli.GetStream("hold", nil, 1)
+		if err == nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("stream slot not freed after streams closed: %v", err)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
 // TestHandlerReceivesSLADeadline verifies the client's SLA is propagated to the
 // handler as a context deadline.
 func TestHandlerReceivesSLADeadline(t *testing.T) {

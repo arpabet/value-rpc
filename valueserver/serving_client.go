@@ -28,6 +28,14 @@ var OutgoingQueueCap = 4096
 // head-of-line block every other request). Set to 0 to disable the limit.
 var MaxConcurrentRequests int64 = 4096
 
+// MaxConcurrentStreams bounds how many streaming requests (get-stream,
+// put-stream, chat) may be open at once for a single serving client. Unlike
+// MaxConcurrentRequests — which gates short-lived handler executions — this
+// caps long-lived streams, each of which holds goroutines and buffers for its
+// lifetime. A stream request over the limit is rejected with an error response.
+// Set to 0 (default) for no limit.
+var MaxConcurrentStreams int64 = 0
+
 type servingClient struct {
 	clientId     int64
 	sessionToken string // server-issued secret; set once, gates reconnect resumption
@@ -45,6 +53,7 @@ type servingClient struct {
 	requestMap     sync.Map
 	requestCancels sync.Map     // reqId(int64) -> context.CancelFunc for in-flight unary calls
 	inFlight       atomic.Int64 // concurrent request handlers (MaxConcurrentRequests)
+	liveStreams    atomic.Int64 // open streaming requests (MaxConcurrentStreams)
 
 	closeOnce sync.Once
 }
@@ -241,6 +250,15 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		return FunctionError(reqId, "function wrong type %s, expected %d, actual %d", name.String(), fn.ft, ft)
 	}
 
+	// Cap concurrent open streams (get-stream, put-stream, chat), which hold
+	// goroutines/buffers for their lifetime. Reject over the limit rather than
+	// letting a peer open unbounded long-lived streams.
+	if ft != singleFunction {
+		if max := MaxConcurrentStreams; max > 0 && t.liveStreams.Load() >= max {
+			return FunctionError(reqId, "server busy: too many concurrent streams (max %d)", max)
+		}
+	}
+
 	// Per-request context: derived from the session context (cancelled on
 	// disconnect/shutdown) and bounded by the client's SLA when one is supplied,
 	// so deadlines and cancellation propagate to handlers.
@@ -317,6 +335,7 @@ func (t *servingClient) newRequestContext(req value.Map) (context.Context, conte
 func (t *servingClient) newServingRequest(ft functionType, reqId value.Number) *servingRequest {
 	sr := NewServingRequest(ft, reqId)
 	t.requestMap.Store(reqId.Long(), sr)
+	t.liveStreams.Add(1)
 	return sr
 }
 
@@ -332,7 +351,11 @@ func (t *servingClient) findServingRequest(reqId value.Number) (*servingRequest,
 }
 
 func (t *servingClient) deleteRequest(requestId value.Number) {
-	t.requestMap.Delete(requestId.Long())
+	// LoadAndDelete so the stream counter is decremented exactly once even if a
+	// teardown path calls deleteRequest more than once for the same request.
+	if _, existed := t.requestMap.LoadAndDelete(requestId.Long()); existed {
+		t.liveStreams.Add(-1)
+	}
 }
 
 func (t *servingClient) processRequest(req value.Map) error {

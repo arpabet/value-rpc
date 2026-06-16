@@ -102,6 +102,11 @@ All notable changes to this project are documented here. The format is based on
 - **Max-connections cap.** `valueserver.MaxConnections` (default `0` = unlimited)
   caps simultaneously open connections; connections over the limit are closed
   immediately.
+- **Concurrent-streams cap.** `valueserver.MaxConcurrentStreams` (default `0` =
+  unlimited) caps open streaming requests (get/put/chat) per serving client —
+  each holds goroutines and buffers for its lifetime. A stream request over the
+  limit is rejected with an error response. Regression test:
+  `valueserver.TestMaxConcurrentStreamsRejectsExcess`.
 - **`time.After` → `time.NewTimer` + `Stop`** in the client unary wait path
   (`SingleResp`), so a timer is no longer leaked per call when the response wins.
 
