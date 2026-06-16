@@ -30,7 +30,7 @@ func NewSyncConn() *syncConn {
 	return t
 }
 
-func (t *syncConn) connect(dialer valuerpc.Dialer, clientId, sendingCap int64, respHandler responseHandler, errorHandler ErrorHandler) error {
+func (t *syncConn) connect(dialer valuerpc.Dialer, clientId int64, sessionToken string, sendingCap int64, respHandler responseHandler, errorHandler ErrorHandler) error {
 
 	t.connecting.Lock()
 	defer t.connecting.Unlock()
@@ -39,7 +39,7 @@ func (t *syncConn) connect(dialer valuerpc.Dialer, clientId, sendingCap int64, r
 		return nil
 	}
 
-	conn, err := newConn(dialer, clientId, sendingCap, respHandler, errorHandler)
+	conn, err := newConn(dialer, clientId, sessionToken, sendingCap, respHandler, errorHandler)
 	if err != nil {
 		return err
 	}

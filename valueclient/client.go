@@ -37,6 +37,14 @@ type rpcClient struct {
 	timeoutMls        atomic.Int64
 	perfMonitor       atomic.Value
 	shuttingDown      atomic.Bool
+	sessionToken      atomic.Pointer[string] // server-issued; resent to authorize reconnect
+}
+
+func (t *rpcClient) loadSessionToken() string {
+	if p := t.sessionToken.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // NewClient creates a client for address. A bare "host:port" dials TCP; a scheme
@@ -178,7 +186,7 @@ func (t *rpcClient) Connect() error {
 	if t.conn.hasConn() {
 		return nil
 	}
-	return t.conn.connect(t.dialer, t.clientId, t.sendingCap, t.getResponseHandler(), t.getErrorHandler())
+	return t.conn.connect(t.dialer, t.clientId, t.loadSessionToken(), t.sendingCap, t.getResponseHandler(), t.getErrorHandler())
 }
 
 func (t *rpcClient) Reconnect() error {
@@ -284,6 +292,12 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 		msgType := valuerpc.MessageType(mt.Long())
 
 		if msgType == valuerpc.HandshakeResponse {
+			// Remember the server-issued session token so a later reconnect can
+			// prove this is the same client and resume its session.
+			if tok, ok := valuerpc.GetStringField(resp, valuerpc.SessionTokenField); ok {
+				s := tok.String()
+				t.sessionToken.Store(&s)
+			}
 			t.getConnectionHandler()(resp)
 			return
 		}

@@ -30,7 +30,7 @@ type rpcConn struct {
 	closeOnce    sync.Once
 }
 
-func newConn(dialer valuerpc.Dialer, clientId int64, sendingCap int64, respHandler responseHandler, errorHandler ErrorHandler) (*rpcConn, error) {
+func newConn(dialer valuerpc.Dialer, clientId int64, sessionToken string, sendingCap int64, respHandler responseHandler, errorHandler ErrorHandler) (*rpcConn, error) {
 
 	conn, err := dialer.Dial()
 	if err != nil {
@@ -46,7 +46,7 @@ func newConn(dialer valuerpc.Dialer, clientId int64, sendingCap int64, respHandl
 	}
 
 	go t.requestLoop()
-	t.SendRequest(valuerpc.NewHandshakeRequest(clientId))
+	t.SendRequest(valuerpc.NewHandshakeRequest(clientId, sessionToken))
 	go t.responseLoop()
 
 	return t, nil

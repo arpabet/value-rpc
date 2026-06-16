@@ -41,6 +41,7 @@ var VersionField = "v"
 var RequestIdField = "rid"
 var TimeoutField = "sla"
 var ClientIdField = "cid"
+var SessionTokenField = "tok" // server-issued session secret; gates resumption
 var FunctionNameField = "fn"
 var ArgumentsField = "args" // allow multiple args if List value in function call
 var ResultField = "res"     // allow multiple results if List in function call
@@ -49,21 +50,34 @@ var ValueField = "val" // streaming value field
 
 var HandshakeRequestId = int64(-1)
 
-func NewHandshakeRequest(clientId int64) value.Map {
-	return value.EmptyMap(true).
+// NewHandshakeRequest builds the client handshake. token is the session secret
+// the server issued on the first handshake; it is empty on the first connect and
+// resent on reconnect so the server can authorize resuming this clientId.
+func NewHandshakeRequest(clientId int64, token string) value.Map {
+	req := value.EmptyMap(true).
 		Put(MagicField, value.Utf8(Magic)).
 		Put(VersionField, value.Double(Version)).
 		Put(MessageTypeField, HandshakeRequest.Long()).
 		Put(RequestIdField, value.Long(HandshakeRequestId)).
 		Put(ClientIdField, value.Long(clientId))
+	if token != "" {
+		req = req.Put(SessionTokenField, value.Utf8(token))
+	}
+	return req
 }
 
-func NewHandshakeResponse() value.Map {
-	return value.EmptyMap(true).
+// NewHandshakeResponse builds the server handshake reply, carrying the session
+// token the client must present to resume this session on a later reconnect.
+func NewHandshakeResponse(token string) value.Map {
+	resp := value.EmptyMap(true).
 		Put(MagicField, value.Utf8(Magic)).
 		Put(VersionField, value.Double(Version)).
 		Put(MessageTypeField, HandshakeResponse.Long()).
 		Put(RequestIdField, value.Long(HandshakeRequestId))
+	if token != "" {
+		resp = resp.Put(SessionTokenField, value.Utf8(token))
+	}
+	return resp
 }
 
 func ValidMagicAndVersion(req value.Map) bool {

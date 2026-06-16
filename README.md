@@ -24,7 +24,11 @@ transport:  TCP  ·  Unix socket  ·  WebSocket        (optional SOCKS5 / wss TL
 - **Pluggable transports**: TCP, Unix domain sockets, and WebSocket (MessagePack) — one API, pick by address scheme.
 - **Runtime type checking** via `TypeDef` / `Verify` (`Arg`, `List`, `Map`, `Void`, `Any`).
 - **Cancellation**, **timeouts**, and a **throttle**-based flow‑control mechanism.
-- **Client session resumption** by client id across reconnects.
+- **No head‑of‑line blocking**: each stream is delivered through a non‑blocking
+  per‑request pump, so one slow consumer can't stall other multiplexed requests.
+- **Authenticated session resumption**: the server issues a per-session token at
+  handshake; reconnecting with the matching token resumes the session, so a peer
+  can't take it over by guessing the client id.
 - **SOCKS5** client support; **Unix peer authentication** (`SO_PEERCRED`) via a connect‑authorizer hook.
 - **Bounded frames** (`MaxFrameSize`), **keepalive**, **handshake deadline**,
   and **graceful shutdown** out of the box.
@@ -160,6 +164,7 @@ Package‑level knobs (set before constructing servers/clients):
 | `valuerpc.WSDialTimeout` | 30s | WebSocket opening-handshake timeout |
 | `valueserver.OutgoingQueueCap` | 4096 | Per‑client server send buffer |
 | `valueserver.IncomingQueueCap` | 4096 | Per‑request inbound stream buffer |
+| `valuerpc.DefaultMaxPending` | 4096 | Per‑stream pending‑queue bound before a slow consumer is failed |
 | `valueclient.DefaultTimeoutMls` | 1000 | Default client call timeout (ms) |
 
 Per‑client: `cli.SetTimeout(ms)`, `cli.SetErrorHandler(...)`, `cli.SetMonitor(...)`,
@@ -477,7 +482,11 @@ Numbers are indicative; run `go test -bench=. ./...` on your hardware.
 | Server stream, per value | ~2 µs (~500k values/s) |
 
 Streaming/chat throughput is bounded by the millisecond‑granularity throttle
-once a consumer falls behind; size the receive buffers for your workload.
+once a consumer falls behind; size the receive buffers for your workload. A slow
+consumer applies backpressure to **only its own** request (via the per‑request
+pump) and never stalls other requests on the connection; a consumer that falls
+more than `valuerpc.DefaultMaxPending` behind has that one stream failed rather
+than pinning unbounded memory.
 
 ## Project status
 
@@ -487,9 +496,11 @@ adds the three transports plus a major hardening pass).
 Pre‑1.0 in maturity. The library was recently hardened — see [FINDINGS.md](FINDINGS.md) for
 the bugs that were found and fixed (crash, correctness, DoS, and lifecycle
 issues) and [RESEARCH.md](RESEARCH.md) for how it compares to gRPC / WebSocket /
-msgpack‑rpc and a high‑load/concurrency analysis. Known larger items still open:
-`context.Context` propagation, server‑side SLA enforcement, TLS/auth, and a fully
-async per‑request demux to remove slow‑consumer head‑of‑line blocking.
+msgpack‑rpc and a high‑load/concurrency analysis. Slow‑consumer head‑of‑line
+blocking has been resolved with a per‑request `StreamPump`, and session
+resumption is now authenticated with a server‑issued token. Known larger items
+still open: `context.Context` propagation, server‑side SLA enforcement,
+built‑in transport TLS/auth, and global concurrency / connection caps.
 
 ## License
 

@@ -43,9 +43,11 @@ with short keys — `t` (message type), `rid` (request id), `fn` (function name)
   `Any`). This is the central trade-off: less ceremony, no compile-time safety.
 - **Multiplexing over one connection**, keyed by `rid`, so many concurrent
   calls and streams share a socket.
-- **Session identity / resumption**: the client picks a random `cid`; on
-  reconnect the server re-attaches to the same `servingClient` (its in-flight
-  request state survives a dropped socket — in intent; see BUG-8).
+- **Session identity / resumption**: the client picks a random `cid`; on the
+  first handshake the server issues a per-session token and re-attaches to the
+  same `servingClient` on reconnect only when the client presents the matching
+  token (its in-flight request state survives a dropped socket). The token gates
+  resumption so a peer cannot hijack a session by reusing another client's `cid`.
 - **Built-in flow control**: `ThrottleIncrease`/`ThrottleDecrease` messages let a
   consumer slow a producer (a sleep-based brake today).
 - **Cancellation**: `CancelRequest`.
@@ -155,8 +157,12 @@ _ = reqID                                     // use with cli.CancelRequest
 - **Put a deadline/timeout in front of every handler yourself** — the server
   does not enforce the client's `sla` (BUG-10).
 - **Terminate TLS and authenticate at a layer you add** (e.g. wrap with
-  `tls.Server`/`tls.Client`, or run behind a mesh). There is no built-in auth,
-  TLS, or authz; the `cid` is client-asserted and unauthenticated.
+  `tls.Server`/`tls.Client`, or run behind a mesh). There is no built-in
+  transport TLS or peer authz beyond the connect-authorizer hook. Session
+  *resumption* is now gated by a server-issued token (a reused `cid` alone can
+  no longer hijack a session), but the initial `cid`/identity is still
+  client-asserted — add real peer authentication (mTLS, Unix peer creds) if you
+  need to bind sessions to a verified principal.
 - **Bound message sizes upstream** (proxy/LB) until BUG-11 is fixed.
 
 ## 4. As a simpler alternative to gRPC / WebSocket

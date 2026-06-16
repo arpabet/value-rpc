@@ -19,9 +19,10 @@ import (
 var OutgoingQueueCap = 4096
 
 type servingClient struct {
-	clientId    int64
-	activeConn  atomic.Value
-	functionMap *sync.Map
+	clientId     int64
+	sessionToken string // server-issued secret; set once, gates reconnect resumption
+	activeConn   atomic.Value
+	functionMap  *sync.Map
 
 	logger *zap.Logger
 
@@ -34,10 +35,11 @@ type servingClient struct {
 	closeOnce sync.Once
 }
 
-func NewServingClient(clientId int64, conn vrpc.MsgConn, functionMap *sync.Map, logger *zap.Logger) *servingClient {
+func NewServingClient(clientId int64, sessionToken string, conn vrpc.MsgConn, functionMap *sync.Map, logger *zap.Logger) *servingClient {
 
 	client := &servingClient{
 		clientId:      clientId,
+		sessionToken:  sessionToken,
 		functionMap:   functionMap,
 		outgoingQueue: make(chan value.Map, OutgoingQueueCap),
 		done:          make(chan struct{}),

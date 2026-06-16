@@ -6,7 +6,10 @@
 package valueserver
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
+	"encoding/hex"
 	"io"
 	"net"
 	"net/http"
@@ -285,9 +288,22 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 		return nil, errors.Errorf("on handshake, no client id in %s", req.String())
 	}
 	clientId := cid.Long()
-	cli := t.createOrUpdateServingClient(clientId, conn)
 
-	resp := valuerpc.NewHandshakeResponse()
+	// The client-asserted clientId alone must not let a peer resume (and thereby
+	// take over) another client's session: createOrUpdateServingClient requires
+	// the server-issued session token to match before reattaching to an existing
+	// servingClient. A first connect (no existing session) mints a fresh token.
+	presentedToken := ""
+	if tok, ok := valuerpc.GetStringField(req, valuerpc.SessionTokenField); ok {
+		presentedToken = tok.String()
+	}
+
+	cli, err := t.createOrUpdateServingClient(clientId, presentedToken, conn)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := valuerpc.NewHandshakeResponse(cli.sessionToken)
 	err = conn.WriteMessage(resp)
 	if err != nil {
 		return nil, errors.Errorf("on handshake, %v", err)
@@ -341,16 +357,60 @@ func (t *rpcServer) handleConnection(conn valuerpc.MsgConn) error {
 	}
 }
 
-func (t *rpcServer) createOrUpdateServingClient(clientId int64, conn valuerpc.MsgConn) *servingClient {
+// createOrUpdateServingClient reattaches conn to an existing session only when
+// presentedToken matches the token the server issued for that clientId, and
+// otherwise mints a brand-new session. A matching token is required to resume,
+// so a peer that merely guesses or replays another client's clientId cannot
+// hijack the session (which would otherwise close the victim's connection and
+// redirect its in-flight responses).
+func (t *rpcServer) createOrUpdateServingClient(clientId int64, presentedToken string, conn valuerpc.MsgConn) (*servingClient, error) {
 
 	if cli, ok := t.clientMap.Load(clientId); ok {
 		client := cli.(*servingClient)
+		if !validToken(presentedToken, client.sessionToken) {
+			return nil, errors.Errorf("handshake rejected: session token mismatch for client %d", clientId)
+		}
 		client.replaceConn(conn)
-		return client
+		return client, nil
 	}
 
-	client := NewServingClient(clientId, conn, &t.functionMap, t.logger)
-	t.clientMap.Store(clientId, client)
+	token, err := newSessionToken()
+	if err != nil {
+		return nil, errors.Errorf("on handshake, generate session token: %v", err)
+	}
 
-	return client
+	client := NewServingClient(clientId, token, conn, &t.functionMap, t.logger)
+	// LoadOrStore guards a reconnect race for the same (new) clientId: if another
+	// connection won the slot, validate against the winner and discard ours
+	// (closing it stops the sender goroutine NewServingClient started).
+	if actual, loaded := t.clientMap.LoadOrStore(clientId, client); loaded {
+		client.Close()
+		existing := actual.(*servingClient)
+		if !validToken(presentedToken, existing.sessionToken) {
+			return nil, errors.Errorf("handshake rejected: session token mismatch for client %d", clientId)
+		}
+		existing.replaceConn(conn)
+		return existing, nil
+	}
+
+	return client, nil
+}
+
+// validToken reports whether the presented session token authorizes resuming a
+// session. A non-empty presented token must equal the stored one, compared in
+// constant time to avoid leaking it through timing.
+func validToken(presented, stored string) bool {
+	if presented == "" || stored == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(stored)) == 1
+}
+
+// newSessionToken mints an unguessable 128-bit session secret.
+func newSessionToken() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }

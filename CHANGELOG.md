@@ -70,22 +70,41 @@ All notable changes to this project are documented here. The format is based on
 - `valueserver.Server.Close()` no longer hangs when `Run()` was never called —
   the accept loop was over-counted in the shutdown `WaitGroup`, which now tracks
   only connection-handler goroutines.
+- **Head-of-line blocking (BUG-6) actually fixed.** Stream delivery now goes
+  through a per-request `valuerpc.StreamPump`: the shared read/response loop
+  `Push`es without blocking and a dedicated goroutine drains a bounded queue into
+  the consumer, so one slow consumer can no longer stall other multiplexed
+  requests on the connection. A consumer that falls more than
+  `valuerpc.DefaultMaxPending` behind has that one stream failed instead of
+  pinning unbounded memory. (The earlier pass only stopped the related
+  send-on-closed panic; the blocking itself remained.) Regression tests:
+  `valueserver.TestSlowStreamConsumerDoesNotBlockOthers`, `valuerpc.TestStreamPump_*`.
+
+### Security
+
+- **Authenticated session resumption.** The server now mints a per-session token
+  (128-bit, `crypto/rand`) on the first handshake and returns it in the handshake
+  response; a reconnect may resume an existing `cid` only by presenting the
+  matching token (compared in constant time). Previously the client-asserted
+  `cid` alone let any peer reattach to — and thereby close and hijack — another
+  client's session. Adds an optional `tok` handshake field (handshake wire
+  change). Regression tests: `valueserver.TestSessionResumptionRequiresToken`,
+  `TestHijackAttemptLeavesVictimIntact`.
 
 ## [1.2.0] — 2026-06-14
 
-The first hardened, openly-licensed, multi-transport release. It bundles a
-permissive relicense, a Go 1.25 / `value` v1.2.0 upgrade, fixes for 15
-correctness/crash/DoS/lifecycle bugs, three pluggable transports (TCP, Unix
-sockets, WebSocket), and the project's first test suite, benchmarks, and CI.
+The first hardened, multi-transport release. It bundles a Go 1.25 / `value`
+v1.2.0 upgrade, fixes for 15 correctness/crash/DoS/lifecycle bugs, three
+pluggable transports (TCP, Unix sockets, WebSocket), and the project's first
+test suite, benchmarks, and CI.
 
 The MessagePack message format is unchanged — a peer on the previous TCP build
 interoperates with this one. Review **Breaking changes** before upgrading.
 
 ### License
 
-- **Relicensed from BUSL-1.1 to [Apache-2.0](LICENSE)** (OSI-approved, with a
-  patent grant). Copyright remains © Karagatan LLC. Updated `LICENSE` and the
-  SPDX header of every source file.
+- **Remains [BUSL-1.1](LICENSE)** © Karagatan LLC. (An Apache-2.0 relicense to
+  match upstream `value` was explored and reverted; the project stays BUSL-1.1.)
 
 ### Added
 
@@ -152,7 +171,6 @@ Highlights (full list and patches in [FINDINGS.md](FINDINGS.md)):
 
 ### Security
 
-- Apache-2.0 patent grant.
 - Decoder hardened: a bounded frame size plus the `value` v1.2.0 decode limits
   prevent a tiny header from forcing a huge allocation.
 - Unix-socket **peer-credential authorization** for local trust decisions.
@@ -160,7 +178,6 @@ Highlights (full list and patches in [FINDINGS.md](FINDINGS.md)):
 
 ### Breaking changes
 
-- **License** changed from BUSL-1.1 to Apache-2.0.
 - **`valuerpc.MsgConn`** dropped `Conn() net.Conn` and gained
   `SetReadDeadline(time.Time) error` and `RemoteAddr() string`.
 - **`valueserver.Server`** gained `Addr()` and `SetConnectAuthorizer(...)`

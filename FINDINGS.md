@@ -30,7 +30,7 @@ Severity legend: **C** critical (panic / crash / corruption), **H** high
 | BUG-12 | M | `Accept()` error path is a busy-loop (no backoff) | fixed | — |
 | BUG-13 | M | `canceledRequests` leak (wrong key type) | fixed | — |
 | BUG-14 | L | No graceful drain; `wg` never `Wait()`ed; conns untracked | fixed | — |
-| BUG-15 | L | License header mismatch; `go.uber.org/atomic` in maintenance | fixed | — |
+| BUG-15 | L | License consistency (stays BUSL-1.1); `go.uber.org/atomic` in maintenance | fixed | — |
 
 ## How each fix was applied
 
@@ -81,12 +81,13 @@ Severity legend: **C** critical (panic / crash / corruption), **H** high
   and a graceful `Close()` that drains via `wg.Wait()`. A `recover` in
   `serveFunctionRequest` keeps a panicking user handler from crashing the server.
 - **BUG-13** — `canceledRequests.Delete` now uses the `int64` key.
-- **BUG-15** — relicensed BUSL-1.1 → Apache-2.0 to match upstream `value`
-  (`LICENSE` replaced; all 19 `.go` SPDX headers updated), and migrated off the
-  maintenance-mode `go.uber.org/atomic` to stdlib `sync/atomic` (Go 1.25 generic
-  types). `atomic.Error` (no stdlib equivalent) became `atomic.Pointer[error]`;
-  `.Inc()/.Dec()` → `.Add(±1)`; `.CAS()` → `.CompareAndSwap()`. The dependency
-  was dropped from `go.mod`.
+- **BUG-15** — the project **remains BUSL-1.1**: `LICENSE` and all `.go` SPDX
+  headers are BUSL-1.1 and internally consistent (an earlier draft explored an
+  Apache-2.0 relicense to match upstream `value`, but that change was reverted).
+  Separately, migrated off the maintenance-mode `go.uber.org/atomic` to stdlib
+  `sync/atomic` (Go 1.25 generic types): `atomic.Error` (no stdlib equivalent)
+  became `atomic.Pointer[error]`; `.Inc()/.Dec()` → `.Add(±1)`; `.CAS()` →
+  `.CompareAndSwap()`. The dependency was dropped from `go.mod`.
 
 ---
 
@@ -302,11 +303,11 @@ old one on replace.
 - **BUG-14** — `rpcServer.wg` is `Add`ed but never `Wait`ed; `Close()` does not
   drain in-flight handlers, and `outgoingStreamer`/handler goroutines are
   spawned with bare `go` and untracked. There is no graceful shutdown.
-- **BUG-15** — Licensing: source headers and `LICENSE` are BUSL-1.1, but the
-  upstream `value` is now Apache-2.0 (relicensed in v1.2.0). Decide whether
-  value-rpc should also relicense. Separately, `go.uber.org/atomic` is in
-  maintenance mode — Go 1.25's generic `sync/atomic` types
-  (`atomic.Int64`, `atomic.Bool`, `atomic.Pointer[T]`) can replace it.
+- **BUG-15** — Licensing: source headers and `LICENSE` are BUSL-1.1 and
+  consistent. Upstream `value` is Apache-2.0; value-rpc deliberately **stays on
+  BUSL-1.1**. Separately, `go.uber.org/atomic` is in maintenance mode — Go
+  1.25's generic `sync/atomic` types (`atomic.Int64`, `atomic.Bool`,
+  `atomic.Pointer[T]`) replace it.
 - `Run()`'s trailing unreachable `return nil` was removed during the upgrade so
   `go vet ./...` is clean.
 

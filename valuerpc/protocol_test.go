@@ -30,7 +30,7 @@ func roundTrip(t *testing.T, m value.Map) value.Map {
 }
 
 func TestHandshakeRequestRoundTrip(t *testing.T) {
-	req := roundTrip(t, vrpc.NewHandshakeRequest(42))
+	req := roundTrip(t, vrpc.NewHandshakeRequest(42, "sometoken"))
 
 	if got := req.GetString(vrpc.MagicField).String(); got != vrpc.Magic {
 		t.Errorf("magic = %q, want %q", got, vrpc.Magic)
@@ -44,10 +44,22 @@ func TestHandshakeRequestRoundTrip(t *testing.T) {
 	if got := req.GetNumber(vrpc.RequestIdField).Long(); got != vrpc.HandshakeRequestId {
 		t.Errorf("requestId = %d, want %d", got, vrpc.HandshakeRequestId)
 	}
+	if got, ok := vrpc.GetStringField(req, vrpc.SessionTokenField); !ok || got.String() != "sometoken" {
+		t.Errorf("session token = %q (present=%v), want %q", got, ok, "sometoken")
+	}
+}
+
+// TestHandshakeRequest_OmitsEmptyToken: the first connect has no token yet, so
+// the field must be absent (not an empty string the server might misread).
+func TestHandshakeRequest_OmitsEmptyToken(t *testing.T) {
+	req := roundTrip(t, vrpc.NewHandshakeRequest(7, ""))
+	if _, ok := vrpc.GetStringField(req, vrpc.SessionTokenField); ok {
+		t.Fatal("session token field must be omitted when empty")
+	}
 }
 
 func TestValidMagicAndVersion_Valid(t *testing.T) {
-	if !vrpc.ValidMagicAndVersion(vrpc.NewHandshakeRequest(1)) {
+	if !vrpc.ValidMagicAndVersion(vrpc.NewHandshakeRequest(1, "")) {
 		t.Fatal("a freshly-built handshake must validate")
 	}
 }
