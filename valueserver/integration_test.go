@@ -8,6 +8,7 @@ package valueserver_test
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -203,6 +204,80 @@ func TestClientStreaming(t *testing.T) {
 	defer mu.Unlock()
 	if sum != 10 {
 		t.Fatalf("server summed %d, want 10 (1+2+3+4)", sum)
+	}
+}
+
+// TestMaxConcurrentRequestsRejectsFlood verifies the per-connection handler cap:
+// once MaxConcurrentRequests handlers are in flight, further requests are
+// rejected with an error response (instead of spawning unbounded goroutines or
+// stalling the connection), and the accepted ones still complete normally.
+func TestMaxConcurrentRequestsRejectsFlood(t *testing.T) {
+	const cap = 4
+	old := valueserver.MaxConcurrentRequests
+	valueserver.MaxConcurrentRequests = cap
+	defer func() { valueserver.MaxConcurrentRequests = old }()
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	var active, maxActive int64
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("hold", valuerpc.Any, valuerpc.Any,
+			func(args value.Value) (value.Value, error) {
+				n := atomic.AddInt64(&active, 1)
+				for {
+					m := atomic.LoadInt64(&maxActive)
+					if n <= m || atomic.CompareAndSwapInt64(&maxActive, m, n) {
+						break
+					}
+				}
+				<-release // occupy the slot until the test releases
+				atomic.AddInt64(&active, -1)
+				return value.Utf8("ok"), nil
+			})
+	})
+	defer stop()
+	defer closeRelease()
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+	cli.SetTimeout(5000)
+
+	const n = 12
+	var wg sync.WaitGroup
+	var okCount, busyCount int64
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := cli.CallFunction("hold", nil); err != nil {
+				atomic.AddInt64(&busyCount, 1)
+			} else {
+				atomic.AddInt64(&okCount, 1)
+			}
+		}()
+	}
+
+	// The over-cap requests are rejected promptly; wait for them.
+	deadline := time.After(5 * time.Second)
+	for atomic.LoadInt64(&busyCount) < n-cap {
+		select {
+		case <-deadline:
+			t.Fatalf("only %d requests rejected, want %d", atomic.LoadInt64(&busyCount), n-cap)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	closeRelease() // let the accepted handlers finish
+	wg.Wait()
+
+	if okCount != cap {
+		t.Errorf("accepted %d requests, want %d", okCount, cap)
+	}
+	if busyCount != n-cap {
+		t.Errorf("rejected %d requests, want %d", busyCount, n-cap)
+	}
+	if maxActive > cap {
+		t.Errorf("%d handlers ran concurrently, exceeds cap %d", maxActive, cap)
 	}
 }
 

@@ -164,6 +164,7 @@ Package‑level knobs (set before constructing servers/clients):
 | `valuerpc.WSDialTimeout` | 30s | WebSocket opening-handshake timeout |
 | `valueserver.OutgoingQueueCap` | 4096 | Per‑client server send buffer |
 | `valueserver.IncomingQueueCap` | 4096 | Per‑request inbound stream buffer |
+| `valueserver.MaxConcurrentRequests` | 4096 | Max concurrent request handlers per connection; over the limit requests are rejected with an error (`0` disables) |
 | `valuerpc.DefaultMaxPending` | 4096 | Per‑stream pending‑queue bound before a slow consumer is failed |
 | `valueclient.DefaultTimeoutMls` | 1000 | Default client call timeout (ms) |
 
@@ -497,10 +498,11 @@ Pre‑1.0 in maturity. The library was recently hardened — see [FINDINGS.md](F
 the bugs that were found and fixed (crash, correctness, DoS, and lifecycle
 issues) and [RESEARCH.md](RESEARCH.md) for how it compares to gRPC / WebSocket /
 msgpack‑rpc and a high‑load/concurrency analysis. Slow‑consumer head‑of‑line
-blocking has been resolved with a per‑request `StreamPump`, and session
-resumption is now authenticated with a server‑issued token. Known larger items
-still open: `context.Context` propagation, server‑side SLA enforcement,
-built‑in transport TLS/auth, and global concurrency / connection caps.
+blocking has been resolved with a per‑request `StreamPump`; session resumption is
+authenticated with a server‑issued token; and a per‑connection
+`MaxConcurrentRequests` cap bounds handler goroutines under a flood. Known larger
+items still open: `context.Context` propagation, server‑side SLA enforcement,
+built‑in transport TLS/auth, a max‑connections cap, and a concurrent‑streams cap.
 
 ## License
 

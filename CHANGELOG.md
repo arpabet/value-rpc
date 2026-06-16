@@ -80,6 +80,13 @@ All notable changes to this project are documented here. The format is based on
   send-on-closed panic; the blocking itself remained.) Regression tests:
   `valueserver.TestSlowStreamConsumerDoesNotBlockOthers`, `valuerpc.TestStreamPump_*`.
 
+- **Concurrent-request cap (DoS hardening).** `valueserver.MaxConcurrentRequests`
+  (default 4096, per serving client; `0` disables) bounds how many request
+  handlers run at once. Over the limit a request is rejected with an error
+  response instead of spawning an unbounded goroutine or blocking the read loop —
+  a request flood can no longer exhaust goroutines/memory. Regression test:
+  `valueserver.TestMaxConcurrentRequestsRejectsFlood`.
+
 ### Security
 
 - **Authenticated session resumption.** The server now mints a per-session token

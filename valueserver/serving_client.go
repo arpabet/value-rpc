@@ -18,6 +18,14 @@ import (
 
 var OutgoingQueueCap = 4096
 
+// MaxConcurrentRequests bounds how many request handlers may run concurrently
+// for a single serving client (one logical client / connection). A request that
+// would exceed the limit is rejected with an error response instead of spawning
+// another handler goroutine, so a flood cannot exhaust memory/goroutines (DoS).
+// Rejection is explicit (it never blocks the connection read loop, which would
+// head-of-line block every other request). Set to 0 to disable the limit.
+var MaxConcurrentRequests int64 = 4096
+
 type servingClient struct {
 	clientId     int64
 	sessionToken string // server-issued secret; set once, gates reconnect resumption
@@ -31,6 +39,7 @@ type servingClient struct {
 
 	requestMap       sync.Map
 	canceledRequests sync.Map
+	inFlight         atomic.Int64 // concurrent request handlers (MaxConcurrentRequests)
 
 	closeOnce sync.Once
 }
@@ -189,6 +198,7 @@ func (t *servingClient) serveFunctionRequest(ft functionType, req value.Map) {
 		if r := recover(); r != nil {
 			t.logger.Error("recovered in serveFunctionRequest", zap.Any("recover", r))
 		}
+		t.inFlight.Add(-1) // paired with the increment in serveNewRequest
 	}()
 	resp := t.doServeFunctionRequest(ft, req)
 	if resp != nil {
@@ -322,23 +332,32 @@ func (t *servingClient) processRequest(req value.Map) error {
 
 func (t *servingClient) serveNewRequest(msgType vrpc.MessageType, req value.Map) error {
 
+	var ft functionType
 	switch msgType {
-
 	case vrpc.FunctionRequest:
-		go t.serveFunctionRequest(singleFunction, req)
-
+		ft = singleFunction
 	case vrpc.GetStreamRequest:
-		go t.serveFunctionRequest(outgoingStream, req)
-
+		ft = outgoingStream
 	case vrpc.PutStreamRequest:
-		go t.serveFunctionRequest(incomingStream, req)
-
+		ft = incomingStream
 	case vrpc.ChatRequest:
-		go t.serveFunctionRequest(chat, req)
-
+		ft = chat
 	default:
 		return errors.Errorf("unknown message type for new request in %s", req.String())
 	}
 
+	// Reserve a handler slot. Over the limit we reject this one request with an
+	// error response and keep the connection (and all other requests) healthy,
+	// rather than blocking the read loop or spawning an unbounded goroutine.
+	n := t.inFlight.Add(1)
+	if max := MaxConcurrentRequests; max > 0 && n > max {
+		t.inFlight.Add(-1)
+		if reqId, ok := vrpc.GetNumberField(req, vrpc.RequestIdField); ok {
+			t.send(FunctionError(reqId, "server busy: too many concurrent requests (max %d)", max))
+		}
+		return nil
+	}
+
+	go t.serveFunctionRequest(ft, req)
 	return nil
 }
