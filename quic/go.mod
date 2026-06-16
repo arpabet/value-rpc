@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/quic-go/quic-go v0.60.0
 	go.arpabet.com/value v1.2.0
-	go.arpabet.com/value-rpc v1.2.0
+	go.arpabet.com/value-rpc v1.2.3
 	go.uber.org/zap v1.28.0
 )
 
@@ -18,7 +18,3 @@ require (
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 )
-
-// In-repo development: build against the core module in the parent directory.
-// External consumers ignore this replace and use the required version.
-replace go.arpabet.com/value-rpc => ../
