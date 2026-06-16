@@ -493,4 +493,4 @@ async per‑request demux to remove slow‑consumer head‑of‑line blocking.
 
 ## License
 
-[Apache‑2.0](LICENSE) © Karagatan LLC.
+[BUSL‑1.1](LICENSE) © Karagatan LLC.
