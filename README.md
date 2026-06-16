@@ -199,9 +199,10 @@ valuequic.NewServer(":9000", tlsConf, logger)          // each request = its own
 valuequic.NewClient("host:9000", clientConf)
 ```
 
-For full control, build a transport yourself and pass it to
-`NewServerWithListener` / `NewClientWithDialer`. See [TRANSPORTS.md](TRANSPORTS.md)
-for the design.
+For full control — including obfuscation and custom tunnels — build a transport
+yourself and pass it to `NewServerWithListener` / `NewClientWithDialer`; see
+[Custom transports](#custom-transports-bring-your-own-connection) below and
+[TRANSPORTS.md](TRANSPORTS.md) for the design.
 
 ### Comparison
 
@@ -424,6 +425,42 @@ as in the [TLS section](#tls-and-mutual-tls). Streaming works the same too: e.g.
 > so *application-level* slow-consumer head-of-line blocking is reduced, not
 > eliminated. Fully eliminating it needs the async per-request demux in
 > [RESEARCH.md](RESEARCH.md) §5.
+
+### Custom transports (bring your own connection)
+
+The transport seam takes **any byte stream**, not just the built-in schemes.
+`valuerpc.NewMsgConn` frames an arbitrary `io.ReadWriteCloser` — a tunnel, an
+`ssh.Channel`, a WebRTC data channel, or a connection produced by an external
+obfuscation / pluggable-transport layer — and four adapters turn it into a
+`Dialer`/`Listener` for `NewClientWithDialer` / `NewServerWithListener`:
+
+| Adapter | Use |
+|---------|-----|
+| `NewFuncDialer(connect, timeout)` | client dials (and reconnects) via your `connect func() (io.ReadWriteCloser, error)` |
+| `NewSingleConnDialer(conn, timeout)` | client runs over one connection handed over out of band (broker/rendezvous) |
+| `NewAcceptListener(accept, addr, stop, timeout)` | server accepts connections produced out of band (a broker, or a wrapper around a base listener) |
+| `NewSingleConnListener(conn, addr, timeout)` | server runs over a single externally established connection |
+
+This is the integration point for **obfuscation / censorship-resistant
+transports**, which stay out of value-rpc as separate modules and simply hand it a
+shaped `net.Conn`:
+
+```go
+// Wrap any base transport with an out-of-tree obfuscator, then frame with value-rpc.
+dialer := valuerpc.NewFuncDialer(func() (io.ReadWriteCloser, error) {
+    base, err := net.Dial("tcp", addr) // any base transport
+    if err != nil {
+        return nil, err
+    }
+    return obfs.Wrap(base, policy), nil // e.g. go.arpabet.com/obfs (traffic shaping)
+}, valueclient.DefaultTimeout)
+cli := valueclient.NewClientWithDialer(dialer)
+```
+
+value-rpc itself carries **no obfuscation code or dependencies** — it only
+provides this seam. The threat model, technique survey, and the layering decision
+(value-rpc seam vs. a standalone `obfs` module vs. higher-level orchestration) are
+in [TRANSPORTS.md](TRANSPORTS.md) §10–§11.
 
 ## Performance
 
