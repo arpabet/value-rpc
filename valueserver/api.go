@@ -34,7 +34,13 @@ type ConnectAuthorizer func(conn valuerpc.MsgConn) error
 // This is the transport-agnostic auth hook for credential schemes the
 // connect-authorizer cannot reach — bearer tokens, API keys, HMAC — that travel
 // in the handshake rather than in TLS certs or Unix peer credentials.
-type Authenticator func(conn valuerpc.MsgConn, credential value.Value) error
+//
+// The returned principal is the authenticated identity (e.g. a user id or cert
+// subject; "" for anonymous). Session resumption is bound to it: a reconnect that
+// presents a valid session token but authenticates as a different principal is
+// rejected, so a leaked token alone cannot let one principal take over another's
+// session.
+type Authenticator func(conn valuerpc.MsgConn, credential value.Value) (principal string, err error)
 
 type Server interface {
 	AddFunction(name string, args valuerpc.TypeDef, res valuerpc.TypeDef, cb Function) error

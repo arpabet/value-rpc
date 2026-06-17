@@ -415,11 +415,11 @@ func TestConnectContextCanceled(t *testing.T) {
 
 func TestCredentialAuth(t *testing.T) {
 	sock, stop := serve(t, func(s valueserver.Server) {
-		s.SetAuthenticator(func(_ valuerpc.MsgConn, cred value.Value) error {
+		s.SetAuthenticator(func(_ valuerpc.MsgConn, cred value.Value) (string, error) {
 			if cred == nil || cred.(value.String).String() != "sekret" {
-				return errors.New("denied")
+				return "", errors.New("denied")
 			}
-			return nil
+			return "alice", nil
 		})
 		s.AddFunction("ping", valuerpc.Any, valuerpc.Any,
 			func(_ context.Context, _ value.Value) (value.Value, error) { return value.Utf8("pong"), nil })

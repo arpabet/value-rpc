@@ -164,7 +164,7 @@ func (t *servingRequest) serveRunningRequest(msgType vrpc.MessageType, req value
 		return nil
 
 	default:
-		return errors.Errorf("unknown message type in %s", req.String())
+		return errors.Errorf("unknown message type%s", reqDetail(req))
 
 	}
 

@@ -337,30 +337,34 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 
 	mt, ok := valuerpc.GetNumberField(req, valuerpc.MessageTypeField)
 	if !ok {
-		return nil, errors.Errorf("on handshake, empty message type in %s", req.String())
+		return nil, errors.Errorf("on handshake, empty message type%s", reqDetail(req))
 	}
 
 	msgType := valuerpc.MessageType(mt.Long())
 
 	if msgType != valuerpc.HandshakeRequest {
-		return nil, errors.Errorf("on handshake, wrong message type in %s", req.String())
+		return nil, errors.Errorf("on handshake, wrong message type%s", reqDetail(req))
 	}
 
 	if !valuerpc.ValidMagicAndVersion(req) {
-		return nil, errors.Errorf("on handshake, unsupported client version in %s", req.String())
+		return nil, errors.Errorf("on handshake, unsupported client version%s", reqDetail(req))
 	}
 
 	// Authenticate the client's credential before touching any session state, so
-	// an unauthenticated peer never reaches createOrUpdateServingClient.
+	// an unauthenticated peer never reaches createOrUpdateServingClient. The
+	// authenticated principal binds session resumption (below).
+	principal := ""
 	if authn := t.getAuthenticator(); authn != nil {
-		if err := authn(conn, req.Get(valuerpc.AuthField)); err != nil {
+		p, err := authn(conn, req.Get(valuerpc.AuthField))
+		if err != nil {
 			return nil, errors.Errorf("on handshake, authentication failed: %v", err)
 		}
+		principal = p
 	}
 
 	cid, ok := valuerpc.GetNumberField(req, valuerpc.ClientIdField)
 	if !ok {
-		return nil, errors.Errorf("on handshake, no client id in %s", req.String())
+		return nil, errors.Errorf("on handshake, no client id%s", reqDetail(req))
 	}
 	clientId := cid.Long()
 
@@ -373,7 +377,7 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 		presentedToken = tok.String()
 	}
 
-	cli, err := t.createOrUpdateServingClient(clientId, presentedToken, conn)
+	cli, err := t.createOrUpdateServingClient(clientId, presentedToken, principal, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -433,20 +437,26 @@ func (t *rpcServer) handleConnection(conn valuerpc.MsgConn) error {
 }
 
 // createOrUpdateServingClient reattaches conn to an existing session only when
-// presentedToken matches the token the server issued for that clientId, and
-// otherwise mints a brand-new session. A matching token is required to resume,
-// so a peer that merely guesses or replays another client's clientId cannot
-// hijack the session (which would otherwise close the victim's connection and
-// redirect its in-flight responses).
-func (t *rpcServer) createOrUpdateServingClient(clientId int64, presentedToken string, conn valuerpc.MsgConn) (*servingClient, error) {
+// presentedToken matches the token the server issued for that clientId AND the
+// reconnecting peer authenticated as the same principal; otherwise it mints a
+// brand-new session. The token stops a peer that guesses/replays another client's
+// clientId from hijacking the session; the principal binding additionally stops a
+// leaked token from letting a *different* authenticated principal take it over.
+func (t *rpcServer) createOrUpdateServingClient(clientId int64, presentedToken, principal string, conn valuerpc.MsgConn) (*servingClient, error) {
 
-	if cli, ok := t.clientMap.Load(clientId); ok {
-		client := cli.(*servingClient)
-		if !validToken(presentedToken, client.sessionToken) {
+	resume := func(existing *servingClient) (*servingClient, error) {
+		if !validToken(presentedToken, existing.sessionToken) {
 			return nil, errors.Errorf("handshake rejected: session token mismatch for client %d", clientId)
 		}
-		client.replaceConn(conn)
-		return client, nil
+		if existing.principal != principal {
+			return nil, errors.Errorf("handshake rejected: principal mismatch for client %d", clientId)
+		}
+		existing.replaceConn(conn)
+		return existing, nil
+	}
+
+	if cli, ok := t.clientMap.Load(clientId); ok {
+		return resume(cli.(*servingClient))
 	}
 
 	token, err := newSessionToken()
@@ -454,18 +464,13 @@ func (t *rpcServer) createOrUpdateServingClient(clientId int64, presentedToken s
 		return nil, errors.Errorf("on handshake, generate session token: %v", err)
 	}
 
-	client := NewServingClient(t.ctx, clientId, token, conn, &t.functionMap, t.logger, &t.cfg)
+	client := NewServingClient(t.ctx, clientId, token, principal, conn, &t.functionMap, t.logger, &t.cfg)
 	// LoadOrStore guards a reconnect race for the same (new) clientId: if another
 	// connection won the slot, validate against the winner and discard ours
 	// (closing it stops the sender goroutine NewServingClient started).
 	if actual, loaded := t.clientMap.LoadOrStore(clientId, client); loaded {
 		client.Close()
-		existing := actual.(*servingClient)
-		if !validToken(presentedToken, existing.sessionToken) {
-			return nil, errors.Errorf("handshake rejected: session token mismatch for client %d", clientId)
-		}
-		existing.replaceConn(conn)
-		return existing, nil
+		return resume(actual.(*servingClient))
 	}
 
 	return client, nil

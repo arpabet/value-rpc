@@ -7,6 +7,32 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Security
+
+- **Session resumption is now bound to the authenticated principal.** The
+  `valueserver.Authenticator` hook returns a `principal` identity
+  (`func(conn, credential) (principal string, err error)` — **breaking**: it
+  previously returned only `error`). A reconnect that presents a valid session
+  token but authenticates as a *different* principal is rejected, so a leaked
+  token alone cannot let one principal take over another's session (defence in
+  depth atop the session-token anti-hijack). With no `Authenticator` set the
+  principal is "" for all and behaviour is unchanged. Test:
+  `valueserver.TestResumptionBoundToPrincipal`.
+
+### Changed
+
+- Error messages and protocol-error responses no longer embed the offending
+  request/argument payload by default — only the function name and message type,
+  which identify the call without leaking its data. Set
+  `valueserver.DebugPayloadInErrors = true` to restore full payloads for local
+  debugging.
+
+### Removed
+
+- The deprecated `valuerpc.ThrottleIncrease` / `ThrottleDecrease` message types
+  (superseded by `StreamCredit` flow control). Their wire numbers are reserved so
+  `StreamCredit` and other message-type values are unchanged.
+
 ### Deprecated
 
 - `valuerpc.WSKeepAlive` and `valuerpc.WSDialTimeout`. The WebSocket ping interval

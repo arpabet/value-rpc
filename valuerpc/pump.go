@@ -14,7 +14,7 @@ import (
 // DefaultMaxPending bounds a single request's internal pending queue inside a
 // StreamPump. A consumer that falls more than this many values behind is
 // treated as failed (the stream is closed) rather than letting a peer pin
-// unbounded memory. Cooperative throttling (ThrottleIncrease) normally keeps
+// unbounded memory. Credit-based flow control (StreamCredit) normally keeps
 // well-behaved peers from ever reaching the bound.
 var DefaultMaxPending = 4096
 

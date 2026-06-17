@@ -23,11 +23,11 @@ import (
 func TestAuthenticatorGatesHandshake(t *testing.T) {
 	const secret = "s3cret"
 	addr, stop := newServer(t, func(s valueserver.Server) {
-		s.SetAuthenticator(func(conn valuerpc.MsgConn, cred value.Value) error {
+		s.SetAuthenticator(func(conn valuerpc.MsgConn, cred value.Value) (string, error) {
 			if cred == nil || cred.Kind() != value.STRING || cred.(value.String).String() != secret {
-				return fmt.Errorf("bad credential")
+				return "", fmt.Errorf("bad credential")
 			}
-			return nil
+			return "user", nil
 		})
 		s.AddFunction("ping", valuerpc.Any, valuerpc.Any,
 			func(_ context.Context, args value.Value) (value.Value, error) {
@@ -126,6 +126,76 @@ func TestSessionResumptionRequiresToken(t *testing.T) {
 	if c4, _, err := rawHandshake(t, addr, cid, ""); err == nil {
 		c4.Close()
 		t.Fatal("server accepted a handshake reusing an existing client id with no token (hijack)")
+	}
+}
+
+// rawHandshakeAuth is rawHandshake with a credential attached, so a test can
+// impersonate a peer presenting a specific clientId, token, and credential.
+func rawHandshakeAuth(t *testing.T, addr string, clientId int64, token string, cred value.Value) (valuerpc.MsgConn, value.Map, error) {
+	t.Helper()
+	dialer := valuerpc.NewDialer(addr, "", valueclient.KeepAlivePeriod, valueclient.DefaultTimeout, valuerpc.MaxFrameSize)
+	conn, err := dialer.Dial(context.Background())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	req := valuerpc.NewHandshakeRequest(clientId, token).Put(valuerpc.AuthField, cred)
+	if err := conn.WriteMessage(req); err != nil {
+		conn.Close()
+		t.Fatalf("write handshake: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	resp, err := conn.ReadMessage()
+	return conn, resp, err
+}
+
+// TestResumptionBoundToPrincipal verifies that session resumption is bound to the
+// authenticated principal: a valid session token is not enough — a peer that
+// authenticates as a *different* principal cannot resume someone else's session
+// even with their (leaked) token.
+func TestResumptionBoundToPrincipal(t *testing.T) {
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.SetAuthenticator(func(_ valuerpc.MsgConn, cred value.Value) (string, error) {
+			if cred == nil || cred.Kind() != value.STRING {
+				return "", fmt.Errorf("no credential")
+			}
+			switch cred.(value.String).String() {
+			case "alice-key":
+				return "alice", nil
+			case "bob-key":
+				return "bob", nil
+			}
+			return "", fmt.Errorf("unknown credential")
+		})
+		s.AddFunction("ping", valuerpc.Any, valuerpc.Any,
+			func(_ context.Context, _ value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
+	})
+	defer stop()
+
+	const cid = int64(0x1234)
+
+	// Alice's first connect: server mints a token bound to principal "alice".
+	c1, resp, err := rawHandshakeAuth(t, addr, cid, "", value.Utf8("alice-key"))
+	if err != nil {
+		t.Fatalf("alice connect rejected: %v", err)
+	}
+	defer c1.Close()
+	tok, ok := valuerpc.GetStringField(resp, valuerpc.SessionTokenField)
+	if !ok || tok.String() == "" {
+		t.Fatal("server issued no session token")
+	}
+
+	// Alice resumes with her token and credential -> accepted.
+	c2, _, err := rawHandshakeAuth(t, addr, cid, tok.String(), value.Utf8("alice-key"))
+	if err != nil {
+		t.Fatalf("alice's own resume was rejected: %v", err)
+	}
+	c2.Close()
+
+	// Bob authenticates fine but is a different principal; with Alice's leaked
+	// token he must NOT be able to resume Alice's session.
+	if c3, _, err := rawHandshakeAuth(t, addr, cid, tok.String(), value.Utf8("bob-key")); err == nil {
+		c3.Close()
+		t.Fatal("a different principal resumed the session using a leaked token")
 	}
 }
 

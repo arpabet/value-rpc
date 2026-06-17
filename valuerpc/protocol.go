@@ -24,8 +24,8 @@ const (
 	StreamValue
 	StreamEnd
 	CancelRequest
-	ThrottleIncrease // deprecated: superseded by StreamCredit flow control
-	ThrottleDecrease // deprecated: superseded by StreamCredit flow control
+	_ // reserved (was ThrottleIncrease, removed); kept to preserve wire numbering
+	_ // reserved (was ThrottleDecrease, removed); kept to preserve wire numbering
 	// StreamCredit grants the data sender permission to send N more stream values
 	// (credit-based flow control). The receiver sends an initial window when the
 	// stream opens and replenishes credit as it delivers values to the consumer,

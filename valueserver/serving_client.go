@@ -39,6 +39,7 @@ var MaxConcurrentStreams int64 = 0
 type servingClient struct {
 	clientId     int64
 	sessionToken string // server-issued secret; set once, gates reconnect resumption
+	principal    string // authenticated identity; set once, binds reconnect resumption
 	activeConn   atomic.Value
 	functionMap  *sync.Map
 	cfg          *serverConfig // per-server config (caps, queue sizes); never mutated
@@ -59,11 +60,12 @@ type servingClient struct {
 	closeOnce sync.Once
 }
 
-func NewServingClient(parent context.Context, clientId int64, sessionToken string, conn vrpc.MsgConn, functionMap *sync.Map, logger *zap.Logger, cfg *serverConfig) *servingClient {
+func NewServingClient(parent context.Context, clientId int64, sessionToken, principal string, conn vrpc.MsgConn, functionMap *sync.Map, logger *zap.Logger, cfg *serverConfig) *servingClient {
 
 	client := &servingClient{
 		clientId:      clientId,
 		sessionToken:  sessionToken,
+		principal:     principal,
 		functionMap:   functionMap,
 		cfg:           cfg,
 		outgoingQueue: make(chan value.Map, cfg.outgoingQueueCap),
@@ -305,7 +307,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 
 	args := req.Get(vrpc.ArgumentsField)
 	if !vrpc.Verify(args, fn.args) {
-		return FunctionError(reqId, vrpc.CodeInvalidArgument, "function '%s' invalid args %s", name.String(), value.Jsonify(args))
+		return FunctionError(reqId, vrpc.CodeInvalidArgument, "function '%s' invalid args%s", name.String(), valDetail(args))
 	}
 
 	if fn.ft != ft {
@@ -351,7 +353,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 			return handlerError(reqId, "function "+name.String(), err)
 		}
 		if !vrpc.Verify(res, fn.res) {
-			return FunctionError(reqId, vrpc.CodeInternal, "function '%s' invalid results %s", name.String(), value.Jsonify(res))
+			return FunctionError(reqId, vrpc.CodeInternal, "function '%s' invalid results%s", name.String(), valDetail(res))
 		}
 		return FunctionResult(reqId, res)
 
@@ -453,13 +455,13 @@ func (t *servingClient) processRequest(req value.Map) error {
 
 	mt, ok := vrpc.GetNumberField(req, vrpc.MessageTypeField)
 	if !ok {
-		return errors.Errorf("empty message type in %s", req.String())
+		return errors.Errorf("empty message type%s", reqDetail(req))
 	}
 	msgType := vrpc.MessageType(mt.Long())
 
 	reqId, ok := vrpc.GetNumberField(req, vrpc.RequestIdField)
 	if !ok {
-		return errors.Errorf("request id not found in %s", req.String())
+		return errors.Errorf("request id not found%s", reqDetail(req))
 	}
 
 	if sr, ok := t.findServingRequest(reqId); ok {
@@ -491,7 +493,7 @@ func (t *servingClient) serveNewRequest(msgType vrpc.MessageType, req value.Map)
 	case vrpc.ChatRequest:
 		ft = chat
 	default:
-		return errors.Errorf("unknown message type for new request in %s", req.String())
+		return errors.Errorf("unknown message type for new request%s", reqDetail(req))
 	}
 
 	// Reserve a handler slot. Over the limit we reject this one request with an
