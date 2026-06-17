@@ -42,6 +42,7 @@ type rpcClient struct {
 	logger            *zap.Logger                             // structured diagnostics; no-op unless WithLogger set
 	metrics           valuerpc.Metrics                        // observability sink; no-op unless WithMetrics set
 	metadata          func(context.Context) valuerpc.Metadata // per-request metadata injector; nil unless WithMetadata set
+	reconnect         ReconnectPolicy                         // in-flight request disposition across a reconnect
 	dialTimeout       time.Duration                           // bounds a dial when the context carries no deadline
 }
 
@@ -112,6 +113,7 @@ func NewClientWithDialer(dialer valuerpc.Dialer, opts ...ClientOption) Client {
 		logger:      cfg.logger,
 		metrics:     cfg.metrics,
 		metadata:    cfg.metadata,
+		reconnect:   cfg.reconnect,
 		dialTimeout: cfg.dialTimeout,
 		conn:        NewSyncConn(),
 	}
@@ -228,7 +230,55 @@ func (t *rpcClient) Reconnect() error {
 	t.reconnects.Add(1)
 	t.metrics.Reconnect()
 	t.conn.reset()
-	return t.Connect()
+
+	// Reconnect policy: requests in flight on the dropped connection can never
+	// complete on it. Fail them fast by default; collect idempotent unary calls
+	// for replay on the new connection. Only requests issued before the drop are
+	// affected — ids issued concurrently (> cutoff) belong to the new connection.
+	cutoff := t.lastRequest.Load()
+	var replay []*rpcRequestCtx
+	t.requestCtxMap.Range(func(_, v any) bool {
+		rc := v.(*rpcRequestCtx)
+		if rc.requestId > cutoff {
+			return true
+		}
+		if rc.kind == unaryKind && t.reconnect.ReplayUnary != nil && t.reconnect.ReplayUnary(rc.Name()) {
+			replay = append(replay, rc)
+			return true // keep in the map; re-sent below
+		}
+		t.failRequest(rc, ErrConnectionLost)
+		return true
+	})
+
+	if err := t.Connect(); err != nil {
+		// Could not re-establish: fail the would-be-replayed requests too.
+		for _, rc := range replay {
+			t.failRequest(rc, ErrConnectionLost)
+		}
+		return err
+	}
+
+	// Re-send idempotent unary requests on the new connection. The request stays
+	// continuously in flight (one RequestBegin/RequestEnd pair) and keeps its
+	// original deadline budget (the SingleResp timer keeps running).
+	for _, rc := range replay {
+		t.logger.Debug("replaying idempotent unary across reconnect",
+			zap.Int64("requestId", rc.requestId), zap.String("method", rc.Name()))
+		t.conn.getConn().SendRequest(rc.req)
+	}
+	return nil
+}
+
+// failRequest applies the fail-fast outcome to an in-flight request: record the
+// error, surface stream errors, close it (unblocking SingleResp / closing the
+// stream channel and firing RequestEnd), and drop it from the request map.
+func (t *rpcClient) failRequest(rc *rpcRequestCtx, err error) {
+	rc.SetError(err)
+	if rc.kind != unaryKind {
+		t.getErrorHandler().StreamError(rc.requestId, err)
+	}
+	rc.Close()
+	t.requestCtxMap.Delete(rc.requestId)
 }
 
 func (t *rpcClient) sendMetrics(requestCtx *rpcRequestCtx) {

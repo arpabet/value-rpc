@@ -22,6 +22,7 @@ type clientConfig struct {
 	logger     *zap.Logger
 	metrics    valuerpc.Metrics
 	metadata   func(context.Context) valuerpc.Metadata
+	reconnect  ReconnectPolicy
 
 	// transport-level (used when a convenience constructor builds the dialer)
 	keepAlive    time.Duration
@@ -58,9 +59,30 @@ func newClientConfig(opts []ClientOption) clientConfig {
 	return cfg
 }
 
+// ReconnectPolicy governs what happens to in-flight requests when the connection
+// drops and is re-established. The zero value is fail-fast: every in-flight
+// request (unary and streams) is failed immediately with ErrConnectionLost
+// (CodeUnavailable) instead of hanging until its timeout.
+type ReconnectPolicy struct {
+	// ReplayUnary, when non-nil, reports whether an in-flight unary call to method
+	// is safe to re-send on the new connection (i.e. idempotent). Matching calls
+	// are replayed, keeping their original deadline budget; everything else —
+	// streams and non-idempotent unary calls, which cannot be safely resumed — is
+	// still failed fast. Replay at-least-once: the server may have already run the
+	// call before the drop, so only opt in methods with no observable effect on
+	// repetition.
+	ReplayUnary func(method string) bool
+}
+
 // ClientOption overrides a single per-client setting. Pass options to any client
 // constructor (NewClient, NewClientWithDialer, …).
 type ClientOption func(*clientConfig)
+
+// WithReconnectPolicy sets how in-flight requests are handled across a reconnect.
+// The default is fail-fast (see ReconnectPolicy).
+func WithReconnectPolicy(p ReconnectPolicy) ClientOption {
+	return func(c *clientConfig) { c.reconnect = p }
+}
 
 // WithSendingCap sets the outbound request-queue size.
 func WithSendingCap(n int64) ClientOption {

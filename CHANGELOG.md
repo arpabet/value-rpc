@@ -9,6 +9,17 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Reconnect policy for in-flight requests.** Previously a reconnect orphaned
+  in-flight requests (they hung until their timeout). Now, by default, they are
+  **failed fast** with `valueclient.ErrConnectionLost` (`CodeUnavailable`) the
+  moment the connection drops and is re-established. Opt in to **replaying
+  idempotent unary** calls on the new connection with
+  `valueclient.WithReconnectPolicy(ReconnectPolicy{ReplayUnary: func(method string) bool { … }})`
+  — matching calls are re-sent (keeping their original deadline budget) while
+  streams and non-idempotent unary calls are still failed fast. Replay is
+  at-least-once. Tests: `valueserver.TestReconnectFailFast`,
+  `TestReconnectReplayIdempotent`.
+
 - **Metadata / trace-context propagation.** Requests now carry a string→string
   metadata map (new `md` envelope field) for distributed-trace context and
   baggage. The client injects it per request from the call's context

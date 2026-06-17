@@ -807,6 +807,106 @@ func TestClientMetrics(t *testing.T) {
 	}
 }
 
+// TestReconnectFailFast: by default an in-flight request is failed fast with
+// ErrConnectionLost (CodeUnavailable) when the connection drops, rather than
+// hanging until its timeout.
+func TestReconnectFailFast(t *testing.T) {
+	hold := make(chan struct{})
+	started := make(chan struct{})
+	var once sync.Once
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("hold", valuerpc.Any, valuerpc.Any,
+			func(_ context.Context, _ value.Value) (value.Value, error) {
+				once.Do(func() { close(started) })
+				<-hold
+				return value.Utf8("late"), nil
+			})
+	})
+	defer stop()
+	defer close(hold)
+
+	// Long timeout: a fail-fast result proves the policy, not the call timer.
+	cli := valueclient.NewClient(addr, "", valueclient.WithTimeout(10000))
+	defer cli.Close()
+	if err := cli.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	errc := make(chan error, 1)
+	go func() {
+		_, err := cli.CallFunction(context.Background(), "hold", nil)
+		errc <- err
+	}()
+
+	<-started       // request is in flight on the server
+	cli.Reconnect() // drop + re-establish; in-flight must fail fast
+
+	select {
+	case err := <-errc:
+		if valuerpc.CodeOf(err) != valuerpc.CodeUnavailable {
+			t.Fatalf("in-flight call code = %v, want Unavailable (fail-fast)", valuerpc.CodeOf(err))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight call did not fail fast on reconnect (hung)")
+	}
+}
+
+// TestReconnectReplayIdempotent: with an opt-in replay policy, an in-flight
+// idempotent unary call is re-sent on the new connection and completes, instead
+// of failing.
+func TestReconnectReplayIdempotent(t *testing.T) {
+	var calls int32
+	firstHold := make(chan struct{})
+	started := make(chan struct{})
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("idem", valuerpc.Any, valuerpc.Any,
+			func(_ context.Context, _ value.Value) (value.Value, error) {
+				if atomic.AddInt32(&calls, 1) == 1 {
+					close(started)
+					<-firstHold // first attempt is abandoned by the reconnect
+					return value.Utf8("first"), nil
+				}
+				return value.Utf8("pong"), nil // the replayed attempt succeeds
+			})
+	})
+	defer stop()
+	defer close(firstHold)
+
+	cli := valueclient.NewClient(addr, "", valueclient.WithTimeout(10000),
+		valueclient.WithReconnectPolicy(valueclient.ReconnectPolicy{
+			ReplayUnary: func(method string) bool { return method == "idem" },
+		}))
+	defer cli.Close()
+	if err := cli.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	resc := make(chan string, 1)
+	errc := make(chan error, 1)
+	go func() {
+		r, err := cli.CallFunction(context.Background(), "idem", nil)
+		if err != nil {
+			errc <- err
+			return
+		}
+		resc <- r.(value.String).String()
+	}()
+
+	<-started
+	cli.Reconnect()
+
+	select {
+	case r := <-resc:
+		if r != "pong" {
+			t.Fatalf("replayed result = %q, want pong", r)
+		}
+	case err := <-errc:
+		t.Fatalf("idempotent call should have been replayed, got error: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("replayed call never completed")
+	}
+}
+
 // TestMetadataPropagation verifies trace/baggage metadata flows from the call's
 // context, through the envelope, onto the server handler's context — both as raw
 // metadata and via the WithMetadataExtractor enrichment hook.
