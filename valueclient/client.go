@@ -40,6 +40,7 @@ type rpcClient struct {
 	credential        atomic.Pointer[value.Value] // client-supplied; validated by the server Authenticator
 	maxPending        int                         // per-stream receive pending bound
 	logger            *zap.Logger                 // structured diagnostics; no-op unless WithLogger set
+	metrics           valuerpc.Metrics            // observability sink; no-op unless WithMetrics set
 	dialTimeout       time.Duration               // bounds a dial when the context carries no deadline
 }
 
@@ -108,6 +109,7 @@ func NewClientWithDialer(dialer valuerpc.Dialer, opts ...ClientOption) Client {
 		sendingCap:  cfg.sendingCap,
 		maxPending:  cfg.maxPending,
 		logger:      cfg.logger,
+		metrics:     cfg.metrics,
 		dialTimeout: cfg.dialTimeout,
 		conn:        NewSyncConn(),
 	}
@@ -221,6 +223,8 @@ func (t *rpcClient) ConnectContext(ctx context.Context) error {
 }
 
 func (t *rpcClient) Reconnect() error {
+	t.reconnects.Add(1)
+	t.metrics.Reconnect()
 	t.conn.reset()
 	return t.Connect()
 }
@@ -281,6 +285,8 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 					t.getErrorHandler().StreamError(requestCtx.requestId, truncErr)
 					t.CancelRequest(requestCtx.requestId)
 				})
+			} else {
+				t.metrics.StreamValue(requestCtx.Name())
 			}
 		}
 
@@ -362,6 +368,8 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 func (t *rpcClient) newRequestCtx(requestId int64, kind streamKind, req value.Map, receiveCap int) *rpcRequestCtx {
 	requestCtx := NewRequestCtx(requestId, kind, req, receiveCap, t.maxPending,
 		func(n int64) { t.sendStreamCredit(requestId, n) })
+	requestCtx.metrics = t.metrics // RequestEnd fires once at teardown (closeResult)
+	t.metrics.RequestBegin(requestCtx.Name())
 	t.requestCtxMap.Store(requestId, requestCtx)
 	return requestCtx
 }
@@ -460,6 +468,7 @@ func (t *rpcClient) CallFunction(ctx context.Context, name string, args value.Va
 		t.CancelRequest(requestCtx.requestId)
 	})
 	if err != nil {
+		requestCtx.SetError(err) // record the outcome for RequestEnd metrics
 		requestCtx.Close()
 		return nil, err
 	}
@@ -481,6 +490,7 @@ func (t *rpcClient) GetStream(ctx context.Context, name string, args value.Value
 		t.CancelRequest(requestCtx.requestId)
 	})
 	if err != nil {
+		requestCtx.SetError(err) // record the outcome for RequestEnd metrics
 		requestCtx.Close()
 		return nil, 0, err
 	}
@@ -504,6 +514,7 @@ func (t *rpcClient) PutStream(ctx context.Context, name string, args value.Value
 		t.CancelRequest(requestCtx.requestId)
 	})
 	if err != nil {
+		requestCtx.SetError(err) // record the outcome for RequestEnd metrics
 		requestCtx.Close()
 		return err
 	}
@@ -528,6 +539,7 @@ func (t *rpcClient) Chat(ctx context.Context, name string, args value.Value, rec
 		t.CancelRequest(requestCtx.requestId)
 	})
 	if err != nil {
+		requestCtx.SetError(err) // record the outcome for RequestEnd metrics
 		requestCtx.Close()
 		return nil, 0, err
 	}
@@ -565,6 +577,7 @@ func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Valu
 			Put(valuerpc.ValueField, val)
 
 		t.conn.getConn().SendRequest(nextReq)
+		t.metrics.StreamValue(requestCtx.Name())
 
 	}
 

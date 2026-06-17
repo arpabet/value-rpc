@@ -38,6 +38,9 @@ transport:  TCP  ·  Unix socket  ·  WebSocket        (optional SOCKS5 / wss TL
   per‑request pump, so one slow consumer can't stall other multiplexed requests.
 - **Structured logging** via `*zap.Logger` on both server and client (the client
   takes it with `valueclient.WithLogger(logger)`; silent by default).
+- **Pluggable metrics** (`valuerpc.Metrics` via `valueclient.WithMetrics`):
+  request/error counters (by code), in-flight gauge, latency, reconnects, and
+  stream throughput — wire it to Prometheus/OpenTelemetry. No-op by default.
 - **Context-aware, bounded dial**: `cli.ConnectContext(ctx)` cancels/bounds the
   dial; without a context deadline a default `WithDialTimeout` applies, so connect
   never hangs on an unreachable peer.

@@ -19,6 +19,7 @@ type clientConfig struct {
 	timeoutMls int64
 	maxPending int
 	logger     *zap.Logger
+	metrics    valuerpc.Metrics
 
 	// transport-level (used when a convenience constructor builds the dialer)
 	keepAlive    time.Duration
@@ -37,6 +38,7 @@ func newClientConfig(opts []ClientOption) clientConfig {
 		timeoutMls:   DefaultTimeoutMls,
 		maxPending:   valuerpc.DefaultMaxPending,
 		logger:       zap.NewNop(),
+		metrics:      valuerpc.NopMetrics{},
 		keepAlive:    KeepAlivePeriod,
 		writeTimeout: DefaultTimeout,
 		maxFrameSize: valuerpc.MaxFrameSize,
@@ -47,6 +49,9 @@ func newClientConfig(opts []ClientOption) clientConfig {
 	}
 	if cfg.logger == nil {
 		cfg.logger = zap.NewNop()
+	}
+	if cfg.metrics == nil {
+		cfg.metrics = valuerpc.NopMetrics{}
 	}
 	return cfg
 }
@@ -97,6 +102,12 @@ func WithMaxFrameSize(n int) ClientOption {
 // when the connect context already has a deadline.
 func WithDialTimeout(d time.Duration) ClientOption {
 	return func(c *clientConfig) { c.dialTimeout = d }
+}
+
+// WithMetrics installs a metrics sink for request/error/reconnect counters, the
+// in-flight gauge, and stream throughput. Without it metrics are a no-op.
+func WithMetrics(m valuerpc.Metrics) ClientOption {
+	return func(c *clientConfig) { c.metrics = m }
 }
 
 // WithLogger sets the structured logger the client uses for connection,

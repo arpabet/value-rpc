@@ -701,6 +701,112 @@ func TestServerMaxFrameSizeOption(t *testing.T) {
 	}
 }
 
+// metricsRec is a recording valuerpc.Metrics for tests.
+type metricsRec struct {
+	mu                       sync.Mutex
+	begin, end, errs, stream int
+	inflight, reconnects     int
+}
+
+func (m *metricsRec) RequestBegin(string) {
+	m.mu.Lock()
+	m.begin++
+	m.inflight++
+	m.mu.Unlock()
+}
+func (m *metricsRec) RequestEnd(_ string, code valuerpc.Code, _ time.Duration) {
+	m.mu.Lock()
+	m.end++
+	m.inflight--
+	if code != valuerpc.CodeOK {
+		m.errs++
+	}
+	m.mu.Unlock()
+}
+func (m *metricsRec) StreamValue(string) { m.mu.Lock(); m.stream++; m.mu.Unlock() }
+func (m *metricsRec) Reconnect()         { m.mu.Lock(); m.reconnects++; m.mu.Unlock() }
+
+// metricsSnapshot is a mutex-free copy, safe to pass by value / format.
+type metricsSnapshot struct {
+	begin, end, errs, stream, inflight, reconnects int
+}
+
+func (m *metricsRec) snapshot() metricsSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return metricsSnapshot{begin: m.begin, end: m.end, errs: m.errs, stream: m.stream, inflight: m.inflight, reconnects: m.reconnects}
+}
+
+// TestClientMetrics verifies WithMetrics receives request/error counters, the
+// in-flight gauge (begin−end), and stream throughput.
+func TestClientMetrics(t *testing.T) {
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("echo", valuerpc.Any, valuerpc.Any,
+			func(_ context.Context, a value.Value) (value.Value, error) { return a, nil })
+		s.AddFunction("boom", valuerpc.Any, valuerpc.Any,
+			func(_ context.Context, _ value.Value) (value.Value, error) {
+				return nil, valuerpc.NewError(valuerpc.CodeInvalidArgument, "no")
+			})
+		s.AddOutgoingStream("count", valuerpc.Any,
+			func(_ context.Context, _ value.Value) (<-chan value.Value, error) {
+				out := make(chan value.Value, 3)
+				go func() {
+					defer close(out)
+					for i := 0; i < 3; i++ {
+						out <- value.Long(int64(i))
+					}
+				}()
+				return out, nil
+			})
+	})
+	defer stop()
+
+	rec := &metricsRec{}
+	cli := valueclient.NewClient(addr, "", valueclient.WithMetrics(rec))
+	defer cli.Close()
+	ctx := context.Background()
+
+	if _, err := cli.CallFunction(ctx, "echo", value.Utf8("hi")); err != nil {
+		t.Fatalf("echo: %v", err)
+	}
+	if _, err := cli.CallFunction(ctx, "boom", nil); err == nil {
+		t.Fatal("boom should error")
+	}
+	readC, _, err := cli.GetStream(ctx, "count", nil, 8)
+	if err != nil {
+		t.Fatalf("get stream: %v", err)
+	}
+	for range readC {
+	}
+
+	// RequestEnd fires asynchronously (response loop) — wait for all 3 to settle.
+	deadline := time.After(3 * time.Second)
+	for {
+		s := rec.snapshot()
+		if s.end >= 3 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("metrics did not settle: %+v", s)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	s := rec.snapshot()
+	if s.begin != 3 || s.end != 3 {
+		t.Errorf("begin=%d end=%d, want 3/3", s.begin, s.end)
+	}
+	if s.inflight != 0 {
+		t.Errorf("in-flight gauge = %d, want 0", s.inflight)
+	}
+	if s.errs != 1 {
+		t.Errorf("error count = %d, want 1 (boom)", s.errs)
+	}
+	if s.stream < 3 {
+		t.Errorf("stream throughput = %d, want >= 3", s.stream)
+	}
+}
+
 // TestClientLogger verifies the client routes diagnostics through the injected
 // *zap.Logger (WithLogger) — the same structured logger glue apps pass to the
 // server — instead of stdlib log.

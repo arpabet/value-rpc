@@ -7,6 +7,7 @@ package valueclient
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,6 +54,8 @@ type rpcRequestCtx struct {
 	creditWindow  int64       // server->client receive window granted to the server
 	recvDelivered int64       // values delivered since last grant; pump goroutine only
 	grantCredit   func(int64) // sends a StreamCredit to the server (set by the client)
+
+	metrics valuerpc.Metrics // set by the client; RequestEnd fires once at teardown
 }
 
 func NewRequestCtx(requestId int64, kind streamKind, req value.Map, receiveCap, maxPending int, grantCredit func(int64)) *rpcRequestCtx {
@@ -160,7 +163,28 @@ func (t *rpcRequestCtx) closeResult() {
 		} else {
 			close(t.resultCh)
 		}
+		// Single end-of-request point: drives the request/error counters,
+		// in-flight gauge, and latency (paired with RequestBegin at creation).
+		if t.metrics != nil {
+			t.metrics.RequestEnd(t.Name(), metricsCode(t.Error(nil)), time.Since(t.start))
+		}
 	})
+}
+
+// metricsCode maps a request's terminal error to a Code for metrics: the code of
+// a *valuerpc.Error, DeadlineExceeded/Canceled for the client's timeout/cancel
+// sentinels, CodeOK for success.
+func metricsCode(err error) valuerpc.Code {
+	switch {
+	case err == nil:
+		return valuerpc.CodeOK
+	case errors.Is(err, ErrTimeoutError), errors.Is(err, context.DeadlineExceeded):
+		return valuerpc.CodeDeadlineExceeded
+	case errors.Is(err, context.Canceled):
+		return valuerpc.CodeCanceled
+	default:
+		return valuerpc.CodeOf(err)
+	}
 }
 
 // Close force-closes the request: unary completion, error, or cancellation. For
