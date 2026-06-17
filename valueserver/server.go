@@ -55,7 +55,8 @@ type rpcServer struct {
 	connMap     sync.Map // key is valuerpc.MsgConn, tracks live conns for shutdown (BUG-14)
 	liveConns   atomic.Int64
 
-	authorizer atomic.Value // ConnectAuthorizer, optional
+	authorizer    atomic.Value // ConnectAuthorizer, optional
+	authenticator atomic.Value // Authenticator, optional
 
 	closeOnce sync.Once
 }
@@ -67,6 +68,17 @@ func (t *rpcServer) SetConnectAuthorizer(fn ConnectAuthorizer) {
 func (t *rpcServer) getConnectAuthorizer() ConnectAuthorizer {
 	if v := t.authorizer.Load(); v != nil {
 		return v.(ConnectAuthorizer)
+	}
+	return nil
+}
+
+func (t *rpcServer) SetAuthenticator(fn Authenticator) {
+	t.authenticator.Store(fn)
+}
+
+func (t *rpcServer) getAuthenticator() Authenticator {
+	if v := t.authenticator.Load(); v != nil {
+		return v.(Authenticator)
 	}
 	return nil
 }
@@ -310,6 +322,15 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 	if !valuerpc.ValidMagicAndVersion(req) {
 		return nil, errors.Errorf("on handshake, unsupported client version in %s", req.String())
 	}
+
+	// Authenticate the client's credential before touching any session state, so
+	// an unauthenticated peer never reaches createOrUpdateServingClient.
+	if authn := t.getAuthenticator(); authn != nil {
+		if err := authn(conn, req.Get(valuerpc.AuthField)); err != nil {
+			return nil, errors.Errorf("on handshake, authentication failed: %v", err)
+		}
+	}
+
 	cid, ok := valuerpc.GetNumberField(req, valuerpc.ClientIdField)
 	if !ok {
 		return nil, errors.Errorf("on handshake, no client id in %s", req.String())

@@ -182,10 +182,23 @@ Package‑level knobs (set before constructing servers/clients):
 Per‑client: `cli.SetTimeout(ms)`, `cli.SetErrorHandler(...)`, `cli.SetMonitor(...)`,
 `cli.CancelRequest(id)`, `cli.Stats()`.
 
-For transport security and authentication: use **`wss://`** (TLS) via the embedded
-WebSocket handler on your own TLS `http.Server`; use **Unix-socket peer
-credentials** (below) for local authz; or wrap a TCP connection with `crypto/tls`.
-There is otherwise no built‑in TLS or auth.
+For transport security and authentication: use the **`tls://`** transport or
+**`wss://`** for encryption; **Unix-socket peer credentials** (below) for local
+authz; a **connect-authorizer** (`SetConnectAuthorizer`) for pre-handshake checks
+on the connection (TLS cert, peer creds); or a **handshake authenticator**
+(`SetAuthenticator`) to validate a client credential carried in the handshake
+(bearer token, API key) — the client attaches it with `cli.SetCredential(...)`:
+
+```go
+srv.SetAuthenticator(func(conn valuerpc.MsgConn, cred value.Value) error {
+    if cred == nil || cred.Kind() != value.STRING || cred.(value.String).String() != token {
+        return errors.New("unauthorized")
+    }
+    return nil
+})
+// client:
+cli.SetCredential(value.Utf8(token))
+```
 
 ## Transports
 
@@ -515,9 +528,10 @@ authenticated with a server‑issued token; handlers now receive a
 client's SLA deadline) — and the client API takes a context on every call for
 deadline/cancellation propagation; and `MaxConcurrentRequests` / `MaxConnections`
 / `MaxConcurrentStreams` caps bound handler goroutines, connections, and open
-streams under a flood. Known larger items still open: built‑in transport
-TLS/auth, binding the client id to a verified principal, and forced cancellation
-of handlers that ignore their context.
+streams under a flood; and a handshake `Authenticator` hook (plus the
+connect-authorizer) gates connections by client credential. Known larger items
+still open: binding the client id to a verified principal for resumption, and
+forced cancellation of handlers that ignore their context.
 
 ## License
 

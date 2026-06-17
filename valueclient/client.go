@@ -38,7 +38,8 @@ type rpcClient struct {
 	timeoutMls        atomic.Int64
 	perfMonitor       atomic.Value
 	shuttingDown      atomic.Bool
-	sessionToken      atomic.Pointer[string] // server-issued; resent to authorize reconnect
+	sessionToken      atomic.Pointer[string]      // server-issued; resent to authorize reconnect
+	credential        atomic.Pointer[value.Value] // client-supplied; validated by the server Authenticator
 }
 
 func (t *rpcClient) loadSessionToken() string {
@@ -46,6 +47,17 @@ func (t *rpcClient) loadSessionToken() string {
 		return *p
 	}
 	return ""
+}
+
+func (t *rpcClient) SetCredential(credential value.Value) {
+	t.credential.Store(&credential)
+}
+
+func (t *rpcClient) loadCredential() value.Value {
+	if p := t.credential.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // NewClient creates a client for address. A bare "host:port" dials TCP; a scheme
@@ -187,7 +199,7 @@ func (t *rpcClient) Connect() error {
 	if t.conn.hasConn() {
 		return nil
 	}
-	return t.conn.connect(t.dialer, t.clientId, t.loadSessionToken(), t.sendingCap, t.getResponseHandler(), t.getErrorHandler())
+	return t.conn.connect(t.dialer, t.clientId, t.loadSessionToken(), t.loadCredential(), t.sendingCap, t.getResponseHandler(), t.getErrorHandler())
 }
 
 func (t *rpcClient) Reconnect() error {

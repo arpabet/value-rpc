@@ -158,13 +158,15 @@ _ = reqID                                     // or use with cli.CancelRequest
   deadline and is cancelled on disconnect/shutdown/cancel. The server cannot
   force-stop a handler that ignores it, so a handler that blocks forever still
   holds a goroutine; check `ctx.Done()` in long operations.
-- **Terminate TLS and authenticate at a layer you add** (e.g. wrap with
-  `tls.Server`/`tls.Client`, or run behind a mesh). There is no built-in
-  transport TLS or peer authz beyond the connect-authorizer hook. Session
-  *resumption* is now gated by a server-issued token (a reused `cid` alone can
-  no longer hijack a session), but the initial `cid`/identity is still
-  client-asserted — add real peer authentication (mTLS, Unix peer creds) if you
-  need to bind sessions to a verified principal.
+- **Authenticate with the hooks provided**, or terminate TLS at a layer you add
+  (the `tls://`/`wss://`/QUIC transports, or run behind a mesh). Two server
+  hooks: `SetConnectAuthorizer` runs pre-handshake on the connection (TLS cert,
+  Unix peer creds); `SetAuthenticator` validates a client credential carried in
+  the handshake (bearer token, API key) that the client sets with
+  `SetCredential`. Session *resumption* is gated by a server-issued token (a
+  reused `cid` alone can no longer hijack a session); the initial `cid` is still
+  client-asserted, so bind it to the authenticated principal in your
+  authenticator if you need sessions tied to a verified identity.
 - **Bound message sizes upstream** (proxy/LB) until BUG-11 is fixed.
 
 ## 4. As a simpler alternative to gRPC / WebSocket

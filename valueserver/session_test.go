@@ -7,6 +7,7 @@ package valueserver_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -15,6 +16,50 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
 )
+
+// TestAuthenticatorGatesHandshake verifies the handshake Authenticator: a client
+// with the wrong/absent credential is rejected, and one with the correct
+// credential is accepted and can call.
+func TestAuthenticatorGatesHandshake(t *testing.T) {
+	const secret = "s3cret"
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.SetAuthenticator(func(conn valuerpc.MsgConn, cred value.Value) error {
+			if cred == nil || cred.Kind() != value.STRING || cred.(value.String).String() != secret {
+				return fmt.Errorf("bad credential")
+			}
+			return nil
+		})
+		s.AddFunction("ping", valuerpc.Any, valuerpc.Any,
+			func(_ context.Context, args value.Value) (value.Value, error) {
+				return value.Utf8("pong"), nil
+			})
+	})
+	defer stop()
+
+	// No credential -> the handshake is rejected, so calls fail.
+	bad := valueclient.NewClient(addr, "")
+	bad.SetTimeout(500)
+	defer bad.Close()
+	_ = bad.Connect()
+	if _, err := bad.CallFunction(context.Background(), "ping", nil); err == nil {
+		t.Fatal("call without the required credential should fail")
+	}
+
+	// Correct credential -> accepted.
+	good := valueclient.NewClient(addr, "")
+	good.SetCredential(value.Utf8(secret))
+	defer good.Close()
+	if err := good.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	res, err := good.CallFunction(context.Background(), "ping", nil)
+	if err != nil {
+		t.Fatalf("authenticated call failed: %v", err)
+	}
+	if got := res.(value.String).String(); got != "pong" {
+		t.Fatalf("got %q, want pong", got)
+	}
+}
 
 // rawHandshake dials a bare connection, sends a handshake for clientId carrying
 // token, and returns the server's reply (or an error if the server rejected and

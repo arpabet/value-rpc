@@ -34,6 +34,11 @@ type Client interface {
 
 	SetTimeout(timeoutMls int64)
 
+	// SetCredential sets the credential sent in the handshake (and re-sent on
+	// every reconnect) for the server's Authenticator to validate. Call before
+	// Connect. Pass nil to clear it.
+	SetCredential(credential value.Value)
+
 	CancelRequest(requestId int64)
 
 	// The context bounds the call: if it carries a deadline sooner than

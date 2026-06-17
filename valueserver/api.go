@@ -28,6 +28,14 @@ type Chat func(ctx context.Context, args value.Value, inC <-chan value.Value) (<
 // valuerpc.PeerCredOf for Unix-domain-socket peer authorization.
 type ConnectAuthorizer func(conn valuerpc.MsgConn) error
 
+// Authenticator is called during the handshake (on first connect and on every
+// reconnect) with the credential the client attached via Client.SetCredential
+// (value.Null when none was sent). Returning an error rejects the connection.
+// This is the transport-agnostic auth hook for credential schemes the
+// connect-authorizer cannot reach — bearer tokens, API keys, HMAC — that travel
+// in the handshake rather than in TLS certs or Unix peer credentials.
+type Authenticator func(conn valuerpc.MsgConn, credential value.Value) error
+
 type Server interface {
 	AddFunction(name string, args valuerpc.TypeDef, res valuerpc.TypeDef, cb Function) error
 
@@ -47,6 +55,10 @@ type Server interface {
 	// SetConnectAuthorizer installs a per-connection authorization hook (called
 	// before the handshake). Call before Run. Passing nil clears it.
 	SetConnectAuthorizer(fn ConnectAuthorizer)
+
+	// SetAuthenticator installs a handshake authentication hook that validates
+	// the client's credential (see Client.SetCredential). Call before Run.
+	SetAuthenticator(fn Authenticator)
 
 	Run() error
 

@@ -121,6 +121,14 @@ All notable changes to this project are documented here. The format is based on
 
 ### Security
 
+- **Handshake authentication hook.** `valueserver.Server.SetAuthenticator` takes a
+  `func(conn valuerpc.MsgConn, credential value.Value) error` that runs during the
+  handshake (first connect and every reconnect) and rejects the connection on
+  error. The client attaches its credential with `valueclient.Client.SetCredential`
+  (sent as the `auth` handshake field). This is the transport-agnostic auth seam
+  for bearer tokens / API keys / HMAC that the pre-handshake connect-authorizer
+  (TLS cert, Unix peer creds) cannot reach. Regression test:
+  `valueserver.TestAuthenticatorGatesHandshake`.
 - **Authenticated session resumption.** The server now mints a per-session token
   (128-bit, `crypto/rand`) on the first handshake and returns it in the handshake
   response; a reconnect may resume an existing `cid` only by presenting the

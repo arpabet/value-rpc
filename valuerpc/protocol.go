@@ -42,6 +42,7 @@ var RequestIdField = "rid"
 var TimeoutField = "sla"
 var ClientIdField = "cid"
 var SessionTokenField = "tok" // server-issued session secret; gates resumption
+var AuthField = "auth"        // client-supplied credential, validated by the server Authenticator
 var FunctionNameField = "fn"
 var ArgumentsField = "args" // allow multiple args if List value in function call
 var ResultField = "res"     // allow multiple results if List in function call

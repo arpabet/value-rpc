@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
 )
 
@@ -30,7 +31,7 @@ func NewSyncConn() *syncConn {
 	return t
 }
 
-func (t *syncConn) connect(dialer valuerpc.Dialer, clientId int64, sessionToken string, sendingCap int64, respHandler responseHandler, errorHandler ErrorHandler) error {
+func (t *syncConn) connect(dialer valuerpc.Dialer, clientId int64, sessionToken string, credential value.Value, sendingCap int64, respHandler responseHandler, errorHandler ErrorHandler) error {
 
 	t.connecting.Lock()
 	defer t.connecting.Unlock()
@@ -39,7 +40,7 @@ func (t *syncConn) connect(dialer valuerpc.Dialer, clientId int64, sessionToken 
 		return nil
 	}
 
-	conn, err := newConn(dialer, clientId, sessionToken, sendingCap, respHandler, errorHandler)
+	conn, err := newConn(dialer, clientId, sessionToken, credential, sendingCap, respHandler, errorHandler)
 	if err != nil {
 		return err
 	}
