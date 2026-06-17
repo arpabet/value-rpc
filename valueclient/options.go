@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"go.arpabet.com/value-rpc/valuerpc"
+	"go.uber.org/zap"
 )
 
 // clientConfig is the resolved per-client configuration, seeded from the
@@ -17,6 +18,7 @@ type clientConfig struct {
 	sendingCap int64
 	timeoutMls int64
 	maxPending int
+	logger     *zap.Logger
 
 	// transport-level (used when a convenience constructor builds the dialer)
 	keepAlive    time.Duration
@@ -29,12 +31,16 @@ func newClientConfig(opts []ClientOption) clientConfig {
 		sendingCap:   DefaultSendingCap,
 		timeoutMls:   DefaultTimeoutMls,
 		maxPending:   valuerpc.DefaultMaxPending,
+		logger:       zap.NewNop(),
 		keepAlive:    KeepAlivePeriod,
 		writeTimeout: DefaultTimeout,
 		maxFrameSize: valuerpc.MaxFrameSize,
 	}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if cfg.logger == nil {
+		cfg.logger = zap.NewNop()
 	}
 	return cfg
 }
@@ -78,4 +84,12 @@ func WithWriteTimeout(d time.Duration) ClientOption {
 // NewClientWithDialer.
 func WithMaxFrameSize(n int) ClientOption {
 	return func(c *clientConfig) { c.maxFrameSize = n }
+}
+
+// WithLogger sets the structured logger the client uses for connection,
+// reconnect, and protocol diagnostics (the same *zap.Logger glue applications
+// pass to valueserver). Without it the client is silent (a no-op logger). A nil
+// logger is treated as the no-op logger.
+func WithLogger(logger *zap.Logger) ClientOption {
+	return func(c *clientConfig) { c.logger = logger }
 }

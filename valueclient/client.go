@@ -8,15 +8,14 @@ package valueclient
 import (
 	"context"
 	"crypto/tls"
-	"log"
 	"math/rand"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
+	"go.uber.org/zap"
 )
 
 type responseHandler func(resp value.Map)
@@ -40,6 +39,7 @@ type rpcClient struct {
 	sessionToken      atomic.Pointer[string]      // server-issued; resent to authorize reconnect
 	credential        atomic.Pointer[value.Value] // client-supplied; validated by the server Authenticator
 	maxPending        int                         // per-stream receive pending bound
+	logger            *zap.Logger                 // structured diagnostics; no-op unless WithLogger set
 }
 
 func (t *rpcClient) loadSessionToken() string {
@@ -106,6 +106,7 @@ func NewClientWithDialer(dialer valuerpc.Dialer, opts ...ClientOption) Client {
 		clientId:   rand.Int63(),
 		sendingCap: cfg.sendingCap,
 		maxPending: cfg.maxPending,
+		logger:     cfg.logger,
 		conn:       NewSyncConn(),
 	}
 
@@ -146,7 +147,7 @@ func (t *rpcClient) getConnectionHandler() ConnectionHandler {
 		return ch.(ConnectionHandler)
 	}
 	return func(resp value.Map) {
-		log.Println("New connection established with ", resp)
+		t.logger.Debug("connection established", zap.Stringer("handshake", resp))
 	}
 }
 
@@ -179,22 +180,18 @@ func (t *rpcClient) BadConnection(err error) {
 		return
 	}
 
-	log.Printf("ERROR: bad connection, reconnect, %v\n", err)
-	err = t.Reconnect()
-	if err != nil {
-		log.Printf("ERROR: reconnect failed, %v\n", err)
+	t.logger.Warn("bad connection, reconnecting", zap.Error(err))
+	if err = t.Reconnect(); err != nil {
+		t.logger.Error("reconnect failed", zap.Error(err))
 	}
 }
 
 func (t *rpcClient) ProtocolError(rest value.Map, err error) {
-	log.Printf("ERROR: wrong message received, %v\n", err)
-	var out strings.Builder
-	rest.PrintJSON(&out)
-	log.Println(out.String())
+	t.logger.Error("protocol error: malformed message", zap.Error(err), zap.Stringer("message", rest))
 }
 
 func (t *rpcClient) StreamError(requestId int64, err error) {
-	log.Printf("ERROR: in-stream error for request %d, %v\n", requestId, err)
+	t.logger.Warn("stream error", zap.Int64("requestId", requestId), zap.Error(err))
 }
 
 func (t *rpcClient) IsActive() bool {

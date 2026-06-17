@@ -19,6 +19,7 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // newServer starts a server bound to an ephemeral port and returns its actual
@@ -697,6 +698,38 @@ func TestServerMaxFrameSizeOption(t *testing.T) {
 	big := value.Utf8(string(make([]byte, 4096)))
 	if _, err := cli.CallFunction(context.Background(), "echo", big); err == nil {
 		t.Fatal("a frame over the per-server MaxFrameSize should be rejected")
+	}
+}
+
+// TestClientLogger verifies the client routes diagnostics through the injected
+// *zap.Logger (WithLogger) — the same structured logger glue apps pass to the
+// server — instead of stdlib log.
+func TestClientLogger(t *testing.T) {
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("ping", valuerpc.Any, valuerpc.Any,
+			func(_ context.Context, _ value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
+	})
+	defer stop()
+
+	core, logs := observer.New(zap.DebugLevel)
+	cli := valueclient.NewClient(addr, "", valueclient.WithLogger(zap.New(core)))
+	defer cli.Close()
+	if err := cli.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if _, err := cli.CallFunction(context.Background(), "ping", nil); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+
+	// The default connection handler logs "connection established" (Debug) from
+	// the response loop goroutine once the handshake reply arrives.
+	deadline := time.After(2 * time.Second)
+	for logs.FilterMessage("connection established").Len() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("expected a 'connection established' entry via the injected logger")
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 

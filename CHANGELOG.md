@@ -9,6 +9,13 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Pluggable client logger (`*zap.Logger`).** The client no longer uses stdlib
+  `log`; connection, reconnect, and protocol diagnostics now go through an
+  injected `*zap.Logger` — the same structured logger glue applications already
+  pass to `valueserver`. Set it with `valueclient.WithLogger(logger)`; the default
+  is a no-op logger (silent), so the library never writes to stderr unbidden.
+  (Already on the latest `go.uber.org/zap` v1.28.0.) Test:
+  `valueserver.TestClientLogger`.
 - **Machine-readable error codes.** Errors now carry a `valuerpc.Code` on the wire
   (a new `code` field): `CodeNotFound`, `CodeInvalidArgument`, `CodeResourceExhausted`,
   `CodeUnavailable`, `CodeDeadlineExceeded`, `CodeUnauthenticated`, `CodeInternal`,

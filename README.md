@@ -36,6 +36,8 @@ transport:  TCP  ·  Unix socket  ·  WebSocket        (optional SOCKS5 / wss TL
   propagation to downstream work.
 - **No head‑of‑line blocking**: each stream is delivered through a non‑blocking
   per‑request pump, so one slow consumer can't stall other multiplexed requests.
+- **Structured logging** via `*zap.Logger` on both server and client (the client
+  takes it with `valueclient.WithLogger(logger)`; silent by default).
 - **Authenticated session resumption**: the server issues a per-session token at
   handshake; reconnecting with the matching token resumes the session, so a peer
   can't take it over by guessing the client id.
