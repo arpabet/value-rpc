@@ -97,3 +97,42 @@ jobs:
       - name: govulncheck (quic submodule)
         working-directory: quic
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  # gofmt gate: the whole tree (both modules — gofmt is file-based) must be
+  # formatted. Fails listing any offending files.
+  gofmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean (run 'gofmt -w .'):"
+            echo "$unformatted"
+            exit 1
+          fi
+
+  # Fuzz smoke: run each codec fuzz target briefly so the decode path keeps
+  # surviving adversarial input. This is a robustness gate, not a long campaign.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Fuzz ReadMessage (smoke)
+        run: go test ./valuerpc/ -run='^$' -fuzz='^FuzzReadMessage$' -fuzztime=30s
+
+      - name: Fuzz Unpack (smoke)
+        run: go test ./valuerpc/ -run='^$' -fuzz='^FuzzUnpack$' -fuzztime=30s

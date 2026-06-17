@@ -17,6 +17,26 @@ transport:  TCP  ·  Unix socket  ·  WebSocket        (optional SOCKS5 / wss TL
                  └─ unary · server-stream · client-stream · chat
 ```
 
+## When to use vRPC vs gRPC
+
+vRPC is a deliberate niche tool, not a gRPC replacement. **Reach for vRPC when your
+services are Go‑to‑Go and you want to skip the IDL/codegen pipeline** — register a
+function, call it by name, evolve the `value.Map` payload without recompiling a
+schema. It shines when you need more than one wire to reach a service (the same API
+runs over TCP, Unix sockets, WebSocket, TLS/mTLS, in‑memory, QUIC, or a
+bring‑your‑own connection), when you want a small dependency footprint, or when
+you’re embedding RPC inside an existing process or HTTP server. You still get
+streaming with credit‑based flow control, context cancellation/deadlines, typed
+error codes, metrics, trace‑context propagation, and reconnect — without `protoc`.
+
+**Prefer gRPC (or [ConnectRPC](https://connectrpc.com)) when** you need
+**cross‑language** clients/servers, a strict published **schema/contract** with
+generated stubs, browser support, or the mature ecosystem (interceptors, xDS,
+service mesh, observability tooling, broad third‑party integrations). vRPC’s
+MessagePack `value` model is effectively Go‑centric, so a polyglot fleet is gRPC
+territory. Rule of thumb: **schemaless, multi‑transport, Go‑only → vRPC;
+schema‑first, polyglot, ecosystem → gRPC.**
+
 ## Features
 
 - **No codegen, no `.proto`.** Register Go functions, call them by name.
