@@ -6,6 +6,7 @@
 package valueclient
 
 import (
+	"context"
 	"crypto/tls"
 	"log"
 	"math/rand"
@@ -367,16 +368,52 @@ func (t *rpcClient) CancelRequest(requestId int64) {
 	t.sendSystemRequest(requestId, valuerpc.CancelRequest)
 }
 
-func (t *rpcClient) CallFunction(name string, args value.Value) (value.Value, error) {
+// effectiveTimeout is the timeout (ms) used for this call: the configured
+// SetTimeout value, shortened to the context's remaining deadline when the
+// context's deadline is sooner. It is sent to the server as the request SLA.
+func (t *rpcClient) effectiveTimeout(ctx context.Context) int64 {
+	base := t.timeoutMls.Load()
+	if dl, ok := ctx.Deadline(); ok {
+		remaining := time.Until(dl).Milliseconds()
+		if remaining < 0 {
+			remaining = 0
+		}
+		if base <= 0 || remaining < base {
+			return remaining
+		}
+	}
+	return base
+}
 
-	req := t.constructRequest(valuerpc.FunctionRequest, name, args, t.timeoutMls.Load())
+// watchContext tears the request down if ctx is cancelled before the request
+// finishes on its own. It is a no-op for a context that can never be cancelled
+// (e.g. context.Background), and exits when the request completes, so it never
+// leaks a goroutine.
+func (t *rpcClient) watchContext(ctx context.Context, requestCtx *rpcRequestCtx) {
+	if ctx.Done() == nil {
+		return
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			t.CancelRequest(requestCtx.requestId)
+			requestCtx.Close()
+		case <-requestCtx.done:
+		}
+	}()
+}
+
+func (t *rpcClient) CallFunction(ctx context.Context, name string, args value.Value) (value.Value, error) {
+
+	timeout := t.effectiveTimeout(ctx)
+	req := t.constructRequest(valuerpc.FunctionRequest, name, args, timeout)
 
 	requestCtx, err := t.sendRequest(unaryKind, req, 1)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := requestCtx.SingleResp(t.timeoutMls.Load(), func() {
+	res, err := requestCtx.SingleResp(ctx, t.timeoutMls.Load(), func() {
 		t.CancelRequest(requestCtx.requestId)
 	})
 	if err != nil {
@@ -387,16 +424,17 @@ func (t *rpcClient) CallFunction(name string, args value.Value) (value.Value, er
 	return res, err
 }
 
-func (t *rpcClient) GetStream(name string, args value.Value, receiveCap int) (<-chan value.Value, int64, error) {
+func (t *rpcClient) GetStream(ctx context.Context, name string, args value.Value, receiveCap int) (<-chan value.Value, int64, error) {
 
-	req := t.constructRequest(valuerpc.GetStreamRequest, name, args, t.timeoutMls.Load())
+	timeout := t.effectiveTimeout(ctx)
+	req := t.constructRequest(valuerpc.GetStreamRequest, name, args, timeout)
 
 	requestCtx, err := t.sendRequest(getStreamKind, req, receiveCap)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	_, err = requestCtx.SingleResp(t.timeoutMls.Load(), func() {
+	_, err = requestCtx.SingleResp(ctx, t.timeoutMls.Load(), func() {
 		t.CancelRequest(requestCtx.requestId)
 	})
 	if err != nil {
@@ -404,19 +442,21 @@ func (t *rpcClient) GetStream(name string, args value.Value, receiveCap int) (<-
 		return nil, 0, err
 	}
 
+	t.watchContext(ctx, requestCtx)
 	return requestCtx.MultiResp(), requestCtx.requestId, err
 }
 
-func (t *rpcClient) PutStream(name string, args value.Value, putCh <-chan value.Value) error {
+func (t *rpcClient) PutStream(ctx context.Context, name string, args value.Value, putCh <-chan value.Value) error {
 
-	req := t.constructRequest(valuerpc.PutStreamRequest, name, args, t.timeoutMls.Load())
+	timeout := t.effectiveTimeout(ctx)
+	req := t.constructRequest(valuerpc.PutStreamRequest, name, args, timeout)
 
 	requestCtx, err := t.sendRequest(putStreamKind, req, 1)
 	if err != nil {
 		return err
 	}
 
-	_, err = requestCtx.SingleResp(t.timeoutMls.Load(), func() {
+	_, err = requestCtx.SingleResp(ctx, t.timeoutMls.Load(), func() {
 		t.CancelRequest(requestCtx.requestId)
 	})
 	if err != nil {
@@ -424,21 +464,23 @@ func (t *rpcClient) PutStream(name string, args value.Value, putCh <-chan value.
 		return err
 	}
 
+	t.watchContext(ctx, requestCtx)
 	go t.streamOut(requestCtx, putCh)
 
 	return nil
 }
 
-func (t *rpcClient) Chat(name string, args value.Value, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error) {
+func (t *rpcClient) Chat(ctx context.Context, name string, args value.Value, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error) {
 
-	req := t.constructRequest(valuerpc.ChatRequest, name, args, t.timeoutMls.Load())
+	timeout := t.effectiveTimeout(ctx)
+	req := t.constructRequest(valuerpc.ChatRequest, name, args, timeout)
 
 	requestCtx, err := t.sendRequest(chatKind, req, receiveCap+1)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	_, err = requestCtx.SingleResp(t.timeoutMls.Load(), func() {
+	_, err = requestCtx.SingleResp(ctx, t.timeoutMls.Load(), func() {
 		t.CancelRequest(requestCtx.requestId)
 	})
 	if err != nil {
@@ -446,6 +488,7 @@ func (t *rpcClient) Chat(name string, args value.Value, receiveCap int, putCh <-
 		return nil, 0, err
 	}
 
+	t.watchContext(ctx, requestCtx)
 	go t.streamOut(requestCtx, putCh)
 
 	return requestCtx.MultiResp(), requestCtx.requestId, nil

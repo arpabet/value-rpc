@@ -95,7 +95,7 @@ func TestHijackAttemptLeavesVictimIntact(t *testing.T) {
 
 	victim := dialClient(t, addr)
 	defer victim.Close()
-	if _, err := victim.CallFunction("ping", nil); err != nil {
+	if _, err := victim.CallFunction(context.Background(), "ping", nil); err != nil {
 		t.Fatalf("victim call: %v", err)
 	}
 
@@ -106,7 +106,7 @@ func TestHijackAttemptLeavesVictimIntact(t *testing.T) {
 	}
 
 	// The victim's session must be unaffected and still usable.
-	res, err := victim.CallFunction("ping", nil)
+	res, err := victim.CallFunction(context.Background(), "ping", nil)
 	if err != nil {
 		t.Fatalf("victim call after hijack attempt failed (session disturbed): %v", err)
 	}

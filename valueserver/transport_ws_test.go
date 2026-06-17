@@ -48,7 +48,7 @@ func TestWebSocket_Unary(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("echo", value.Tuple(value.Utf8("hi")))
+	res, err := cli.CallFunction(context.Background(), "echo", value.Tuple(value.Utf8("hi")))
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestWebSocket_ServerStream(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	readC, _, err := cli.GetStream("count", value.Tuple(value.Long(5)), 16)
+	readC, _, err := cli.GetStream(context.Background(), "count", value.Tuple(value.Long(5)), 16)
 	if err != nil {
 		t.Fatalf("get stream: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestWebSocket_Chat(t *testing.T) {
 	cli.SetTimeout(5000)
 
 	sendC := make(chan value.Value, 4)
-	readC, _, err := cli.Chat("echo", nil, 16, sendC)
+	readC, _, err := cli.Chat(context.Background(), "echo", nil, 16, sendC)
 	if err != nil {
 		t.Fatalf("chat: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestWebSocket_SchemeViaNewServer(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("ping", nil)
+	res, err := cli.CallFunction(context.Background(), "ping", nil)
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestWebSocket_EmbeddedHandler(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("echo", value.Tuple(value.Utf8("shared-port")))
+	res, err := cli.CallFunction(context.Background(), "echo", value.Tuple(value.Utf8("shared-port")))
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -247,12 +247,12 @@ func TestWebSocket_MaxFrameSize(t *testing.T) {
 	cli.SetTimeout(600)
 
 	// A small message round-trips.
-	if _, err := cli.CallFunction("recv", value.Tuple(value.Utf8("small"))); err != nil {
+	if _, err := cli.CallFunction(context.Background(), "recv", value.Tuple(value.Utf8("small"))); err != nil {
 		t.Fatalf("small call should succeed: %v", err)
 	}
 	// A message over the read limit must be rejected (server drops the frame).
 	big := strings.Repeat("x", 4096)
-	if _, err := cli.CallFunction("recv", value.Tuple(value.Utf8(big))); err == nil {
+	if _, err := cli.CallFunction(context.Background(), "recv", value.Tuple(value.Utf8(big))); err == nil {
 		t.Fatal("expected an over-limit websocket message to be rejected")
 	}
 }
@@ -277,7 +277,7 @@ func BenchmarkWebSocketUnary(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := cli.CallFunction("noop", arg); err != nil {
+		if _, err := cli.CallFunction(context.Background(), "noop", arg); err != nil {
 			b.Fatal(err)
 		}
 	}

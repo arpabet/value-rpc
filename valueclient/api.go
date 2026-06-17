@@ -5,8 +5,9 @@
 
 package valueclient
 
-
 import (
+	"context"
+
 	"go.arpabet.com/value"
 )
 
@@ -35,13 +36,19 @@ type Client interface {
 
 	CancelRequest(requestId int64)
 
-	CallFunction(name string, args value.Value) (value.Value, error)
+	// The context bounds the call: if it carries a deadline sooner than
+	// SetTimeout, that deadline is sent to the server as the request SLA; if the
+	// context is cancelled (or its deadline elapses), the request is cancelled
+	// (CancelRequest) and the call returns ctx.Err(). For streams the context
+	// governs the whole stream lifetime — cancelling it tears the stream down.
+	// Pass context.Background() when no deadline/cancellation is needed.
+	CallFunction(ctx context.Context, name string, args value.Value) (value.Value, error)
 
-	GetStream(name string, args value.Value, receiveCap int) (<-chan value.Value, int64, error)
+	GetStream(ctx context.Context, name string, args value.Value, receiveCap int) (<-chan value.Value, int64, error)
 
-	PutStream(name string, args value.Value, putCh <-chan value.Value) error
+	PutStream(ctx context.Context, name string, args value.Value, putCh <-chan value.Value) error
 
-	Chat(name string, args value.Value, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error)
+	Chat(ctx context.Context, name string, args value.Value, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error)
 
 	Close() error
 }

@@ -35,7 +35,7 @@ func TestMem_RoundTrip(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("echo", value.Tuple(value.Utf8("hi")))
+	res, err := cli.CallFunction(context.Background(), "echo", value.Tuple(value.Utf8("hi")))
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestMem_SchemeViaNewServer(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("ping", nil)
+	res, err := cli.CallFunction(context.Background(), "ping", nil)
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}

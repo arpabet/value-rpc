@@ -93,7 +93,7 @@ func TestTransportMatrix(t *testing.T) {
 				defer cli.Close()
 				cli.SetTimeout(5000)
 
-				res, err := cli.CallFunction("echo", value.Tuple(value.Utf8("hi")))
+				res, err := cli.CallFunction(context.Background(), "echo", value.Tuple(value.Utf8("hi")))
 				if err != nil {
 					t.Fatalf("call: %v", err)
 				}
@@ -124,7 +124,7 @@ func TestTransportMatrix(t *testing.T) {
 				defer cli.Close()
 				cli.SetTimeout(5000)
 
-				readC, _, err := cli.GetStream("count", value.Tuple(value.Long(5)), 16)
+				readC, _, err := cli.GetStream(context.Background(), "count", value.Tuple(value.Long(5)), 16)
 				if err != nil {
 					t.Fatalf("get stream: %v", err)
 				}
@@ -173,7 +173,7 @@ func TestTransportMatrix(t *testing.T) {
 				cli.SetTimeout(5000)
 
 				putC := make(chan value.Value, 4)
-				if err := cli.PutStream("sum", nil, putC); err != nil {
+				if err := cli.PutStream(context.Background(), "sum", nil, putC); err != nil {
 					t.Fatalf("put stream: %v", err)
 				}
 				for i := int64(1); i <= 4; i++ {
@@ -215,7 +215,7 @@ func TestTransportMatrix(t *testing.T) {
 				cli.SetTimeout(5000)
 
 				sendC := make(chan value.Value, 3)
-				readC, _, err := cli.Chat("echo", nil, 16, sendC)
+				readC, _, err := cli.Chat(context.Background(), "echo", nil, 16, sendC)
 				if err != nil {
 					t.Fatalf("chat: %v", err)
 				}

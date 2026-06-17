@@ -55,7 +55,7 @@ func TestUnaryCall(t *testing.T) {
 	cli := dialClient(t, addr)
 	defer cli.Close()
 
-	res, err := cli.CallFunction("echo", value.Tuple(value.Utf8("hi")))
+	res, err := cli.CallFunction(context.Background(), "echo", value.Tuple(value.Utf8("hi")))
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestUnaryCall_ServerError(t *testing.T) {
 	cli := dialClient(t, addr)
 	defer cli.Close()
 
-	_, err := cli.CallFunction("boom", nil)
+	_, err := cli.CallFunction(context.Background(), "boom", nil)
 	if err == nil {
 		t.Fatal("expected an error from a failing server function")
 	}
@@ -99,7 +99,7 @@ func TestVoidArgsAccepted(t *testing.T) {
 	cli := dialClient(t, addr)
 	defer cli.Close()
 
-	res, err := cli.CallFunction("ping", nil)
+	res, err := cli.CallFunction(context.Background(), "ping", nil)
 	if err != nil {
 		t.Fatalf("BUG-2: Void function with nil args should be accepted, got: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestUnaryCall_UnknownFunction(t *testing.T) {
 	cli := dialClient(t, addr)
 	defer cli.Close()
 
-	if _, err := cli.CallFunction("nope", nil); err == nil {
+	if _, err := cli.CallFunction(context.Background(), "nope", nil); err == nil {
 		t.Fatal("expected an error calling an unregistered function")
 	}
 }
@@ -140,7 +140,7 @@ func TestServerStreaming(t *testing.T) {
 	cli := dialClient(t, addr)
 	defer cli.Close()
 
-	readC, _, err := cli.GetStream("count", value.Tuple(value.Long(5)), 16)
+	readC, _, err := cli.GetStream(context.Background(), "count", value.Tuple(value.Long(5)), 16)
 	if err != nil {
 		t.Fatalf("get stream: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestClientStreaming(t *testing.T) {
 	defer cli.Close()
 
 	putC := make(chan value.Value, 4)
-	if err := cli.PutStream("sum", nil, putC); err != nil {
+	if err := cli.PutStream(context.Background(), "sum", nil, putC); err != nil {
 		t.Fatalf("put stream: %v", err)
 	}
 	for i := int64(1); i <= 4; i++ {
@@ -251,7 +251,7 @@ func TestMaxConcurrentRequestsRejectsFlood(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := cli.CallFunction("hold", nil); err != nil {
+			if _, err := cli.CallFunction(context.Background(), "hold", nil); err != nil {
 				atomic.AddInt64(&busyCount, 1)
 			} else {
 				atomic.AddInt64(&okCount, 1)
@@ -316,12 +316,12 @@ func TestMaxConcurrentStreamsRejectsExcess(t *testing.T) {
 
 	// Open exactly cap streams; each stays open (its handler blocks).
 	for i := 0; i < cap; i++ {
-		if _, _, err := cli.GetStream("hold", nil, 1); err != nil {
+		if _, _, err := cli.GetStream(context.Background(), "hold", nil, 1); err != nil {
 			t.Fatalf("stream %d should open under the cap: %v", i, err)
 		}
 	}
 	// One more must be rejected.
-	if _, _, err := cli.GetStream("hold", nil, 1); err == nil {
+	if _, _, err := cli.GetStream(context.Background(), "hold", nil, 1); err == nil {
 		t.Fatal("a stream beyond MaxConcurrentStreams should be rejected")
 	}
 
@@ -329,7 +329,7 @@ func TestMaxConcurrentStreamsRejectsExcess(t *testing.T) {
 	closeRelease()
 	deadline := time.After(5 * time.Second)
 	for {
-		_, _, err := cli.GetStream("hold", nil, 1)
+		_, _, err := cli.GetStream(context.Background(), "hold", nil, 1)
 		if err == nil {
 			break
 		}
@@ -359,7 +359,7 @@ func TestHandlerReceivesSLADeadline(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(2000) // sent as the SLA on the request
 
-	if _, err := cli.CallFunction("checkDeadline", nil); err != nil {
+	if _, err := cli.CallFunction(context.Background(), "checkDeadline", nil); err != nil {
 		t.Fatalf("call: %v", err)
 	}
 	if !<-hasDeadline {
@@ -387,13 +387,110 @@ func TestUnaryHandlerContextCanceled(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(200) // times out, which sends CancelRequest to the server
 
-	if _, err := cli.CallFunction("block", nil); err == nil {
+	if _, err := cli.CallFunction(context.Background(), "block", nil); err == nil {
 		t.Fatal("expected a timeout error from the blocked call")
 	}
 	select {
 	case <-canceled:
 	case <-time.After(3 * time.Second):
 		t.Fatal("handler context was not cancelled after the client cancelled the request")
+	}
+}
+
+// TestClientContextCancelUnary: cancelling the caller's context returns
+// context.Canceled (even though the client timeout is long).
+func TestClientContextCancelUnary(t *testing.T) {
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("block", valuerpc.Any, valuerpc.Any,
+			func(ctx context.Context, args value.Value) (value.Value, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			})
+	})
+	defer stop()
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+	cli.SetTimeout(60000) // long, so the context (not the timer) ends the call
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := cli.CallFunction(ctx, "block", nil)
+		errCh <- err
+	}()
+	time.Sleep(100 * time.Millisecond) // let the call reach the server
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != context.Canceled {
+			t.Fatalf("got %v, want context.Canceled", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("CallFunction did not return after context cancel")
+	}
+}
+
+// TestClientContextDeadlineUnary: a context deadline shorter than SetTimeout
+// returns context.DeadlineExceeded.
+func TestClientContextDeadlineUnary(t *testing.T) {
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("block", valuerpc.Any, valuerpc.Any,
+			func(ctx context.Context, args value.Value) (value.Value, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			})
+	})
+	defer stop()
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+	cli.SetTimeout(60000)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if _, err := cli.CallFunction(ctx, "block", nil); err != context.DeadlineExceeded {
+		t.Fatalf("got %v, want context.DeadlineExceeded", err)
+	}
+}
+
+// TestClientContextCancelStream: cancelling the context tears down a stream —
+// the returned channel closes.
+func TestClientContextCancelStream(t *testing.T) {
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddOutgoingStream("hold", valuerpc.Any,
+			func(ctx context.Context, args value.Value) (<-chan value.Value, error) {
+				out := make(chan value.Value)
+				go func() {
+					defer close(out)
+					<-ctx.Done()
+				}()
+				return out, nil
+			})
+	})
+	defer stop()
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	readC, _, err := cli.GetStream(ctx, "hold", nil, 4)
+	if err != nil {
+		t.Fatalf("get stream: %v", err)
+	}
+
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		for range readC { // drain until closed
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("stream channel did not close after context cancel")
 	}
 }
 
@@ -425,7 +522,7 @@ func TestConcurrentUnaryCalls(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < callsPer; i++ {
 				n := int64(base*callsPer + i)
-				res, err := cli.CallFunction("square", value.Tuple(value.Long(n)))
+				res, err := cli.CallFunction(context.Background(), "square", value.Tuple(value.Long(n)))
 				if err != nil {
 					errCh <- fmt.Errorf("n=%d: %w", n, err)
 					return
@@ -485,7 +582,7 @@ func TestSlowStreamConsumerDoesNotBlockOthers(t *testing.T) {
 	cli.SetTimeout(5000)
 
 	// Open the firehose and deliberately never drain it: a stuck slow consumer.
-	stream, _, err := cli.GetStream("firehose", nil, 4)
+	stream, _, err := cli.GetStream(context.Background(), "firehose", nil, 4)
 	if err != nil {
 		t.Fatalf("get stream: %v", err)
 	}
@@ -498,7 +595,7 @@ func TestSlowStreamConsumerDoesNotBlockOthers(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		for i := int64(1); i <= 200; i++ {
-			res, err := cli.CallFunction("square", value.Tuple(value.Long(i)))
+			res, err := cli.CallFunction(context.Background(), "square", value.Tuple(value.Long(i)))
 			if err != nil {
 				done <- fmt.Errorf("square(%d): %w", i, err)
 				return
@@ -549,7 +646,7 @@ func TestChatBidirectional(t *testing.T) {
 	cli.SetTimeout(5000)
 
 	sendC := make(chan value.Value, 4)
-	readC, _, err := cli.Chat("echo", nil, 16, sendC)
+	readC, _, err := cli.Chat(context.Background(), "echo", nil, 16, sendC)
 	if err != nil {
 		t.Fatalf("chat: %v", err)
 	}
@@ -597,7 +694,7 @@ func BenchmarkUnaryCallLoopback(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := cli.CallFunction("noop", arg); err != nil {
+		if _, err := cli.CallFunction(context.Background(), "noop", arg); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -621,7 +718,7 @@ func BenchmarkUnaryCallParallel(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, err := cli.CallFunction("noop", arg); err != nil {
+			if _, err := cli.CallFunction(context.Background(), "noop", arg); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -650,10 +747,10 @@ func TestServerSurvivesHandlerPanic(t *testing.T) {
 
 	// The panicking call gets no response and times out — but must not crash
 	// the server.
-	_, _ = cli.CallFunction("boom", nil)
+	_, _ = cli.CallFunction(context.Background(), "boom", nil)
 
 	cli.SetTimeout(3000)
-	res, err := cli.CallFunction("ok", nil)
+	res, err := cli.CallFunction(context.Background(), "ok", nil)
 	if err != nil {
 		t.Fatalf("server did not survive a handler panic: %v", err)
 	}
@@ -672,7 +769,7 @@ func TestGracefulShutdown(t *testing.T) {
 	})
 
 	cli := dialClient(t, addr)
-	if _, err := cli.CallFunction("ping", nil); err != nil {
+	if _, err := cli.CallFunction(context.Background(), "ping", nil); err != nil {
 		t.Fatalf("call: %v", err)
 	}
 	cli.Close()
@@ -698,7 +795,7 @@ func TestWrongArgTypeRejected(t *testing.T) {
 	cli := dialClient(t, addr)
 	defer cli.Close()
 
-	if _, err := cli.CallFunction("needsNumber", value.Tuple(value.Utf8("not a number"))); err == nil {
+	if _, err := cli.CallFunction(context.Background(), "needsNumber", value.Tuple(value.Utf8("not a number"))); err == nil {
 		t.Fatal("expected arg verification to reject a wrong-typed argument")
 	}
 }
@@ -727,7 +824,7 @@ func TestLargeServerStream(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	readC, _, err := cli.GetStream("range", nil, 256)
+	readC, _, err := cli.GetStream(context.Background(), "range", nil, 256)
 	if err != nil {
 		t.Fatalf("get stream: %v", err)
 	}
@@ -781,7 +878,7 @@ func TestMultipleConcurrentStreams(t *testing.T) {
 		wg.Add(1)
 		go func(base int64) {
 			defer wg.Done()
-			readC, _, err := cli.GetStream("seq", value.Tuple(value.Long(base*per), value.Long(per)), 64)
+			readC, _, err := cli.GetStream(context.Background(), "seq", value.Tuple(value.Long(base*per), value.Long(per)), 64)
 			if err != nil {
 				errc <- fmt.Errorf("stream %d: %w", base, err)
 				return
@@ -835,7 +932,7 @@ func BenchmarkServerStreamRecv(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	readC, _, err := cli.GetStream("range", value.Tuple(value.Long(int64(b.N))), 256)
+	readC, _, err := cli.GetStream(context.Background(), "range", value.Tuple(value.Long(int64(b.N))), 256)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -873,7 +970,7 @@ func BenchmarkChatEcho(b *testing.B) {
 	cli.SetTimeout(60000)
 
 	sendC := make(chan value.Value, 64)
-	readC, _, err := cli.Chat("echo", nil, 64, sendC)
+	readC, _, err := cli.Chat(context.Background(), "echo", nil, 64, sendC)
 	if err != nil {
 		b.Fatal(err)
 	}

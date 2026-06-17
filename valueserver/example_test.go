@@ -42,7 +42,7 @@ func Example_unary() {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("greet", value.Tuple(value.Utf8("world")))
+	res, err := cli.CallFunction(context.Background(), "greet", value.Tuple(value.Utf8("world")))
 	if err != nil {
 		panic(err)
 	}
@@ -81,7 +81,7 @@ func Example_serverStreaming() {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	readC, _, err := cli.GetStream("count", value.Tuple(value.Long(3)), 8)
+	readC, _, err := cli.GetStream(context.Background(), "count", value.Tuple(value.Long(3)), 8)
 	if err != nil {
 		panic(err)
 	}
@@ -127,7 +127,7 @@ func Example_chat() {
 	cli.SetTimeout(5000)
 
 	sendC := make(chan value.Value, 2)
-	readC, _, err := cli.Chat("echo", nil, 8, sendC)
+	readC, _, err := cli.Chat(context.Background(), "echo", nil, 8, sendC)
 	if err != nil {
 		panic(err)
 	}
@@ -175,7 +175,7 @@ func Example_unixSocket() {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("greet", value.Tuple(value.Utf8("unix")))
+	res, err := cli.CallFunction(context.Background(), "greet", value.Tuple(value.Utf8("unix")))
 	if err != nil {
 		panic(err)
 	}
@@ -208,7 +208,7 @@ func Example_webSocket() {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("greet", value.Tuple(value.Utf8("websocket")))
+	res, err := cli.CallFunction(context.Background(), "greet", value.Tuple(value.Utf8("websocket")))
 	if err != nil {
 		panic(err)
 	}
@@ -241,7 +241,7 @@ func Example_inMemory() {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("greet", value.Tuple(value.Utf8("in-process")))
+	res, err := cli.CallFunction(context.Background(), "greet", value.Tuple(value.Utf8("in-process")))
 	if err != nil {
 		panic(err)
 	}

@@ -108,7 +108,7 @@ func TestTLS_ServerAuth(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("ping", nil)
+	res, err := cli.CallFunction(context.Background(), "ping", nil)
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestTLS_MutualAuth(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	if _, err := cli.CallFunction("ping", nil); err != nil {
+	if _, err := cli.CallFunction(context.Background(), "ping", nil); err != nil {
 		t.Fatalf("call: %v", err)
 	}
 
@@ -199,7 +199,7 @@ func TestTLS_RejectsClientWithoutCert(t *testing.T) {
 	if err := cli.Connect(); err == nil {
 		// TLS 1.3 validates the client cert after the client's handshake
 		// completes, so the failure may surface on the first call instead.
-		if _, callErr := cli.CallFunction("ping", nil); callErr == nil {
+		if _, callErr := cli.CallFunction(context.Background(), "ping", nil); callErr == nil {
 			t.Fatal("expected mTLS to reject a client with no certificate")
 		}
 	}

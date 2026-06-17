@@ -58,14 +58,23 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
-- **BREAKING: handlers now take a `context.Context` first argument.** All four
-  handler types gained `ctx`: `Function`, `OutgoingStream`, `IncomingStream`,
-  `Chat`. The context is cancelled on disconnect, server shutdown, request
-  cancellation, or when the client's SLA deadline elapses, and carries that
-  deadline — so handlers can propagate cancellation/deadlines to downstream work.
-  Update existing handlers to `func(ctx context.Context, args value.Value) ...`.
-  The wire protocol is unchanged. Tests: `valueserver.TestHandlerReceivesSLADeadline`,
-  `TestUnaryHandlerContextCanceled`.
+- **BREAKING: `context.Context` is now first-class on both ends.**
+  - **Server handlers** take `ctx` as their first argument (`Function`,
+    `OutgoingStream`, `IncomingStream`, `Chat`). It is cancelled on disconnect,
+    server shutdown, or request cancellation, and for unary calls carries the
+    client's SLA as a deadline (streams are long-lived and are bounded by
+    cancellation, not the per-call SLA).
+  - **Client methods** take `ctx` as their first argument too — `CallFunction`,
+    `GetStream`, `PutStream`, `Chat` are now
+    `CallFunction(ctx, name, args)` etc. (no separate `…Context` variants). A
+    context deadline sooner than `SetTimeout` is sent as the request SLA;
+    cancelling the context cancels the call (and tears down a stream) and
+    returns `ctx.Err()`. Pass `context.Background()` for none.
+  - Update handlers to `func(ctx context.Context, …)` and call sites to
+    `cli.CallFunction(ctx, …)`. The wire protocol is unchanged. Tests:
+    `valueserver.TestHandlerReceivesSLADeadline`, `TestUnaryHandlerContextCanceled`,
+    `TestClientContextCancelUnary`, `TestClientContextDeadlineUnary`,
+    `TestClientContextCancelStream`.
 - **README** and **RESEARCH.md** rewritten to document all three transports
   (intro, architecture diagram, features, dependencies, configuration) instead
   of describing the library as TCP-only.

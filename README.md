@@ -92,9 +92,12 @@ if err := cli.Connect(); err != nil {
     panic(err)
 }
 defer cli.Close()
-cli.SetTimeout(2000) // unary deadline, milliseconds
+cli.SetTimeout(2000) // default unary deadline, milliseconds
 
-res, err := cli.CallFunction("greet", value.Tuple(value.Utf8("world")))
+// Every call takes a context; pass context.Background() for none. A context
+// deadline sooner than SetTimeout becomes the request SLA, and cancelling the
+// context cancels the call (and, for streams, tears the stream down).
+res, err := cli.CallFunction(context.Background(), "greet", value.Tuple(value.Utf8("world")))
 if err != nil {
     panic(err)
 }
@@ -509,11 +512,12 @@ msgpack‑rpc and a high‑load/concurrency analysis. Slow‑consumer head‑of�
 blocking has been resolved with a per‑request `StreamPump`; session resumption is
 authenticated with a server‑issued token; handlers now receive a
 `context.Context` (cancelled on disconnect/shutdown/cancel and carrying the
-client's SLA deadline); and `MaxConcurrentRequests` / `MaxConnections` /
-`MaxConcurrentStreams` caps bound handler goroutines, connections, and open
+client's SLA deadline) — and the client API takes a context on every call for
+deadline/cancellation propagation; and `MaxConcurrentRequests` / `MaxConnections`
+/ `MaxConcurrentStreams` caps bound handler goroutines, connections, and open
 streams under a flood. Known larger items still open: built‑in transport
-TLS/auth, binding the client id to a verified principal, forced cancellation of
-handlers that ignore their context, and surfacing the context on the client API.
+TLS/auth, binding the client id to a verified principal, and forced cancellation
+of handlers that ignore their context.
 
 ## License
 

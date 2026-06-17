@@ -136,11 +136,11 @@ if err := cli.Connect(); err != nil { return err }
 defer cli.Close()
 cli.SetTimeout(2000) // ms, unary deadline
 
-res, err := cli.CallFunction("user.get", value.Tuple(value.Long(42)))
+res, err := cli.CallFunction(ctx, "user.get", value.Tuple(value.Long(42)))
 
-evs, reqID, err := cli.GetStream("events.tail", value.Tuple(value.Utf8("orders")), 256)
-for ev := range evs { /* ... */ }            // remember to skip the phantom Null (BUG-4)
-_ = reqID                                     // use with cli.CancelRequest
+evs, reqID, err := cli.GetStream(ctx, "events.tail", value.Tuple(value.Utf8("orders")), 256)
+for ev := range evs { /* ... */ }            // cancel ctx to tear the stream down
+_ = reqID                                     // or use with cli.CancelRequest
 ```
 
 **Practical guidance for service authors (today's code)**

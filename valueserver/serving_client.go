@@ -260,9 +260,10 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 	}
 
 	// Per-request context: derived from the session context (cancelled on
-	// disconnect/shutdown) and bounded by the client's SLA when one is supplied,
-	// so deadlines and cancellation propagate to handlers.
-	reqCtx, cancel := t.newRequestContext(req)
+	// disconnect/shutdown) and, for unary calls, bounded by the client's SLA so
+	// deadlines and cancellation propagate to handlers. Streams are long-lived
+	// and are bounded by client cancellation, not the per-call SLA.
+	reqCtx, cancel := t.newRequestContext(req, ft)
 
 	switch fn.ft {
 	case singleFunction:
@@ -322,12 +323,16 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 
 }
 
-// newRequestContext derives a handler context from the session context. When the
-// request carries a positive SLA (TimeoutField, ms) the context also carries
-// that deadline, so a cooperating handler observes the client's timeout.
-func (t *servingClient) newRequestContext(req value.Map) (context.Context, context.CancelFunc) {
-	if sla, ok := vrpc.GetNumberField(req, vrpc.TimeoutField); ok && sla.Long() > 0 {
-		return context.WithTimeout(t.ctx, time.Duration(sla.Long())*time.Millisecond)
+// newRequestContext derives a handler context from the session context. For a
+// unary call carrying a positive SLA (TimeoutField, ms) the context also carries
+// that deadline, so a cooperating handler observes the client's timeout. Streams
+// are long-lived, so the SLA is not turned into a deadline for them; they are
+// bounded by client cancellation (CancelRequest) instead.
+func (t *servingClient) newRequestContext(req value.Map, ft functionType) (context.Context, context.CancelFunc) {
+	if ft == singleFunction {
+		if sla, ok := vrpc.GetNumberField(req, vrpc.TimeoutField); ok && sla.Long() > 0 {
+			return context.WithTimeout(t.ctx, time.Duration(sla.Long())*time.Millisecond)
+		}
 	}
 	return context.WithCancel(t.ctx)
 }

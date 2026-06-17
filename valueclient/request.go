@@ -6,6 +6,7 @@
 package valueclient
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -175,7 +176,11 @@ func (t *rpcRequestCtx) Error(defaultError error) error {
 	return defaultError
 }
 
-func (t *rpcRequestCtx) SingleResp(timeoutMls int64, onTimeout func()) (value.Value, error) {
+// SingleResp waits for the first response, the timeout, or ctx cancellation,
+// whichever comes first. onTimeout runs on either timeout or cancellation (it
+// sends CancelRequest to the server). A ctx with no Done channel
+// (context.Background) simply never selects that case.
+func (t *rpcRequestCtx) SingleResp(ctx context.Context, timeoutMls int64, onTimeout func()) (value.Value, error) {
 	// time.NewTimer + Stop instead of time.After: time.After cannot be cancelled
 	// and its timer lives until it fires, leaking a timer per call on the unary
 	// hot path when the response arrives first.
@@ -187,8 +192,17 @@ func (t *rpcRequestCtx) SingleResp(timeoutMls int64, onTimeout func()) (value.Va
 			return nil, t.Error(ErrNoResponse)
 		}
 		return result, nil
+	case <-ctx.Done():
+		onTimeout()
+		return nil, ctx.Err()
 	case <-timer.C:
 		onTimeout()
+		// The timer is set to the context's remaining deadline when that is the
+		// shorter bound, so prefer the context error (DeadlineExceeded) for a
+		// clear, idiomatic result; fall back to the plain timeout otherwise.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, t.Error(ErrTimeoutError)
 	}
 }

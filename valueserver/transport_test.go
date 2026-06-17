@@ -50,7 +50,7 @@ func TestSeam_NewServerWithListener_TCP(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("echo", value.Tuple(value.Utf8("hi")))
+	res, err := cli.CallFunction(context.Background(), "echo", value.Tuple(value.Utf8("hi")))
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestSeam_UnixSocketTransport(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("echo", value.Tuple(value.Utf8("hi")))
+	res, err := cli.CallFunction(context.Background(), "echo", value.Tuple(value.Utf8("hi")))
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestUnixScheme_RoundTrip(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("echo", value.Tuple(value.Utf8("scheme")))
+	res, err := cli.CallFunction(context.Background(), "echo", value.Tuple(value.Utf8("scheme")))
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestNewUnixServerClient_RoundTrip(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("ping", nil)
+	res, err := cli.CallFunction(context.Background(), "ping", nil)
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestPeerCredOverUnix(t *testing.T) {
 	}
 	defer cli.Close()
 	cli.SetTimeout(5000)
-	if _, err := cli.CallFunction("ping", nil); err != nil {
+	if _, err := cli.CallFunction(context.Background(), "ping", nil); err != nil {
 		t.Fatalf("call: %v", err)
 	}
 
@@ -249,7 +249,7 @@ func TestConnectAuthorizerRejects(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(1000)
 
-	if _, err := cli.CallFunction("ping", nil); err == nil {
+	if _, err := cli.CallFunction(context.Background(), "ping", nil); err == nil {
 		t.Fatal("expected the call to fail when the authorizer rejects the connection")
 	}
 }

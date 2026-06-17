@@ -138,7 +138,7 @@ func run() error {
 	Simple call example
 	*/
 
-	nothing, err := cli.CallFunction("setName", value.Tuple(
+	nothing, err := cli.CallFunction(context.Background(), "setName", value.Tuple(
 		value.Utf8("Alex"),
 		value.Utf8("Shu"),
 	))
@@ -152,7 +152,7 @@ func run() error {
 	*/
 
 	cli.SetTimeout(0)
-	name, err := cli.CallFunction("getName", nil)
+	name, err := cli.CallFunction(context.Background(), "getName", nil)
 	if err == valueclient.ErrTimeoutError {
 		fmt.Println("Timeout received")
 	} else {
@@ -164,7 +164,7 @@ func run() error {
 	Get stream example
 	*/
 
-	readC, requestId, err := cli.GetStream("scanNames", nil, 100)
+	readC, requestId, err := cli.GetStream(context.Background(), "scanNames", nil, 100)
 	if err != nil {
 		return errors.Errorf("get stream failed, %v", err)
 	}
@@ -189,7 +189,7 @@ func run() error {
 	*/
 
 	uploadCh := make(chan value.Value, 2)
-	err = cli.PutStream("uploadNames", nil, uploadCh)
+	err = cli.PutStream(context.Background(), "uploadNames", nil, uploadCh)
 	if err != nil {
 		return errors.Errorf("put stream failed, %v", err)
 	}
@@ -209,7 +209,7 @@ func run() error {
 	*/
 
 	sendCh := make(chan value.Value, 10)
-	readC, requestId, err = cli.Chat("echoChat", nil, 100, sendCh)
+	readC, requestId, err = cli.Chat(context.Background(), "echoChat", nil, 100, sendCh)
 	if err != nil {
 		return errors.Errorf("chat request failed, %v", err)
 	}

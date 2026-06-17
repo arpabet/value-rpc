@@ -76,7 +76,7 @@ func TestSeam_SingleConn_RoundTrip(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("echo", value.Tuple(value.Utf8("hi")))
+	res, err := cli.CallFunction(context.Background(), "echo", value.Tuple(value.Utf8("hi")))
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}

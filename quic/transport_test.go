@@ -112,7 +112,7 @@ func TestQUIC_RoundTrip(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	res, err := cli.CallFunction("echo", value.Tuple(value.Utf8("hi")))
+	res, err := cli.CallFunction(context.Background(), "echo", value.Tuple(value.Utf8("hi")))
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestQUIC_Matrix(t *testing.T) {
 		defer srv.Close()
 		mustConnect(t, cli)
 		defer cli.Close()
-		res, err := cli.CallFunction("sq", value.Tuple(value.Long(9)))
+		res, err := cli.CallFunction(context.Background(), "sq", value.Tuple(value.Long(9)))
 		if err != nil {
 			t.Fatalf("call: %v", err)
 		}
@@ -162,7 +162,7 @@ func TestQUIC_Matrix(t *testing.T) {
 		defer srv.Close()
 		mustConnect(t, cli)
 		defer cli.Close()
-		readC, _, err := cli.GetStream("count", value.Tuple(value.Long(5)), 16)
+		readC, _, err := cli.GetStream(context.Background(), "count", value.Tuple(value.Long(5)), 16)
 		if err != nil {
 			t.Fatalf("get stream: %v", err)
 		}
@@ -205,7 +205,7 @@ func TestQUIC_Matrix(t *testing.T) {
 		mustConnect(t, cli)
 		defer cli.Close()
 		putC := make(chan value.Value, 4)
-		if err := cli.PutStream("sum", nil, putC); err != nil {
+		if err := cli.PutStream(context.Background(), "sum", nil, putC); err != nil {
 			t.Fatalf("put stream: %v", err)
 		}
 		for i := int64(1); i <= 4; i++ {
@@ -242,7 +242,7 @@ func TestQUIC_Matrix(t *testing.T) {
 		mustConnect(t, cli)
 		defer cli.Close()
 		sendC := make(chan value.Value, 3)
-		readC, _, err := cli.Chat("echo", nil, 16, sendC)
+		readC, _, err := cli.Chat(context.Background(), "echo", nil, 16, sendC)
 		if err != nil {
 			t.Fatalf("chat: %v", err)
 		}
@@ -310,7 +310,7 @@ func TestQUIC_MutualAuth(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(5000)
 
-	if _, err := cli.CallFunction("ping", nil); err != nil {
+	if _, err := cli.CallFunction(context.Background(), "ping", nil); err != nil {
 		t.Fatalf("call: %v", err)
 	}
 	select {
@@ -344,7 +344,7 @@ func TestQUIC_StreamsAreFreed(t *testing.T) {
 	cli.SetTimeout(3000)
 
 	for i := int64(0); i < 50; i++ {
-		res, err := cli.CallFunction("inc", value.Tuple(value.Long(i)))
+		res, err := cli.CallFunction(context.Background(), "inc", value.Tuple(value.Long(i)))
 		if err != nil {
 			t.Fatalf("call %d failed (stream leak would block here): %v", i, err)
 		}
@@ -387,7 +387,7 @@ func TestQUIC_Concurrent(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < callsPer; i++ {
 				n := int64(base*callsPer + i)
-				res, err := cli.CallFunction("square", value.Tuple(value.Long(n)))
+				res, err := cli.CallFunction(context.Background(), "square", value.Tuple(value.Long(n)))
 				if err != nil {
 					errc <- fmt.Errorf("n=%d: %w", n, err)
 					return
@@ -438,7 +438,7 @@ func TestQUIC_MultipleConcurrentStreams(t *testing.T) {
 		wg.Add(1)
 		go func(base int64) {
 			defer wg.Done()
-			readC, _, err := cli.GetStream("seq", value.Tuple(value.Long(base*per), value.Long(per)), 32)
+			readC, _, err := cli.GetStream(context.Background(), "seq", value.Tuple(value.Long(base*per), value.Long(per)), 32)
 			if err != nil {
 				errc <- fmt.Errorf("stream %d: %w", base, err)
 				return
@@ -488,7 +488,7 @@ func TestQUIC_LargeServerStream(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(10000)
 
-	readC, _, err := cli.GetStream("range", nil, 128)
+	readC, _, err := cli.GetStream(context.Background(), "range", nil, 128)
 	if err != nil {
 		t.Fatalf("get stream: %v", err)
 	}
@@ -528,7 +528,7 @@ func TestQUIC_RejectsClientWithoutCert(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(800)
 	if err := cli.Connect(); err == nil {
-		if _, callErr := cli.CallFunction("ping", nil); callErr == nil {
+		if _, callErr := cli.CallFunction(context.Background(), "ping", nil); callErr == nil {
 			t.Fatal("expected mTLS to reject a client with no certificate")
 		}
 	}
@@ -549,11 +549,11 @@ func TestQUIC_MaxFrameSize(t *testing.T) {
 	defer cli.Close()
 	cli.SetTimeout(800)
 
-	if _, err := cli.CallFunction("recv", value.Tuple(value.Utf8("small"))); err != nil {
+	if _, err := cli.CallFunction(context.Background(), "recv", value.Tuple(value.Utf8("small"))); err != nil {
 		t.Fatalf("small call should succeed: %v", err)
 	}
 	big := strings.Repeat("x", 4096)
-	if _, err := cli.CallFunction("recv", value.Tuple(value.Utf8(big))); err == nil {
+	if _, err := cli.CallFunction(context.Background(), "recv", value.Tuple(value.Utf8(big))); err == nil {
 		t.Fatal("expected an over-limit message to be rejected")
 	}
 }
@@ -574,7 +574,7 @@ func BenchmarkQUICUnary(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := cli.CallFunction("noop", arg); err != nil {
+		if _, err := cli.CallFunction(context.Background(), "noop", arg); err != nil {
 			b.Fatal(err)
 		}
 	}
