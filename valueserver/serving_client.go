@@ -201,6 +201,29 @@ func (t *servingClient) send(resp value.Map) error {
 	}
 }
 
+// trySend enqueues a message without ever blocking the caller. It returns false
+// if the queue is full or the client is closed. Used for best-effort control
+// messages (flow-control throttling) sent from the connection read loop, which
+// must not block (blocking it would head-of-line block every other request).
+func (t *servingClient) trySend(resp value.Map) bool {
+	select {
+	case t.outgoingQueue <- resp:
+		return true
+	case <-t.done:
+		return false
+	default:
+		return false
+	}
+}
+
+// throttleMessage builds a flow-control message (ThrottleIncrease/Decrease) for
+// the given request.
+func throttleMessage(requestId value.Number, mt vrpc.MessageType) value.Map {
+	return value.EmptyMap(true).
+		Put(vrpc.MessageTypeField, mt.Long()).
+		Put(vrpc.RequestIdField, requestId)
+}
+
 func (t *servingClient) findFunction(name string) (*function, bool) {
 	if fn, ok := t.functionMap.Load(name); ok {
 		return fn.(*function), true

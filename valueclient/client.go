@@ -34,7 +34,7 @@ type rpcClient struct {
 	reconnects        atomic.Int64
 	requestCtxMap     sync.Map
 	connectionHandler atomic.Value
-	errorHandler      atomic.Value
+	errorHandler      atomic.Pointer[ErrorHandler]
 	timeoutMls        atomic.Int64
 	perfMonitor       atomic.Value
 	shuttingDown      atomic.Bool
@@ -127,7 +127,8 @@ func (t *rpcClient) Stats() map[string]int64 {
 }
 
 func (t *rpcClient) Close() error {
-	t.errorHandler.Store(t)
+	var self ErrorHandler = t
+	t.errorHandler.Store(&self)
 	t.shuttingDown.Store(true)
 	t.conn.reset()
 	return nil
@@ -148,15 +149,14 @@ func (t *rpcClient) SetConnectionHandler(ch ConnectionHandler) {
 }
 
 func (t *rpcClient) getErrorHandler() ErrorHandler {
-	eh := t.errorHandler.Load()
-	if eh != nil {
-		return eh.(ErrorHandler)
+	if p := t.errorHandler.Load(); p != nil {
+		return *p
 	}
 	return t
 }
 
 func (t *rpcClient) SetErrorHandler(eh ErrorHandler) {
-	t.errorHandler.Store(eh)
+	t.errorHandler.Store(&eh)
 }
 
 func (t *rpcClient) SetMonitor(perfMonitor PerformanceMonitor) {

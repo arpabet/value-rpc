@@ -494,6 +494,128 @@ func TestClientContextCancelStream(t *testing.T) {
 	}
 }
 
+// TestHighThroughputStreamLossless guards the inbound flow-control fix: a fast
+// producer streaming many values through a chat echo must have every value
+// delivered, not silently truncated when the buffer fills. (Before inbound
+// throttling, the StreamPump dropped values past its bound — see the BenchmarkChatEcho
+// regression.)
+func TestHighThroughputStreamLossless(t *testing.T) {
+	const n = 50000
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddChat("echo", valuerpc.Any,
+			func(_ context.Context, args value.Value, inC <-chan value.Value) (<-chan value.Value, error) {
+				out := make(chan value.Value, 64)
+				go func() {
+					defer close(out)
+					for v := range inC {
+						out <- v
+					}
+				}()
+				return out, nil
+			})
+	})
+	defer stop()
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+	cli.SetTimeout(60000)
+
+	sendC := make(chan value.Value, 64)
+	readC, _, err := cli.Chat(context.Background(), "echo", nil, 64, sendC)
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	go func() {
+		for i := 0; i < n; i++ {
+			sendC <- value.Long(int64(i))
+		}
+		close(sendC)
+	}()
+
+	got := 0
+	for range readC {
+		got++
+	}
+	if got != n {
+		t.Fatalf("received %d echoes, want %d (inbound stream truncated — flow-control regression)", got, n)
+	}
+}
+
+// errCapture is an ErrorHandler that records the last StreamError.
+type errCapture struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (e *errCapture) BadConnection(error)            {}
+func (e *errCapture) ProtocolError(value.Map, error) {}
+func (e *errCapture) StreamError(_ int64, err error) {
+	e.mu.Lock()
+	e.err = err
+	e.mu.Unlock()
+}
+func (e *errCapture) last() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.err
+}
+
+// TestSlowConsumerTruncationSurfaced pins #13: a consumer that never reads its
+// inbound channel (ignoring the backpressure the client honours) eventually
+// overruns the bounded buffer; the server must surface that as an explicit error
+// to the client rather than silently dropping values.
+func TestSlowConsumerTruncationSurfaced(t *testing.T) {
+	// Shrink the buffers so overflow is reached quickly even though the client
+	// honours throttling.
+	oldICap, oldPending := valueserver.IncomingQueueCap, valuerpc.DefaultMaxPending
+	defer func() {
+		valueserver.IncomingQueueCap = oldICap
+		valuerpc.DefaultMaxPending = oldPending
+	}()
+	valueserver.IncomingQueueCap = 8
+	valuerpc.DefaultMaxPending = 8
+
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddIncomingStream("blackhole", valuerpc.Any,
+			func(ctx context.Context, args value.Value, inC <-chan value.Value) error {
+				// Return immediately (per the handler contract) but never read inC:
+				// a stuck consumer.
+				go func() { <-ctx.Done() }()
+				return nil
+			})
+	})
+	defer stop()
+
+	cli := valueclient.NewClient(addr, "")
+	cap := &errCapture{}
+	cli.SetErrorHandler(cap)
+	if err := cli.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer cli.Close()
+	cli.SetTimeout(60000)
+
+	putC := make(chan value.Value, 4)
+	if err := cli.PutStream(context.Background(), "blackhole", nil, putC); err != nil {
+		t.Fatalf("put stream: %v", err)
+	}
+	go func() {
+		for i := 0; i < 1000; i++ {
+			putC <- value.Long(int64(i))
+		}
+		close(putC)
+	}()
+
+	deadline := time.After(5 * time.Second)
+	for cap.last() == nil {
+		select {
+		case <-deadline:
+			t.Fatal("slow-consumer overflow was not surfaced as a stream error")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
 // TestConcurrentUnaryCalls exercises the multiplexing/dispatch path: many
 // goroutines share one client and one connection, and each must receive exactly
 // its own response (correct requestId routing under load).

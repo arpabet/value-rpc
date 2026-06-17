@@ -509,9 +509,13 @@ Numbers are indicative; run `go test -bench=. ./...` on your hardware.
 Streaming/chat throughput is bounded by the millisecond‑granularity throttle
 once a consumer falls behind; size the receive buffers for your workload. A slow
 consumer applies backpressure to **only its own** request (via the per‑request
-pump) and never stalls other requests on the connection; a consumer that falls
-more than `valuerpc.DefaultMaxPending` behind has that one stream failed rather
-than pinning unbounded memory.
+pump) and never stalls other requests on the connection. Flow control is
+**bidirectional**: each side throttles the other when its receive buffer fills,
+so a fast producer can't overrun a slow consumer — delivery stays lossless. Only
+a peer that *ignores* flow control and overruns the buffer (more than
+`valuerpc.DefaultMaxPending` behind) has that one stream failed — with an
+explicit error to that peer — rather than pinning unbounded memory or silently
+dropping values.
 
 ## Project status
 

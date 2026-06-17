@@ -23,7 +23,8 @@ type servingRequest struct {
 	inC              chan value.Value   // handler-facing inbound channel (pump output)
 	inPump           *vrpc.StreamPump   // drains into inC; nil for non-inbound requests
 	cancel           context.CancelFunc // cancels the handler's request context on teardown
-	throttleOutgoing atomic.Int64
+	throttleOutgoing atomic.Int64       // throttle this request's server->client output (set by client)
+	inboundThrottled atomic.Bool        // whether we've asked the client to slow its inbound send
 
 	closed   atomic.Bool
 	inClosed atomic.Bool
@@ -99,7 +100,21 @@ func (t *servingRequest) serveRunningRequest(msgType vrpc.MessageType, req value
 		return t.closeRequest(cli)
 
 	case vrpc.StreamValue:
-		return t.incomingStreamValue(req)
+		if err := t.incomingStreamValue(req); err != nil {
+			return err
+		}
+		// A consumer that ignored flow control and overran the pump truncates the
+		// stream. Surface it (tell the client, tear down) instead of silently
+		// dropping values (#13).
+		if t.inPump != nil && t.inPump.Overflowed() {
+			cli.send(FunctionError(t.requestId, "inbound stream %d truncated: consumer too slow", t.requestId.Long()))
+			return t.closeRequest(cli)
+		}
+		// Inbound flow control: throttle the client when our inbound buffer fills
+		// so a fast producer can't overrun a slow consumer (lossless backpressure,
+		// mirroring the client's regulateIncomingStream for the reverse direction).
+		t.regulateInbound(cli)
+		return nil
 
 	case vrpc.StreamEnd:
 		return t.incomingStreamEnd(req, cli)
@@ -130,6 +145,34 @@ func (t *servingRequest) incomingStreamValue(req value.Map) error {
 	}
 
 	return nil
+}
+
+// regulateInbound applies backpressure to the client's send side based on how
+// full the handler-facing inbound buffer is, so a fast producer can't overrun a
+// slow consumer. It is a single-step toggle with hysteresis: ask the client to
+// throttle once when the buffer passes ~1/3 full, and release once it fully
+// drains. (Deliberately not the escalating scheme the client uses for the
+// reverse direction — under a flood that runs the per-value sleep up to seconds.
+// One step keeps the client's throttleOutgoing at 0/1; combined with the ~2x
+// pump headroom beyond inC it paces the producer without losing data.) Sends are
+// best-effort (trySend) so they never block the read loop.
+func (t *servingRequest) regulateInbound(cli *servingClient) {
+	if t.inC == nil {
+		return
+	}
+	used, capacity := len(t.inC), cap(t.inC)
+	if capacity == 0 {
+		return
+	}
+	if used*3 > capacity { // > ~1/3 full: ask the client to slow down
+		if t.inboundThrottled.CompareAndSwap(false, true) {
+			cli.trySend(throttleMessage(t.requestId, vrpc.ThrottleIncrease))
+		}
+	} else if used == 0 { // drained: let the client resume full speed
+		if t.inboundThrottled.CompareAndSwap(true, false) {
+			cli.trySend(throttleMessage(t.requestId, vrpc.ThrottleDecrease))
+		}
+	}
 }
 
 func (t *servingRequest) incomingStreamEnd(req value.Map, cli *servingClient) error {

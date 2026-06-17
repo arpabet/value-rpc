@@ -87,6 +87,22 @@ All notable changes to this project are documented here. The format is based on
 - `valueserver.Server.Close()` no longer hangs when `Run()` was never called —
   the accept loop was over-counted in the shutdown `WaitGroup`, which now tracks
   only connection-handler goroutines.
+- **Inbound flow control (lossless high-throughput streaming).** The server now
+  throttles the client's send side when a handler's inbound buffer fills
+  (mirroring the existing client-side regulation for the reverse direction), so a
+  fast producer on a `PutStream`/`Chat` no longer overruns a slow consumer and
+  gets silently truncated. A single-step toggle with hysteresis (not the
+  escalating scheme) keeps the per-value throttle bounded. Regression test:
+  `valueserver.TestHighThroughputStreamLossless` (and `BenchmarkChatEcho` is now
+  lossless at scale).
+- **Slow-consumer truncation is surfaced (#13).** If a peer ignores flow control
+  and overruns the pump bound, the stream is closed with an explicit error to
+  that peer instead of silently dropping values. Test:
+  `valueserver.TestSlowConsumerTruncationSurfaced`.
+- **Client `SetErrorHandler` no longer panics on `Close`.** The error handler was
+  stored in an `atomic.Value` that also received `*rpcClient` during `Close`;
+  storing two concrete types panics (`store of inconsistently typed value`). It is
+  now an `atomic.Pointer[ErrorHandler]`, so a custom error handler is safe.
 - **Head-of-line blocking (BUG-6) actually fixed.** Stream delivery now goes
   through a per-request `valuerpc.StreamPump`: the shared read/response loop
   `Push`es without blocking and a dedicated goroutine drains a bounded queue into

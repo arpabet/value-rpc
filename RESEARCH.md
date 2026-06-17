@@ -48,8 +48,11 @@ with short keys — `t` (message type), `rid` (request id), `fn` (function name)
   same `servingClient` on reconnect only when the client presents the matching
   token (its in-flight request state survives a dropped socket). The token gates
   resumption so a peer cannot hijack a session by reusing another client's `cid`.
-- **Built-in flow control**: `ThrottleIncrease`/`ThrottleDecrease` messages let a
-  consumer slow a producer (a sleep-based brake today).
+- **Built-in flow control** (bidirectional): `ThrottleIncrease`/`ThrottleDecrease`
+  messages let each side slow the other when its receive buffer fills, so a fast
+  producer can't overrun a slow consumer (lossless). It's a sleep-based brake
+  today; a peer that ignores it and overruns the bound has that one stream failed
+  with an explicit error.
 - **Cancellation**: `CancelRequest`.
 - **Determinism inherited from `value`**: identical messages serialize to
   identical bytes — useful for hashing, signing, or content-addressing payloads.
