@@ -9,6 +9,15 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Machine-readable error codes.** Errors now carry a `valuerpc.Code` on the wire
+  (a new `code` field): `CodeNotFound`, `CodeInvalidArgument`, `CodeResourceExhausted`,
+  `CodeUnavailable`, `CodeDeadlineExceeded`, `CodeUnauthenticated`, `CodeInternal`,
+  etc. Server-classified failures (unknown function → NotFound, bad args →
+  InvalidArgument, caps/overrun → ResourceExhausted) and handler-supplied codes
+  (`valuerpc.NewError(code, …)`) round-trip to the caller as a typed
+  `*valuerpc.Error`; branch with `valuerpc.CodeOf(err)` or `errors.As` instead of
+  string-matching. `valueserver.FunctionError` gained a leading `code` argument.
+  Test: `valueserver.TestErrorCodes`.
 - **TLS / mutual-TLS transport** (`tls://`). `valueserver.NewTLSServer` and
   `valueclient.NewTLSClient` take a `*tls.Config` and reuse the length-prefix
   framing (a `*tls.Conn` is a `net.Conn`). Mutual TLS via `ClientAuth` +

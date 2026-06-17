@@ -152,16 +152,28 @@ func StreamEnd(requestId value.Number, val value.Value) value.Map {
 	}
 }
 
-func FunctionError(requestId value.Number, format string, args ...interface{}) value.Map {
-	resp := value.EmptyMap(true).
-		Put(vrpc.MessageTypeField, vrpc.ErrorResponse.Long()).
-		Put(vrpc.RequestIdField, requestId)
-	if len(args) == 0 {
-		return resp.Put(vrpc.ErrorField, value.Utf8(format))
-	} else {
-		s := fmt.Sprintf(format, args...)
-		return resp.Put(vrpc.ErrorField, value.Utf8(s))
+// FunctionError builds an ErrorResponse carrying a machine-readable code and a
+// formatted message.
+func FunctionError(requestId value.Number, code vrpc.Code, format string, args ...interface{}) value.Map {
+	msg := format
+	if len(args) > 0 {
+		msg = fmt.Sprintf(format, args...)
 	}
+	return value.EmptyMap(true).
+		Put(vrpc.MessageTypeField, vrpc.ErrorResponse.Long()).
+		Put(vrpc.RequestIdField, requestId).
+		Put(vrpc.CodeField, value.Long(int64(code))).
+		Put(vrpc.ErrorField, value.Utf8(msg))
+}
+
+// handlerError builds an ErrorResponse from an error returned by a user handler,
+// honouring its code when it is a *valuerpc.Error and defaulting to Internal.
+func handlerError(requestId value.Number, where string, err error) value.Map {
+	code := vrpc.CodeOf(err)
+	if code == vrpc.CodeUnknown {
+		code = vrpc.CodeInternal
+	}
+	return FunctionError(requestId, code, "%s: %v", where, err)
 }
 
 func (t *servingClient) sender() {
@@ -235,21 +247,21 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 
 	name, ok := vrpc.GetStringField(req, vrpc.FunctionNameField)
 	if !ok {
-		return FunctionError(reqId, "function name field not found")
+		return FunctionError(reqId, vrpc.CodeInvalidArgument, "function name field not found")
 	}
 
 	fn, ok := t.findFunction(name.String())
 	if !ok {
-		return FunctionError(reqId, "function not found %s", name.String())
+		return FunctionError(reqId, vrpc.CodeNotFound, "function not found %s", name.String())
 	}
 
 	args := req.Get(vrpc.ArgumentsField)
 	if !vrpc.Verify(args, fn.args) {
-		return FunctionError(reqId, "function '%s' invalid args %s", name.String(), value.Jsonify(args))
+		return FunctionError(reqId, vrpc.CodeInvalidArgument, "function '%s' invalid args %s", name.String(), value.Jsonify(args))
 	}
 
 	if fn.ft != ft {
-		return FunctionError(reqId, "function wrong type %s, expected %d, actual %d", name.String(), fn.ft, ft)
+		return FunctionError(reqId, vrpc.CodeInvalidArgument, "function wrong type %s, expected %d, actual %d", name.String(), fn.ft, ft)
 	}
 
 	// Cap concurrent open streams (get-stream, put-stream, chat), which hold
@@ -257,7 +269,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 	// letting a peer open unbounded long-lived streams.
 	if ft != singleFunction {
 		if max := t.cfg.maxConcurrentStreams; max > 0 && t.liveStreams.Load() >= max {
-			return FunctionError(reqId, "server busy: too many concurrent streams (max %d)", max)
+			return FunctionError(reqId, vrpc.CodeResourceExhausted, "server busy: too many concurrent streams (max %d)", max)
 		}
 	}
 
@@ -278,10 +290,10 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		}()
 		res, err := fn.singleFn(reqCtx, args)
 		if err != nil {
-			return FunctionError(reqId, "single function %s call, %v", name.String(), err)
+			return handlerError(reqId, "function "+name.String(), err)
 		}
 		if !vrpc.Verify(res, fn.res) {
-			return FunctionError(reqId, "function '%s' invalid results %s", name.String(), value.Jsonify(res))
+			return FunctionError(reqId, vrpc.CodeInternal, "function '%s' invalid results %s", name.String(), value.Jsonify(res))
 		}
 		return FunctionResult(reqId, res)
 
@@ -292,7 +304,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		outC, err := fn.outStream(reqCtx, args)
 		if err != nil {
 			sr.closeRequest(t)
-			return FunctionError(reqId, "out stream function %s call, %v", name.String(), err)
+			return handlerError(reqId, "out stream "+name.String(), err)
 		}
 		go sr.outgoingStreamer(outC, t)
 		return nil
@@ -302,7 +314,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		err := fn.inStream(reqCtx, args, sr.inC)
 		if err != nil {
 			sr.closeRequest(t)
-			return FunctionError(reqId, "in stream function %s call, %v", name.String(), err)
+			return handlerError(reqId, "in stream "+name.String(), err)
 		}
 		return StreamReady(reqId)
 
@@ -311,14 +323,14 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		outC, err := fn.chat(reqCtx, args, sr.inC)
 		if err != nil {
 			sr.closeRequest(t)
-			return FunctionError(reqId, "chat function %s call, %v", name.String(), err)
+			return handlerError(reqId, "chat "+name.String(), err)
 		}
 		go sr.outgoingStreamer(outC, t)
 		return nil
 	}
 
 	cancel()
-	return FunctionError(reqId, "unsupported function %s type", name.String())
+	return FunctionError(reqId, vrpc.CodeInternal, "unsupported function %s type", name.String())
 
 }
 
@@ -419,7 +431,7 @@ func (t *servingClient) serveNewRequest(msgType vrpc.MessageType, req value.Map)
 	if max := t.cfg.maxConcurrentRequests; max > 0 && n > max {
 		t.inFlight.Add(-1)
 		if reqId, ok := vrpc.GetNumberField(req, vrpc.RequestIdField); ok {
-			t.send(FunctionError(reqId, "server busy: too many concurrent requests (max %d)", max))
+			t.send(FunctionError(reqId, vrpc.CodeResourceExhausted, "server busy: too many concurrent requests (max %d)", max))
 		}
 		return nil
 	}

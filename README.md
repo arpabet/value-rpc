@@ -23,6 +23,10 @@ transport:  TCP  ·  Unix socket  ·  WebSocket        (optional SOCKS5 / wss TL
 - **Four call patterns** multiplexed over a single connection (keyed by request id).
 - **Pluggable transports**: TCP, Unix domain sockets, and WebSocket (MessagePack) — one API, pick by address scheme.
 - **Runtime type checking** via `TypeDef` / `Verify` (`Arg`, `List`, `Map`, `Void`, `Any`).
+- **Machine-readable error codes**: failures carry a `valuerpc.Code` (NotFound,
+  InvalidArgument, ResourceExhausted, Unavailable, Internal, …). Handlers return
+  `valuerpc.NewError(code, …)`; callers branch with `valuerpc.CodeOf(err)` or
+  `errors.As` instead of string-matching.
 - **Cancellation**, **timeouts**, and **credit‑based flow control** (bidirectional):
   a sender only sends what the receiver has granted credit for, so a fast producer
   can't overrun a slow consumer — delivery is **lossless**, buffering is **bounded**,

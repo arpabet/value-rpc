@@ -135,7 +135,7 @@ func (t *servingRequest) serveRunningRequest(msgType vrpc.MessageType, req value
 		// stream; surface it (tell the client, tear down) instead of silently
 		// dropping values (#13).
 		if t.inPump != nil && t.inPump.Overflowed() {
-			cli.send(FunctionError(t.requestId, "inbound stream %d truncated: client exceeded flow-control credit", t.requestId.Long()))
+			cli.send(FunctionError(t.requestId, vrpc.CodeResourceExhausted, "inbound stream %d truncated: client exceeded flow-control credit", t.requestId.Long()))
 			return t.closeRequest(cli)
 		}
 		return nil

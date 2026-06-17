@@ -7,6 +7,7 @@ package valueserver_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -696,6 +697,44 @@ func TestServerMaxFrameSizeOption(t *testing.T) {
 	big := value.Utf8(string(make([]byte, 4096)))
 	if _, err := cli.CallFunction(context.Background(), "echo", big); err == nil {
 		t.Fatal("a frame over the per-server MaxFrameSize should be rejected")
+	}
+}
+
+// TestErrorCodes verifies the machine-readable error model: server-classified
+// failures and handler-supplied codes round-trip to the caller, who can branch
+// with valuerpc.CodeOf / errors.As instead of string-matching.
+func TestErrorCodes(t *testing.T) {
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("bad", valuerpc.Any, valuerpc.Any,
+			func(_ context.Context, _ value.Value) (value.Value, error) {
+				return nil, valuerpc.NewError(valuerpc.CodeInvalidArgument, "bad input")
+			})
+		s.AddFunction("boom", valuerpc.Any, valuerpc.Any,
+			func(_ context.Context, _ value.Value) (value.Value, error) {
+				return nil, fmt.Errorf("kaboom") // plain error -> Internal
+			})
+	})
+	defer stop()
+
+	cli := dialClient(t, addr)
+	defer cli.Close()
+	ctx := context.Background()
+
+	if _, err := cli.CallFunction(ctx, "missing", nil); valuerpc.CodeOf(err) != valuerpc.CodeNotFound {
+		t.Errorf("unknown function: code = %v, want NotFound", valuerpc.CodeOf(err))
+	}
+
+	_, err := cli.CallFunction(ctx, "bad", nil)
+	if valuerpc.CodeOf(err) != valuerpc.CodeInvalidArgument {
+		t.Errorf("handler coded error: code = %v, want InvalidArgument", valuerpc.CodeOf(err))
+	}
+	var rpcErr *valuerpc.Error
+	if !errors.As(err, &rpcErr) || rpcErr.Code != valuerpc.CodeInvalidArgument {
+		t.Errorf("errors.As did not yield *valuerpc.Error{InvalidArgument}: %v", err)
+	}
+
+	if _, err := cli.CallFunction(ctx, "boom", nil); valuerpc.CodeOf(err) != valuerpc.CodeInternal {
+		t.Errorf("plain handler error: code = %v, want Internal", valuerpc.CodeOf(err))
 	}
 }
 

@@ -15,7 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pkg/errors"
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
 )
@@ -238,8 +237,13 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 		t.requestCtxMap.Delete(requestCtx.requestId)
 
 	case valuerpc.ErrorResponse:
-		err := resp.GetString(valuerpc.ErrorField)
-		serverErr := errors.Errorf("SERVER_FUNC_ERROR %v", err)
+		// Surface the server's machine-readable code so callers can branch with
+		// valuerpc.CodeOf / errors.As instead of string-matching.
+		code := valuerpc.CodeUnknown
+		if c, ok := valuerpc.GetNumberField(resp, valuerpc.CodeField); ok {
+			code = valuerpc.Code(c.Long())
+		}
+		serverErr := &valuerpc.Error{Code: code, Message: resp.GetString(valuerpc.ErrorField).String()}
 		requestCtx.SetError(serverErr)
 		t.getErrorHandler().StreamError(requestCtx.requestId, serverErr)
 		requestCtx.Close()
@@ -259,7 +263,8 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 			// dropping into a closed buffer.
 			if !requestCtx.notifyResult(streamValue) {
 				requestCtx.cancelOnce.Do(func() {
-					truncErr := errors.Errorf("stream %d truncated: server exceeded flow-control credit", requestCtx.requestId)
+					truncErr := valuerpc.NewError(valuerpc.CodeResourceExhausted,
+						"stream %d truncated: server exceeded flow-control credit", requestCtx.requestId)
 					requestCtx.SetError(truncErr)
 					t.getErrorHandler().StreamError(requestCtx.requestId, truncErr)
 					t.CancelRequest(requestCtx.requestId)
