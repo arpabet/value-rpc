@@ -38,27 +38,32 @@ func (t MessageType) Long() value.Number {
 	return value.Long(int64(t))
 }
 
-var Magic = "vRPC"
-var Version = 1.0
+// Wire-protocol constants. These define the on-the-wire format and are part of
+// the protocol contract — they are immutable by design (mutating a field name
+// would corrupt interop between peers).
+const (
+	Magic   = "vRPC"
+	Version = 1.0
 
-var MessageTypeField = "t"
-var MagicField = "m"
-var VersionField = "v"
-var RequestIdField = "rid"
-var TimeoutField = "sla"
-var ClientIdField = "cid"
-var SessionTokenField = "tok" // server-issued session secret; gates resumption
-var AuthField = "auth"        // client-supplied credential, validated by the server Authenticator
-var FunctionNameField = "fn"
-var ArgumentsField = "args" // allow multiple args if List value in function call
-var ResultField = "res"     // allow multiple results if List in function call
-var ErrorField = "err"
-var CodeField = "code"   // ErrorResponse: machine-readable Code
-var CreditField = "cr"   // StreamCredit: number of additional stream values granted
-var MetadataField = "md" // request metadata (trace context, baggage): string->string map
-var ValueField = "val"   // streaming value field
+	MessageTypeField  = "t"
+	MagicField        = "m"
+	VersionField      = "v"
+	RequestIdField    = "rid"
+	TimeoutField      = "sla"
+	ClientIdField     = "cid"
+	SessionTokenField = "tok"  // server-issued session secret; gates resumption
+	AuthField         = "auth" // client-supplied credential, validated by the server Authenticator
+	FunctionNameField = "fn"
+	ArgumentsField    = "args" // allow multiple args if List value in function call
+	ResultField       = "res"  // allow multiple results if List in function call
+	ErrorField        = "err"
+	CodeField         = "code" // ErrorResponse: machine-readable Code
+	CreditField       = "cr"   // StreamCredit: number of additional stream values granted
+	MetadataField     = "md"   // request metadata (trace context, baggage): string->string map
+	ValueField        = "val"  // streaming value field
 
-var HandshakeRequestId = int64(-1)
+	HandshakeRequestId int64 = -1
+)
 
 // NewHandshakeRequest builds the client handshake. token is the session secret
 // the server issued on the first handshake; it is empty on the first connect and

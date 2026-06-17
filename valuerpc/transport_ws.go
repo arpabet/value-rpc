@@ -24,19 +24,12 @@ import (
 // MessagePack value.Map, so there is no length prefix (the frame is the
 // boundary). MaxFrameSize maps to the WebSocket read limit.
 
-// Deprecated: the WebSocket ping interval is now a per-instance option —
-// valueserver.WithKeepAlivePeriod / valueclient.WithKeepAlivePeriod (threaded
-// through NewWebSocketListener / NewDialer at construction). This global is no
-// longer read by the library and is kept only for backward compatibility.
-var WSKeepAlive = 15 * time.Second
-
-// WSDialTimeout is the fallback bound on the WebSocket opening handshake, used
-// only when a wsDialer is driven by a context that carries no deadline.
-//
-// Deprecated: prefer the per-instance dial bound valueclient.WithDialTimeout,
-// which valueclient.ConnectContext applies to the dial context — that supersedes
-// this fallback on the normal client path.
-var WSDialTimeout = 30 * time.Second
+// defaultWSDialTimeout bounds the WebSocket opening handshake only when a
+// wsDialer is driven by a context that carries no deadline. On the normal client
+// path valueclient.ConnectContext applies the per-instance valueclient.WithDialTimeout
+// to the dial context, which supersedes this fallback. (The ping interval is the
+// per-instance keepalive option, threaded in at construction.)
+const defaultWSDialTimeout = 30 * time.Second
 
 type wsMsgConn struct {
 	conn       *websocket.Conn
@@ -270,15 +263,16 @@ type wsDialer struct {
 	dialTimeout  time.Duration
 }
 
-// newWSDialer captures the dial timeout from WSDialTimeout at construction.
-// keepAlive is the ping interval (<=0 disables); maxFrameSize <=0 uses MaxFrameSize.
+// newWSDialer builds a WebSocket dialer. keepAlive is the ping interval (<=0
+// disables); maxFrameSize <=0 uses MaxFrameSize. The dial-timeout fallback is
+// only used for a context without a deadline (see defaultWSDialTimeout).
 func newWSDialer(url string, writeTimeout time.Duration, maxFrameSize int, keepAlive time.Duration) Dialer {
 	return &wsDialer{
 		url:          url,
 		writeTO:      writeTimeout,
 		maxFrameSize: maxFrameSize,
 		keepAlive:    keepAlive,
-		dialTimeout:  WSDialTimeout,
+		dialTimeout:  defaultWSDialTimeout,
 	}
 }
 

@@ -7,7 +7,6 @@ package valuerpc
 
 import "go.arpabet.com/value"
 
-
 type TypeDef interface {
 	UserTypeDef()
 }
@@ -69,17 +68,15 @@ func Param(name string, kind value.Kind, required bool) ParamDef {
 }
 
 var (
+	Any  = AnyDef{}
+	Void = VoidDef{}
 
-	Any = AnyDef{}
-    Void = VoidDef{}
-
-	Bool = Arg(value.BOOL, true)
+	Bool    = Arg(value.BOOL, true)
 	BoolOpt = Arg(value.BOOL, false)
 
-	Number = Arg(value.NUMBER, true)
+	Number    = Arg(value.NUMBER, true)
 	NumberOpt = Arg(value.NUMBER, false)
 
-	String = Arg(value.STRING, true)
+	String    = Arg(value.STRING, true)
 	StringOpt = Arg(value.STRING, false)
-
 )

@@ -37,15 +37,17 @@ All notable changes to this project are documented here. The format is based on
 - The deprecated `valuerpc.ThrottleIncrease` / `ThrottleDecrease` message types
   (superseded by `StreamCredit` flow control). Their wire numbers are reserved so
   `StreamCredit` and other message-type values are unchanged.
+- Exported WebSocket globals `valuerpc.WSKeepAlive` (unused — the ping interval is
+  the per-instance `WithKeepAlivePeriod`) and `valuerpc.WSDialTimeout` (the dial
+  bound is the per-instance `valueclient.WithDialTimeout`; the handshake fallback is
+  now an internal constant). Both were superseded once transport config moved to
+  options.
 
-### Deprecated
+### Changed
 
-- `valuerpc.WSKeepAlive` and `valuerpc.WSDialTimeout`. The WebSocket ping interval
-  and dial bound are now per-instance options — `WithKeepAlivePeriod` (threaded
-  through the WS listener/dialer) and `valueclient.WithDialTimeout` (applied to the
-  dial context by `ConnectContext`). The globals are no longer read on the normal
-  path (`WSKeepAlive` is unused; `WSDialTimeout` survives only as the fallback for
-  a `wsDialer` driven by a deadline-less context) and are kept for compatibility.
+- The wire-protocol field names and markers (`valuerpc.MessageTypeField`, `Magic`,
+  `Version`, `HandshakeRequestId`, …) are now `const` instead of `var`, so the
+  protocol contract cannot be mutated at runtime.
 
 ### Tests
 

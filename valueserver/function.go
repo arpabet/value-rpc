@@ -10,7 +10,6 @@ import (
 	vrpc "go.arpabet.com/value-rpc/valuerpc"
 )
 
-
 var ErrFunctionAlreadyExist = errors.New("function already exist")
 
 type functionType int

@@ -307,8 +307,8 @@ SOCKS5 stays a TCP-only option (already its own argument).
    verified by cross-compile.
 3. **WebSocket.** ✅ **DONE (2026-06-14).** Added `valuerpc/transport_ws.go` on
    `github.com/coder/websocket` (one MessagePack `value.Map` per binary frame, no
-   length prefix; `SetReadLimit` = `MaxFrameSize`; ping/pong keepalive via
-   `WSKeepAlive`). Server: `valueserver.NewWebSocketServer(addr, path)` (standalone)
+   length prefix; `SetReadLimit` = `MaxFrameSize`; ping/pong keepalive via the
+   per-instance `WithKeepAlivePeriod`). Server: `valueserver.NewWebSocketServer(addr, path)` (standalone)
    and `valueserver.NewWebSocketHandler()` returning an `http.Handler` to mount on
    your own mux (port sharing; wss:// via your own TLS server). Client:
    `valueclient.NewWebSocketClient(url)`. The `ws://` scheme also works through

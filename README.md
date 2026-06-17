@@ -229,9 +229,7 @@ the global at runtime):
 |----------|---------|---------|
 | `valuerpc.MaxFrameSize` | 16 MiB | Max inbound message size; `0` disables (maps to the WebSocket read limit) |
 | `valueserver.HandshakeTimeout` | 10s | Deadline for a client to complete the handshake |
-| `valueserver.KeepAlivePeriod` / `valueclient.KeepAlivePeriod` | 15s | TCP keepalive (ignored on Unix sockets) |
-| `valuerpc.WSKeepAlive` | 15s | WebSocket ping interval (`0` disables) |
-| `valuerpc.WSDialTimeout` | 30s | WebSocket opening-handshake timeout |
+| `valueserver.KeepAlivePeriod` / `valueclient.KeepAlivePeriod` | 15s | TCP keepalive (ignored on Unix sockets); also the WebSocket ping interval |
 | `valueserver.OutgoingQueueCap` | 4096 | Per‑client server send buffer |
 | `valueserver.IncomingQueueCap` | 4096 | Per‑request inbound stream buffer |
 | `valueserver.MaxConcurrentRequests` | 4096 | Max concurrent request handlers per connection; over the limit requests are rejected with an error (`0` disables) |
