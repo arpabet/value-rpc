@@ -74,11 +74,17 @@ type (
 	remoteAddrConn    interface{ RemoteAddr() net.Addr }
 )
 
+// reusableWriteBufCap bounds the per-connection write buffer that is retained
+// and reused across messages. Messages larger than this use a one-off buffer
+// (not retained) so a single huge message cannot pin memory on an idle conn.
+const reusableWriteBufCap = 64 * 1024
+
 type messageConnAdapter struct {
 	conn      io.ReadWriteCloser
 	reader    *bufio.Reader
 	timeout   time.Duration
 	writeLock sync.Mutex
+	writeBuf  []byte // reused under writeLock to avoid a per-message frame allocation
 	shutdown  atomic.Bool
 }
 
@@ -128,7 +134,18 @@ func (t *messageConnAdapter) doWriteFrame(payload []byte) error {
 	}
 	// Single buffer + single Write so the length prefix and payload cannot be
 	// torn apart by a concurrent writer (writeLock already serializes callers).
-	frame := make([]byte, 4+len(payload))
+	// The buffer is reused across messages to avoid a per-message allocation;
+	// oversized messages use a one-off buffer that is not retained.
+	need := 4 + len(payload)
+	var frame []byte
+	if need <= reusableWriteBufCap {
+		if cap(t.writeBuf) < need {
+			t.writeBuf = make([]byte, need, reusableWriteBufCap)
+		}
+		frame = t.writeBuf[:need]
+	} else {
+		frame = make([]byte, need)
+	}
 	binary.BigEndian.PutUint32(frame[:4], uint32(len(payload)))
 	copy(frame[4:], payload)
 	_, err := t.conn.Write(frame)

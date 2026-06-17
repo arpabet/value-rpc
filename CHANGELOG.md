@@ -118,6 +118,11 @@ All notable changes to this project are documented here. The format is based on
   `valueserver.TestMaxConcurrentStreamsRejectsExcess`.
 - **`time.After` → `time.NewTimer` + `Stop`** in the client unary wait path
   (`SingleResp`), so a timer is no longer leaked per call when the response wins.
+- **Per-message frame allocation removed.** The length-prefix framer
+  (`messageConnAdapter`) now reuses a per-connection write buffer (guarded by the
+  existing write lock) instead of allocating `make([]byte, 4+len)` per message;
+  oversized messages (> 64 KiB) use a one-off buffer so a single huge message
+  cannot pin memory. Measured: 0 allocs vs 1 alloc + 96 B per frame write.
 
 ### Security
 
