@@ -186,9 +186,15 @@ func handlerErrCode(err error) vrpc.Code {
 }
 
 // handlerError builds an ErrorResponse from an error returned by a user handler,
-// honouring its code when it is a *valuerpc.Error and defaulting to Internal.
+// honouring its code when it is a *valuerpc.Error and defaulting to Internal. For
+// a coded error its plain message is used (not its String()) so the code prefix
+// is not duplicated once the client rebuilds a *valuerpc.Error from the wire.
 func handlerError(requestId value.Number, where string, err error) value.Map {
-	return FunctionError(requestId, handlerErrCode(err), "%s: %v", where, err)
+	msg := err.Error()
+	if e, ok := err.(*vrpc.Error); ok {
+		msg = e.Message
+	}
+	return FunctionError(requestId, handlerErrCode(err), "%s: %s", where, msg)
 }
 
 // responseCode extracts the Code from a synchronous response map: the ErrorResponse

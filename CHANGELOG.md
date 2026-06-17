@@ -26,6 +26,10 @@ All notable changes to this project are documented here. The format is based on
   which identify the call without leaking its data. Set
   `valueserver.DebugPayloadInErrors = true` to restore full payloads for local
   debugging.
+- A handler that returns a coded `*valuerpc.Error` no longer has its code prefix
+  duplicated in the error message once the client rebuilds the error from the wire.
+- Added runnable feature examples under `examples/` (typed, streaming,
+  observability, mTLS, reconnect) and moved the original demo to `examples/first/`.
 
 ### Removed
 
