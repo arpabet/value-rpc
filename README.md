@@ -82,6 +82,11 @@ schema‑first, polyglot, ecosystem → gRPC.**
   handshake; reconnecting with the matching token resumes the session, so a peer
   can't take it over by guessing the client id.
 - **SOCKS5** client support; **Unix peer authentication** (`SO_PEERCRED`) via a connect‑authorizer hook.
+- **Customizable wire dialect** (`valuerpc.Dialect` / `DefaultDialect`): the on‑the‑wire
+  field names and magic can be changed process‑wide so a deployment’s protocol is
+  incompatible‑by‑design — shedding the cleartext fingerprint keyword‑based DPI looks
+  for, or forking the wire format. (A cheap layer to combine with TLS + traffic
+  shaping, not a substitute for encryption.)
 - **Bounded frames** (`MaxFrameSize`), **keepalive**, **handshake deadline**,
   and **graceful shutdown** out of the box.
 - Core dependencies: `value`, `zap`, `golang.org/x/net`, `golang.org/x/sys`, `coder/websocket`. QUIC lives in a **separate module** (`go.arpabet.com/value-rpc/quic`) so `quic-go` is pulled in only if you use it.

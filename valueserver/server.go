@@ -335,7 +335,7 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 		_ = conn.SetReadDeadline(time.Time{})
 	}
 
-	mt, ok := valuerpc.GetNumberField(req, valuerpc.MessageTypeField)
+	mt, ok := valuerpc.GetNumberField(req, valuerpc.DefaultDialect.MessageTypeField)
 	if !ok {
 		return nil, errors.Errorf("on handshake, empty message type%s", reqDetail(req))
 	}
@@ -355,14 +355,14 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 	// authenticated principal binds session resumption (below).
 	principal := ""
 	if authn := t.getAuthenticator(); authn != nil {
-		p, err := authn(conn, req.Get(valuerpc.AuthField))
+		p, err := authn(conn, req.Get(valuerpc.DefaultDialect.AuthField))
 		if err != nil {
 			return nil, errors.Errorf("on handshake, authentication failed: %v", err)
 		}
 		principal = p
 	}
 
-	cid, ok := valuerpc.GetNumberField(req, valuerpc.ClientIdField)
+	cid, ok := valuerpc.GetNumberField(req, valuerpc.DefaultDialect.ClientIdField)
 	if !ok {
 		return nil, errors.Errorf("on handshake, no client id%s", reqDetail(req))
 	}
@@ -373,7 +373,7 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 	// the server-issued session token to match before reattaching to an existing
 	// servingClient. A first connect (no existing session) mints a fresh token.
 	presentedToken := ""
-	if tok, ok := valuerpc.GetStringField(req, valuerpc.SessionTokenField); ok {
+	if tok, ok := valuerpc.GetStringField(req, valuerpc.DefaultDialect.SessionTokenField); ok {
 		presentedToken = tok.String()
 	}
 

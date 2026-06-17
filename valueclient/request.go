@@ -116,7 +116,7 @@ func (t *rpcRequestCtx) grantRecv() {
 }
 
 func (t *rpcRequestCtx) Name() string {
-	fn := t.req.GetString(valuerpc.FunctionNameField)
+	fn := t.req.GetString(valuerpc.DefaultDialect.FunctionNameField)
 	if fn != nil {
 		return fn.String()
 	}

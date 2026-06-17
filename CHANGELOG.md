@@ -45,9 +45,17 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
-- The wire-protocol field names and markers (`valuerpc.MessageTypeField`, `Magic`,
-  `Version`, `HandshakeRequestId`, …) are now `const` instead of `var`, so the
-  protocol contract cannot be mutated at runtime.
+- **Wire dialect.** The loose mutable globals for wire-field names and markers
+  (`MessageTypeField`, `Magic`, `Version`, `HandshakeRequestId`, …) are
+  consolidated into a single `valuerpc.Dialect` struct with a process-wide
+  `valuerpc.DefaultDialect` (build a custom one with `valuerpc.NewDialect()` and
+  install it at startup). This keeps the names customizable — so an application can
+  make its protocol incompatible-by-design (shed the cleartext fingerprint that
+  keyword DPI looks for, or fork the wire format) — while replacing 19 ad-hoc
+  exported `var`s with one named, documented type. Both peers must share the same
+  dialect; it is a complement to TLS + traffic shaping, not a substitute for
+  encryption. Tests: `valuerpc.TestCustomDialectIncompatibleByDesign`,
+  `valueserver.TestCustomDialectEndToEnd`.
 
 ### Tests
 
@@ -227,6 +235,14 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **Reconnect robustness.** Three fixes that together eliminate a reconnect storm
+  that could stall an in-flight call: (1) `Connect` now completes the handshake
+  synchronously — capturing the server-issued session token — before returning, so
+  a fast reconnect can no longer present an empty token and have the server reject
+  the resumption; (2) `Reconnect` is single-flight, collapsing concurrent triggers
+  so re-establishment can't race itself; and (3) an intentional connection close
+  (`Close`/reconnect `reset`) is no longer reported as a bad connection, so it no
+  longer triggers a spurious extra reconnect (or "bad connection" log).
 - **Data race between `Server.Run()` and `Server.Close()`** on the shutdown
   `WaitGroup`: a connection accepted just as the server was closing could call
   `wg.Add(1)` concurrently with `Close`'s `wg.Wait()` (a WaitGroup misuse the race

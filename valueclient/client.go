@@ -36,6 +36,7 @@ type rpcClient struct {
 	timeoutMls        atomic.Int64
 	perfMonitor       atomic.Value
 	shuttingDown      atomic.Bool
+	reconnecting      atomic.Bool   // single-flights Reconnect against concurrent triggers
 	closed            chan struct{} // closed by Close(); wakes the reconnect backoff sleep
 	closeOnce         sync.Once
 	sessionToken      atomic.Pointer[string]                  // server-issued; resent to authorize reconnect
@@ -278,6 +279,18 @@ func (t *rpcClient) ConnectContext(ctx context.Context) error {
 }
 
 func (t *rpcClient) Reconnect() error {
+	// Single-flight: collapse concurrent reconnect requests (e.g. several read/
+	// write loops reporting the same drop, or a manual Reconnect racing one) into
+	// one. A skipped caller trusts the in-flight attempt to re-establish the
+	// connection; a genuine *later* failure (after this attempt completes) still
+	// triggers a fresh reconnect. This prevents a reconnect storm where each new
+	// connection's setup (the server closing the previous one on resumption) would
+	// otherwise trigger yet another racing reconnect.
+	if !t.reconnecting.CompareAndSwap(false, true) {
+		return nil
+	}
+	defer t.reconnecting.Store(false)
+
 	t.reconnects.Add(1)
 	t.metrics.Reconnect()
 	t.conn.reset()
@@ -346,7 +359,7 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 	case valuerpc.FunctionResponse:
 		// BUG-4/5 fix: an absent result field decodes as value.Null, not Go nil.
 		// A void result must surface to the caller as nil, not a Null sentinel.
-		result := resp.Get(valuerpc.ResultField)
+		result := resp.Get(valuerpc.DefaultDialect.ResultField)
 		if result != nil && result.Kind() == value.NULL {
 			result = nil
 		}
@@ -359,10 +372,10 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 		// Surface the server's machine-readable code so callers can branch with
 		// valuerpc.CodeOf / errors.As instead of string-matching.
 		code := valuerpc.CodeUnknown
-		if c, ok := valuerpc.GetNumberField(resp, valuerpc.CodeField); ok {
+		if c, ok := valuerpc.GetNumberField(resp, valuerpc.DefaultDialect.CodeField); ok {
 			code = valuerpc.Code(c.Long())
 		}
-		serverErr := &valuerpc.Error{Code: code, Message: resp.GetString(valuerpc.ErrorField).String()}
+		serverErr := &valuerpc.Error{Code: code, Message: resp.GetString(valuerpc.DefaultDialect.ErrorField).String()}
 		requestCtx.SetError(serverErr)
 		t.getErrorHandler().StreamError(requestCtx.requestId, serverErr)
 		requestCtx.Close()
@@ -374,7 +387,7 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 	case valuerpc.StreamValue:
 		// BUG-4 fix: an absent value field decodes as value.Null, not Go nil;
 		// only deliver a real payload.
-		if streamValue := resp.Get(valuerpc.ValueField); streamValue != nil && streamValue.Kind() != value.NULL {
+		if streamValue := resp.Get(valuerpc.DefaultDialect.ValueField); streamValue != nil && streamValue.Kind() != value.NULL {
 			// BUG-6: notifyResult never blocks the response loop. Credit-based
 			// flow control keeps a cooperating server within the buffer; if it
 			// returns false the server ignored its credit and overran us — surface
@@ -395,7 +408,7 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 
 	case valuerpc.StreamEnd:
 		// BUG-4 fix: do not deliver a phantom value.Null at end of stream.
-		if streamEndValue := resp.Get(valuerpc.ValueField); streamEndValue != nil && streamEndValue.Kind() != value.NULL {
+		if streamEndValue := resp.Get(valuerpc.DefaultDialect.ValueField); streamEndValue != nil && streamEndValue.Kind() != value.NULL {
 			requestCtx.notifyResult(streamEndValue)
 		}
 		if requestCtx.TryGetClose() {
@@ -408,7 +421,7 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 
 	case valuerpc.StreamCredit:
 		// The server granted the client's streamOut more credit.
-		if cr, ok := valuerpc.GetNumberField(resp, valuerpc.CreditField); ok && requestCtx.sendCredit != nil {
+		if cr, ok := valuerpc.GetNumberField(resp, valuerpc.DefaultDialect.CreditField); ok && requestCtx.sendCredit != nil {
 			requestCtx.sendCredit.Grant(cr.Long())
 		}
 
@@ -435,7 +448,7 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 		// BUG-5 fix: GetNumber returns value.Zero (never nil) for a missing key,
 		// so presence must be checked with GetNumberField, otherwise a message
 		// with no type is silently treated as MessageType(0) = HandshakeResponse.
-		mt, ok := valuerpc.GetNumberField(resp, valuerpc.MessageTypeField)
+		mt, ok := valuerpc.GetNumberField(resp, valuerpc.DefaultDialect.MessageTypeField)
 		if !ok {
 			t.getErrorHandler().ProtocolError(resp, ErrNoMessageType)
 			return
@@ -445,7 +458,7 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 		if msgType == valuerpc.HandshakeResponse {
 			// Remember the server-issued session token so a later reconnect can
 			// prove this is the same client and resume its session.
-			if tok, ok := valuerpc.GetStringField(resp, valuerpc.SessionTokenField); ok {
+			if tok, ok := valuerpc.GetStringField(resp, valuerpc.DefaultDialect.SessionTokenField); ok {
 				s := tok.String()
 				t.sessionToken.Store(&s)
 			}
@@ -453,7 +466,7 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 			return
 		}
 
-		id, ok := valuerpc.GetNumberField(resp, valuerpc.RequestIdField)
+		id, ok := valuerpc.GetNumberField(resp, valuerpc.DefaultDialect.RequestIdField)
 		if !ok {
 			t.getErrorHandler().ProtocolError(resp, ErrIdFieldNotFound)
 			return
@@ -494,7 +507,7 @@ func (t *rpcClient) sendRequest(ctx context.Context, kind streamKind, req value.
 	}
 
 	requestId := t.lastRequest.Add(1)
-	req = req.Put(valuerpc.RequestIdField, value.Long(requestId))
+	req = req.Put(valuerpc.DefaultDialect.RequestIdField, value.Long(requestId))
 
 	requestCtx := t.newRequestCtx(requestId, kind, req, receiveCap)
 
@@ -512,8 +525,8 @@ func (t *rpcClient) sendSystemRequest(requestId int64, mt valuerpc.MessageType) 
 	}
 
 	req := value.EmptyMap(true).
-		Put(valuerpc.MessageTypeField, mt.Long()).
-		Put(valuerpc.RequestIdField, value.Long(requestId))
+		Put(valuerpc.DefaultDialect.MessageTypeField, mt.Long()).
+		Put(valuerpc.DefaultDialect.RequestIdField, value.Long(requestId))
 
 	t.conn.getConn().SendRequest(req)
 }
@@ -661,8 +674,8 @@ func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Valu
 		val, ok := <-putCh
 		if !ok {
 			endReq := value.EmptyMap(true).
-				Put(valuerpc.MessageTypeField, valuerpc.StreamEnd.Long()).
-				Put(valuerpc.RequestIdField, value.Long(requestCtx.requestId))
+				Put(valuerpc.DefaultDialect.MessageTypeField, valuerpc.StreamEnd.Long()).
+				Put(valuerpc.DefaultDialect.RequestIdField, value.Long(requestCtx.requestId))
 			t.conn.getConn().SendRequest(endReq)
 			break
 		}
@@ -675,9 +688,9 @@ func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Valu
 		}
 
 		nextReq := value.EmptyMap(true).
-			Put(valuerpc.MessageTypeField, valuerpc.StreamValue.Long()).
-			Put(valuerpc.RequestIdField, value.Long(requestCtx.requestId)).
-			Put(valuerpc.ValueField, val)
+			Put(valuerpc.DefaultDialect.MessageTypeField, valuerpc.StreamValue.Long()).
+			Put(valuerpc.DefaultDialect.RequestIdField, value.Long(requestCtx.requestId)).
+			Put(valuerpc.DefaultDialect.ValueField, val)
 
 		t.conn.getConn().SendRequest(nextReq)
 		t.metrics.StreamValue(requestCtx.Name())
@@ -693,18 +706,18 @@ func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Valu
 func (t *rpcClient) constructRequest(ctx context.Context, mt valuerpc.MessageType, name string, args value.Value, timeout int64) value.Map {
 
 	req := value.EmptyMap(true).
-		Put(valuerpc.MessageTypeField, mt.Long()).
-		Put(valuerpc.FunctionNameField, value.Utf8(name)).
-		Put(valuerpc.ArgumentsField, args)
+		Put(valuerpc.DefaultDialect.MessageTypeField, mt.Long()).
+		Put(valuerpc.DefaultDialect.FunctionNameField, value.Utf8(name)).
+		Put(valuerpc.DefaultDialect.ArgumentsField, args)
 
 	if timeout > 0 {
-		req = req.Put(valuerpc.TimeoutField, value.Long(timeout))
+		req = req.Put(valuerpc.DefaultDialect.TimeoutField, value.Long(timeout))
 	}
 
 	// Inject request metadata (trace context, baggage) from the call's context.
 	if t.metadata != nil {
 		if md := valuerpc.EncodeMetadata(t.metadata(ctx)); md != nil {
-			req = req.Put(valuerpc.MetadataField, md)
+			req = req.Put(valuerpc.DefaultDialect.MetadataField, md)
 		}
 	}
 

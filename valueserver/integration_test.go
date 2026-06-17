@@ -589,10 +589,10 @@ func TestInboundOverflowSurfaced(t *testing.T) {
 
 	const rid = int64(1)
 	put := value.EmptyMap(true).
-		Put(valuerpc.MessageTypeField, valuerpc.PutStreamRequest.Long()).
-		Put(valuerpc.RequestIdField, value.Long(rid)).
-		Put(valuerpc.FunctionNameField, value.Utf8("blackhole")).
-		Put(valuerpc.ArgumentsField, value.Null)
+		Put(valuerpc.DefaultDialect.MessageTypeField, valuerpc.PutStreamRequest.Long()).
+		Put(valuerpc.DefaultDialect.RequestIdField, value.Long(rid)).
+		Put(valuerpc.DefaultDialect.FunctionNameField, value.Utf8("blackhole")).
+		Put(valuerpc.DefaultDialect.ArgumentsField, value.Null)
 	if err := conn.WriteMessage(put); err != nil {
 		t.Fatalf("put request: %v", err)
 	}
@@ -601,9 +601,9 @@ func TestInboundOverflowSurfaced(t *testing.T) {
 	go func() {
 		for i := 0; i < 500; i++ {
 			sv := value.EmptyMap(true).
-				Put(valuerpc.MessageTypeField, valuerpc.StreamValue.Long()).
-				Put(valuerpc.RequestIdField, value.Long(rid)).
-				Put(valuerpc.ValueField, value.Long(int64(i)))
+				Put(valuerpc.DefaultDialect.MessageTypeField, valuerpc.StreamValue.Long()).
+				Put(valuerpc.DefaultDialect.RequestIdField, value.Long(rid)).
+				Put(valuerpc.DefaultDialect.ValueField, value.Long(int64(i)))
 			if conn.WriteMessage(sv) != nil {
 				return
 			}
@@ -616,7 +616,7 @@ func TestInboundOverflowSurfaced(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected a truncation error response, got read error: %v", err)
 		}
-		if mt, ok := valuerpc.GetNumberField(msg, valuerpc.MessageTypeField); ok &&
+		if mt, ok := valuerpc.GetNumberField(msg, valuerpc.DefaultDialect.MessageTypeField); ok &&
 			valuerpc.MessageType(mt.Long()) == valuerpc.ErrorResponse {
 			return // server surfaced the overflow
 		}

@@ -121,10 +121,10 @@ func (t *servingClient) replaceConn(newConn vrpc.MsgConn) {
 
 func FunctionResult(requestId value.Number, result value.Value) value.Map {
 	resp := value.EmptyMap(true).
-		Put(vrpc.MessageTypeField, vrpc.FunctionResponse.Long()).
-		Put(vrpc.RequestIdField, requestId)
+		Put(vrpc.DefaultDialect.MessageTypeField, vrpc.FunctionResponse.Long()).
+		Put(vrpc.DefaultDialect.RequestIdField, requestId)
 	if result != nil {
-		return resp.Put(vrpc.ResultField, result)
+		return resp.Put(vrpc.DefaultDialect.ResultField, result)
 	} else {
 		return resp
 	}
@@ -132,23 +132,23 @@ func FunctionResult(requestId value.Number, result value.Value) value.Map {
 
 func StreamReady(requestId value.Number) value.Map {
 	return value.EmptyMap(true).
-		Put(vrpc.MessageTypeField, vrpc.StreamReady.Long()).
-		Put(vrpc.RequestIdField, requestId)
+		Put(vrpc.DefaultDialect.MessageTypeField, vrpc.StreamReady.Long()).
+		Put(vrpc.DefaultDialect.RequestIdField, requestId)
 }
 
 func StreamValue(requestId value.Number, val value.Value) value.Map {
 	return value.EmptyMap(true).
-		Put(vrpc.MessageTypeField, vrpc.StreamValue.Long()).
-		Put(vrpc.RequestIdField, requestId).
-		Put(vrpc.ValueField, val)
+		Put(vrpc.DefaultDialect.MessageTypeField, vrpc.StreamValue.Long()).
+		Put(vrpc.DefaultDialect.RequestIdField, requestId).
+		Put(vrpc.DefaultDialect.ValueField, val)
 }
 
 func StreamEnd(requestId value.Number, val value.Value) value.Map {
 	resp := value.EmptyMap(true).
-		Put(vrpc.MessageTypeField, vrpc.StreamEnd.Long()).
-		Put(vrpc.RequestIdField, requestId)
+		Put(vrpc.DefaultDialect.MessageTypeField, vrpc.StreamEnd.Long()).
+		Put(vrpc.DefaultDialect.RequestIdField, requestId)
 	if val != nil {
-		return resp.Put(vrpc.ValueField, val)
+		return resp.Put(vrpc.DefaultDialect.ValueField, val)
 	} else {
 		return resp
 	}
@@ -162,10 +162,10 @@ func FunctionError(requestId value.Number, code vrpc.Code, format string, args .
 		msg = fmt.Sprintf(format, args...)
 	}
 	return value.EmptyMap(true).
-		Put(vrpc.MessageTypeField, vrpc.ErrorResponse.Long()).
-		Put(vrpc.RequestIdField, requestId).
-		Put(vrpc.CodeField, value.Long(int64(code))).
-		Put(vrpc.ErrorField, value.Utf8(msg))
+		Put(vrpc.DefaultDialect.MessageTypeField, vrpc.ErrorResponse.Long()).
+		Put(vrpc.DefaultDialect.RequestIdField, requestId).
+		Put(vrpc.DefaultDialect.CodeField, value.Long(int64(code))).
+		Put(vrpc.DefaultDialect.ErrorField, value.Utf8(msg))
 }
 
 // handlerErrCode maps a user-handler error to a Code: the code of a
@@ -204,8 +204,8 @@ func responseCode(resp value.Map) vrpc.Code {
 	if resp == nil {
 		return vrpc.CodeOK
 	}
-	if mt, ok := vrpc.GetNumberField(resp, vrpc.MessageTypeField); ok && vrpc.MessageType(mt.Long()) == vrpc.ErrorResponse {
-		if c, ok := vrpc.GetNumberField(resp, vrpc.CodeField); ok {
+	if mt, ok := vrpc.GetNumberField(resp, vrpc.DefaultDialect.MessageTypeField); ok && vrpc.MessageType(mt.Long()) == vrpc.ErrorResponse {
+		if c, ok := vrpc.GetNumberField(resp, vrpc.DefaultDialect.CodeField); ok {
 			return vrpc.Code(c.Long())
 		}
 		return vrpc.CodeUnknown
@@ -274,7 +274,7 @@ func (t *servingClient) serveFunctionRequest(ft functionType, req value.Map) {
 	// own lifecycle and are metered via newServingRequest/deleteRequest instead.
 	if ft == singleFunction {
 		name := ""
-		if method, ok := vrpc.GetStringField(req, vrpc.FunctionNameField); ok {
+		if method, ok := vrpc.GetStringField(req, vrpc.DefaultDialect.FunctionNameField); ok {
 			name = method.String()
 		}
 		t.cfg.metrics.RequestBegin(name)
@@ -295,13 +295,13 @@ func (t *servingClient) serveFunctionRequest(ft functionType, req value.Map) {
 
 func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) value.Map {
 
-	reqId, ok := vrpc.GetNumberField(req, vrpc.RequestIdField)
+	reqId, ok := vrpc.GetNumberField(req, vrpc.DefaultDialect.RequestIdField)
 	if !ok {
 		// Without a request id the response cannot be routed; reply with id 0.
 		reqId = value.Long(0)
 	}
 
-	name, ok := vrpc.GetStringField(req, vrpc.FunctionNameField)
+	name, ok := vrpc.GetStringField(req, vrpc.DefaultDialect.FunctionNameField)
 	if !ok {
 		return FunctionError(reqId, vrpc.CodeInvalidArgument, "function name field not found")
 	}
@@ -311,7 +311,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		return FunctionError(reqId, vrpc.CodeNotFound, "function not found %s", name.String())
 	}
 
-	args := req.Get(vrpc.ArgumentsField)
+	args := req.Get(vrpc.DefaultDialect.ArgumentsField)
 	if !vrpc.Verify(args, fn.args) {
 		return FunctionError(reqId, vrpc.CodeInvalidArgument, "function '%s' invalid args%s", name.String(), valDetail(args))
 	}
@@ -410,7 +410,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 // bounded by client cancellation (CancelRequest) instead.
 func (t *servingClient) newRequestContext(req value.Map, ft functionType) (context.Context, context.CancelFunc) {
 	if ft == singleFunction {
-		if sla, ok := vrpc.GetNumberField(req, vrpc.TimeoutField); ok && sla.Long() > 0 {
+		if sla, ok := vrpc.GetNumberField(req, vrpc.DefaultDialect.TimeoutField); ok && sla.Long() > 0 {
 			return context.WithTimeout(t.ctx, time.Duration(sla.Long())*time.Millisecond)
 		}
 	}
@@ -459,13 +459,13 @@ func (t *servingClient) deleteRequest(requestId value.Number) {
 func (t *servingClient) processRequest(req value.Map) error {
 	//t.logger.Info("processRequest", zap.Stringer("req", req))
 
-	mt, ok := vrpc.GetNumberField(req, vrpc.MessageTypeField)
+	mt, ok := vrpc.GetNumberField(req, vrpc.DefaultDialect.MessageTypeField)
 	if !ok {
 		return errors.Errorf("empty message type%s", reqDetail(req))
 	}
 	msgType := vrpc.MessageType(mt.Long())
 
-	reqId, ok := vrpc.GetNumberField(req, vrpc.RequestIdField)
+	reqId, ok := vrpc.GetNumberField(req, vrpc.DefaultDialect.RequestIdField)
 	if !ok {
 		return errors.Errorf("request id not found%s", reqDetail(req))
 	}
@@ -508,7 +508,7 @@ func (t *servingClient) serveNewRequest(msgType vrpc.MessageType, req value.Map)
 	n := t.inFlight.Add(1)
 	if max := t.cfg.maxConcurrentRequests; max > 0 && n > max {
 		t.inFlight.Add(-1)
-		if reqId, ok := vrpc.GetNumberField(req, vrpc.RequestIdField); ok {
+		if reqId, ok := vrpc.GetNumberField(req, vrpc.DefaultDialect.RequestIdField); ok {
 			t.send(FunctionError(reqId, vrpc.CodeResourceExhausted, "server busy: too many concurrent requests (max %d)", max))
 		}
 		return nil

@@ -49,7 +49,7 @@ func EncodeMetadata(md Metadata) value.Map {
 // DecodeMetadata reads the metadata map carried in a request envelope, or nil
 // when absent/empty.
 func DecodeMetadata(req value.Map) Metadata {
-	v := req.Get(MetadataField)
+	v := req.Get(DefaultDialect.MetadataField)
 	if v == nil || v.Kind() != value.MAP {
 		return nil
 	}

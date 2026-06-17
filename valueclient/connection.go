@@ -7,6 +7,7 @@ package valueclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -48,11 +49,29 @@ func newConn(ctx context.Context, dialer valuerpc.Dialer, clientId int64, sessio
 
 	hs := valuerpc.NewHandshakeRequest(clientId, sessionToken)
 	if credential != nil {
-		hs = hs.Put(valuerpc.AuthField, credential)
+		hs = hs.Put(valuerpc.DefaultDialect.AuthField, credential)
 	}
 
 	go t.requestLoop()
 	t.SendRequest(hs)
+
+	// Read the handshake response synchronously so the connection is "established"
+	// only once the handshake completes and the server-issued session token is
+	// captured. This avoids two hazards: a fast reconnect that fires before the
+	// token is stored (the server would reject the resumption), and a rejected
+	// handshake surfacing as a BadConnection (which would trigger a reconnect
+	// storm) rather than a clean connect error. Bound the read by the dial ctx.
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetReadDeadline(dl)
+	}
+	resp, err := conn.ReadMessage()
+	_ = conn.SetReadDeadline(time.Time{}) // clear; the response loop reads without a deadline
+	if err != nil {
+		t.Close()
+		return nil, fmt.Errorf("handshake: %w", err)
+	}
+	t.respHandler(resp) // stores the session token; fires the connection handler
+
 	go t.responseLoop()
 
 	return t, nil
@@ -78,6 +97,9 @@ func (t *rpcConn) requestLoop() {
 			return
 		case req := <-t.reqCh:
 			if err := t.conn.WriteMessage(req); err != nil {
+				if t.closedIntentionally() {
+					return
+				}
 				t.errorHandler.BadConnection(err)
 			}
 		}
@@ -90,6 +112,12 @@ func (t *rpcConn) responseLoop() error {
 
 		resp, err := t.conn.ReadMessage()
 		if err != nil {
+			// A read error after this connection was intentionally closed (Close /
+			// reset, e.g. during a reconnect) is expected — do not report it as a
+			// bad connection, which would trigger a second, racing reconnect.
+			if t.closedIntentionally() {
+				return nil
+			}
 			t.errorHandler.BadConnection(err)
 			return err
 		}
@@ -98,6 +126,17 @@ func (t *rpcConn) responseLoop() error {
 
 	}
 
+}
+
+// closedIntentionally reports whether this connection was torn down on purpose
+// (its done channel is closed) rather than failing on its own.
+func (t *rpcConn) closedIntentionally() bool {
+	select {
+	case <-t.done:
+		return true
+	default:
+		return false
+	}
 }
 
 func (t *rpcConn) SendRequest(req value.Map) {

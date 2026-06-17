@@ -32,19 +32,19 @@ func roundTrip(t *testing.T, m value.Map) value.Map {
 func TestHandshakeRequestRoundTrip(t *testing.T) {
 	req := roundTrip(t, vrpc.NewHandshakeRequest(42, "sometoken"))
 
-	if got := req.GetString(vrpc.MagicField).String(); got != vrpc.Magic {
-		t.Errorf("magic = %q, want %q", got, vrpc.Magic)
+	if got := req.GetString(vrpc.DefaultDialect.MagicField).String(); got != vrpc.DefaultDialect.Magic {
+		t.Errorf("magic = %q, want %q", got, vrpc.DefaultDialect.Magic)
 	}
-	if got := vrpc.MessageType(req.GetNumber(vrpc.MessageTypeField).Long()); got != vrpc.HandshakeRequest {
+	if got := vrpc.MessageType(req.GetNumber(vrpc.DefaultDialect.MessageTypeField).Long()); got != vrpc.HandshakeRequest {
 		t.Errorf("type = %v, want HandshakeRequest", got)
 	}
-	if got := req.GetNumber(vrpc.ClientIdField).Long(); got != 42 {
+	if got := req.GetNumber(vrpc.DefaultDialect.ClientIdField).Long(); got != 42 {
 		t.Errorf("clientId = %d, want 42", got)
 	}
-	if got := req.GetNumber(vrpc.RequestIdField).Long(); got != vrpc.HandshakeRequestId {
-		t.Errorf("requestId = %d, want %d", got, vrpc.HandshakeRequestId)
+	if got := req.GetNumber(vrpc.DefaultDialect.RequestIdField).Long(); got != vrpc.DefaultDialect.HandshakeRequestId {
+		t.Errorf("requestId = %d, want %d", got, vrpc.DefaultDialect.HandshakeRequestId)
 	}
-	if got, ok := vrpc.GetStringField(req, vrpc.SessionTokenField); !ok || got.String() != "sometoken" {
+	if got, ok := vrpc.GetStringField(req, vrpc.DefaultDialect.SessionTokenField); !ok || got.String() != "sometoken" {
 		t.Errorf("session token = %q (present=%v), want %q", got, ok, "sometoken")
 	}
 }
@@ -53,7 +53,7 @@ func TestHandshakeRequestRoundTrip(t *testing.T) {
 // the field must be absent (not an empty string the server might misread).
 func TestHandshakeRequest_OmitsEmptyToken(t *testing.T) {
 	req := roundTrip(t, vrpc.NewHandshakeRequest(7, ""))
-	if _, ok := vrpc.GetStringField(req, vrpc.SessionTokenField); ok {
+	if _, ok := vrpc.GetStringField(req, vrpc.DefaultDialect.SessionTokenField); ok {
 		t.Fatal("session token field must be omitted when empty")
 	}
 }
@@ -66,8 +66,8 @@ func TestValidMagicAndVersion_Valid(t *testing.T) {
 
 func TestValidMagicAndVersion_BadMagic(t *testing.T) {
 	req := value.EmptyMap(true).
-		Put(vrpc.MagicField, value.Utf8("NOPE")).
-		Put(vrpc.VersionField, value.Double(vrpc.Version))
+		Put(vrpc.DefaultDialect.MagicField, value.Utf8("NOPE")).
+		Put(vrpc.DefaultDialect.VersionField, value.Double(vrpc.DefaultDialect.Version))
 	if vrpc.ValidMagicAndVersion(req) {
 		t.Fatal("wrong magic must be rejected")
 	}
@@ -78,8 +78,8 @@ func TestValidMagicAndVersion_BadMagic(t *testing.T) {
 // reject a client claiming a version newer than ours.
 func TestValidMagicAndVersion_RejectsNewerVersion(t *testing.T) {
 	req := value.EmptyMap(true).
-		Put(vrpc.MagicField, value.Utf8(vrpc.Magic)).
-		Put(vrpc.VersionField, value.Double(999.0)) // pretend to be from the future
+		Put(vrpc.DefaultDialect.MagicField, value.Utf8(vrpc.DefaultDialect.Magic)).
+		Put(vrpc.DefaultDialect.VersionField, value.Double(999.0)) // pretend to be from the future
 
 	if vrpc.ValidMagicAndVersion(req) {
 		t.Fatal("BUG-1: a newer-than-supported version must be rejected")
@@ -89,7 +89,7 @@ func TestValidMagicAndVersion_RejectsNewerVersion(t *testing.T) {
 // TestValidMagicAndVersion_MissingVersion: a handshake with no version field
 // must be rejected (GetNumber would silently return Zero).
 func TestValidMagicAndVersion_MissingVersion(t *testing.T) {
-	req := value.EmptyMap(true).Put(vrpc.MagicField, value.Utf8(vrpc.Magic))
+	req := value.EmptyMap(true).Put(vrpc.DefaultDialect.MagicField, value.Utf8(vrpc.DefaultDialect.Magic))
 	if vrpc.ValidMagicAndVersion(req) {
 		t.Fatal("a handshake without a version field must be rejected")
 	}
@@ -220,10 +220,10 @@ func TestMessageTypeLong(t *testing.T) {
 
 func BenchmarkPackUnpackFunctionRequest(b *testing.B) {
 	req := value.EmptyMap(true).
-		Put(vrpc.MessageTypeField, vrpc.FunctionRequest.Long()).
-		Put(vrpc.RequestIdField, value.Long(12345)).
-		Put(vrpc.FunctionNameField, value.Utf8("computeStuff")).
-		Put(vrpc.ArgumentsField, value.Tuple(value.Utf8("hello"), value.Long(42), value.Double(3.14)))
+		Put(vrpc.DefaultDialect.MessageTypeField, vrpc.FunctionRequest.Long()).
+		Put(vrpc.DefaultDialect.RequestIdField, value.Long(12345)).
+		Put(vrpc.DefaultDialect.FunctionNameField, value.Utf8("computeStuff")).
+		Put(vrpc.DefaultDialect.ArgumentsField, value.Tuple(value.Utf8("hello"), value.Long(42), value.Double(3.14)))
 
 	b.ReportAllocs()
 	b.ResetTimer()

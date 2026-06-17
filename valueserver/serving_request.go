@@ -158,7 +158,7 @@ func (t *servingRequest) serveRunningRequest(msgType vrpc.MessageType, req value
 
 	case vrpc.StreamCredit:
 		// The client granted the server's outgoing stream more credit.
-		if cr, ok := vrpc.GetNumberField(req, vrpc.CreditField); ok && t.sendCredit != nil {
+		if cr, ok := vrpc.GetNumberField(req, vrpc.DefaultDialect.CreditField); ok && t.sendCredit != nil {
 			t.sendCredit.Grant(cr.Long())
 		}
 		return nil
@@ -176,7 +176,7 @@ func (t *servingRequest) incomingStreamValue(req value.Map) error {
 		return errors.Errorf("incoming value stream not found in serving request for %d", t.requestId)
 	}
 
-	if val := req.Get(vrpc.ValueField); val != value.Null {
+	if val := req.Get(vrpc.DefaultDialect.ValueField); val != value.Null {
 		t.offer(val)
 	}
 
@@ -189,7 +189,7 @@ func (t *servingRequest) incomingStreamEnd(req value.Map, cli *servingClient) er
 		return errors.Errorf("incoming end stream not found in serving request for %d", t.requestId)
 	}
 
-	if val := req.Get(vrpc.ValueField); val != value.Null {
+	if val := req.Get(vrpc.DefaultDialect.ValueField); val != value.Null {
 		t.offer(val)
 		cli.cfg.metrics.StreamValue(t.method)
 	}

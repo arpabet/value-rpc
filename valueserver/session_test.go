@@ -101,7 +101,7 @@ func TestSessionResumptionRequiresToken(t *testing.T) {
 		t.Fatalf("first handshake rejected: %v", err)
 	}
 	defer c1.Close()
-	tok, ok := valuerpc.GetStringField(resp, valuerpc.SessionTokenField)
+	tok, ok := valuerpc.GetStringField(resp, valuerpc.DefaultDialect.SessionTokenField)
 	if !ok || tok.String() == "" {
 		t.Fatal("server did not issue a session token on first handshake")
 	}
@@ -112,7 +112,7 @@ func TestSessionResumptionRequiresToken(t *testing.T) {
 		t.Fatalf("resume with correct token was rejected: %v", err)
 	}
 	defer c2.Close()
-	if mt, ok := valuerpc.GetNumberField(resp2, valuerpc.MessageTypeField); !ok || valuerpc.MessageType(mt.Long()) != valuerpc.HandshakeResponse {
+	if mt, ok := valuerpc.GetNumberField(resp2, valuerpc.DefaultDialect.MessageTypeField); !ok || valuerpc.MessageType(mt.Long()) != valuerpc.HandshakeResponse {
 		t.Fatal("resume with correct token did not get a handshake response")
 	}
 
@@ -138,7 +138,7 @@ func rawHandshakeAuth(t *testing.T, addr string, clientId int64, token string, c
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	req := valuerpc.NewHandshakeRequest(clientId, token).Put(valuerpc.AuthField, cred)
+	req := valuerpc.NewHandshakeRequest(clientId, token).Put(valuerpc.DefaultDialect.AuthField, cred)
 	if err := conn.WriteMessage(req); err != nil {
 		conn.Close()
 		t.Fatalf("write handshake: %v", err)
@@ -179,7 +179,7 @@ func TestResumptionBoundToPrincipal(t *testing.T) {
 		t.Fatalf("alice connect rejected: %v", err)
 	}
 	defer c1.Close()
-	tok, ok := valuerpc.GetStringField(resp, valuerpc.SessionTokenField)
+	tok, ok := valuerpc.GetStringField(resp, valuerpc.DefaultDialect.SessionTokenField)
 	if !ok || tok.String() == "" {
 		t.Fatal("server issued no session token")
 	}

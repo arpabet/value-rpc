@@ -21,7 +21,6 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zaptest/observer"
 )
 
 var sockSeq int64
@@ -273,9 +272,10 @@ func TestMetricsRecorded(t *testing.T) {
 	}
 }
 
-// TestErrorHandlerBadConnection: a custom ErrorHandler observes the connection
-// drop when the server goes away under an in-flight call.
-func TestErrorHandlerBadConnection(t *testing.T) {
+// TestReconnectFailsInFlight: an in-flight request is failed fast with
+// ErrConnectionLost (CodeUnavailable) when the connection is re-established under
+// it (the default reconnect policy), rather than hanging until its timeout.
+func TestReconnectFailsInFlight(t *testing.T) {
 	hold := make(chan struct{})
 	started := make(chan struct{})
 	var once sync.Once
@@ -290,23 +290,25 @@ func TestErrorHandlerBadConnection(t *testing.T) {
 	defer stop()
 	defer close(hold)
 
-	core, logs := observer.New(zap.WarnLevel)
-	cli := dial(t, sock, valueclient.WithLogger(zap.New(core)), valueclient.WithTimeout(10000))
+	// A long call timeout: a fail-fast result proves the policy, not the timer.
+	cli := dial(t, sock, valueclient.WithTimeout(10000))
 	defer cli.Close()
 
-	go cli.CallFunction(context.Background(), "hold", nil)
+	errc := make(chan error, 1)
+	go func() {
+		_, err := cli.CallFunction(context.Background(), "hold", nil)
+		errc <- err
+	}()
 	<-started
-	cli.Reconnect() // drops the in-flight call; default fail-fast
+	cli.Reconnect() // re-establish under the in-flight call; default fail-fast
 
-	// The default error handler logs reconnect/stream diagnostics through the
-	// injected logger.
-	deadline := time.After(2 * time.Second)
-	for logs.Len() == 0 {
-		select {
-		case <-deadline:
-			t.Fatal("expected a diagnostic log entry on reconnect")
-		case <-time.After(10 * time.Millisecond):
+	select {
+	case err := <-errc:
+		if valuerpc.CodeOf(err) != valuerpc.CodeUnavailable {
+			t.Fatalf("in-flight call code = %v, want Unavailable (fail-fast)", valuerpc.CodeOf(err))
 		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight call did not fail fast on reconnect")
 	}
 }
 

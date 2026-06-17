@@ -423,14 +423,14 @@ func (t *quicMsgConn) TLSConnectionState() (tls.ConnectionState, bool) {
 // --- message + framing helpers ---
 
 func msgType(m value.Map) valuerpc.MessageType {
-	if n, ok := valuerpc.GetNumberField(m, valuerpc.MessageTypeField); ok {
+	if n, ok := valuerpc.GetNumberField(m, valuerpc.DefaultDialect.MessageTypeField); ok {
 		return valuerpc.MessageType(n.Long())
 	}
 	return valuerpc.MessageType(-1)
 }
 
 func ridOf(m value.Map) (int64, bool) {
-	if n, ok := valuerpc.GetNumberField(m, valuerpc.RequestIdField); ok {
+	if n, ok := valuerpc.GetNumberField(m, valuerpc.DefaultDialect.RequestIdField); ok {
 		return n.Long(), true
 	}
 	return 0, false

@@ -39,9 +39,9 @@ func pk(v value.Value) []byte { b, _ := value.Pack(v); return b }
 func FuzzReadMessage(f *testing.F) {
 	// A valid framed message.
 	valid, _ := value.Pack(value.EmptyMap(true).
-		Put(vrpc.MessageTypeField, vrpc.FunctionRequest.Long()).
-		Put(vrpc.RequestIdField, value.Long(1)).
-		Put(vrpc.FunctionNameField, value.Utf8("ping")))
+		Put(vrpc.DefaultDialect.MessageTypeField, vrpc.FunctionRequest.Long()).
+		Put(vrpc.DefaultDialect.RequestIdField, value.Long(1)).
+		Put(vrpc.DefaultDialect.FunctionNameField, value.Utf8("ping")))
 	f.Add(frame(valid))
 	f.Add([]byte{0, 0, 0, 0})              // zero-length frame
 	f.Add([]byte{0, 0, 0, 5, 1, 2})        // truncated payload

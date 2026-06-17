@@ -203,10 +203,10 @@ func BenchmarkMsgConnWriteRead(b *testing.B) {
 	defer r.Close()
 
 	msg := value.EmptyMap(true).
-		Put(vrpc.MessageTypeField, vrpc.FunctionRequest.Long()).
-		Put(vrpc.RequestIdField, value.Long(7)).
-		Put(vrpc.FunctionNameField, value.Utf8("doStuff")).
-		Put(vrpc.ArgumentsField, value.Tuple(value.Utf8("hi"), value.Long(1)))
+		Put(vrpc.DefaultDialect.MessageTypeField, vrpc.FunctionRequest.Long()).
+		Put(vrpc.DefaultDialect.RequestIdField, value.Long(7)).
+		Put(vrpc.DefaultDialect.FunctionNameField, value.Utf8("doStuff")).
+		Put(vrpc.DefaultDialect.ArgumentsField, value.Tuple(value.Utf8("hi"), value.Long(1)))
 
 	b.ReportAllocs()
 	b.ResetTimer()
