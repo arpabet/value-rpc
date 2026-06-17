@@ -7,8 +7,31 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Deprecated
+
+- `valuerpc.WSKeepAlive` and `valuerpc.WSDialTimeout`. The WebSocket ping interval
+  and dial bound are now per-instance options — `WithKeepAlivePeriod` (threaded
+  through the WS listener/dialer) and `valueclient.WithDialTimeout` (applied to the
+  dial context by `ConnectContext`). The globals are no longer read on the normal
+  path (`WSKeepAlive` is unused; `WSDialTimeout` survives only as the fallback for
+  a `wsDialer` driven by a deadline-less context) and are kept for compatibility.
+
+### Tests
+
+- Raised `valueclient` package test coverage from ~7% to ~79% (call patterns,
+  credit-based flow control, options, metrics, metadata, reconnect/backoff, error
+  handler, credential auth, lifecycle) and added fuzz targets
+  `valuerpc.FuzzReadMessage` / `FuzzUnpack` proving the length-prefix + msgpack
+  decode path never panics on adversarial input.
+
 ### Added
 
+- **Typed-client ergonomics.** New generic helpers give statically-typed call
+  sites over the schemaless wire without codegen: `valuerpc.Codec[T]` (an explicit
+  per-type encode/decode), `valueclient.CallUnary` / `GetStreamTyped` /
+  `PutStreamTyped`, and `valueserver.AddUnary` / `AddOutgoingStreamTyped`. A worked
+  end-to-end example (`valueclient` `TestTypedService`) shows the recommended
+  hand-written typed-facade pattern.
 - **Reconnect policy for in-flight requests.** Previously a reconnect orphaned
   in-flight requests (they hung until their timeout). Now, by default, they are
   **failed fast** with `valueclient.ErrConnectionLost` (`CodeUnavailable`) the

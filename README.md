@@ -23,6 +23,9 @@ transport:  TCP  ·  Unix socket  ·  WebSocket        (optional SOCKS5 / wss TL
 - **Four call patterns** multiplexed over a single connection (keyed by request id).
 - **Pluggable transports**: TCP, Unix domain sockets, and WebSocket (MessagePack) — one API, pick by address scheme.
 - **Runtime type checking** via `TypeDef` / `Verify` (`Arg`, `List`, `Map`, `Void`, `Any`).
+- **Optional typed call sites** without codegen: define a `valuerpc.Codec[T]` per
+  message and use the generic `valueclient.CallUnary` / `valueserver.AddUnary` (and
+  streaming variants) for static Go types over the schemaless wire.
 - **Machine-readable error codes**: failures carry a `valuerpc.Code` (NotFound,
   InvalidArgument, ResourceExhausted, Unavailable, Internal, …). Handlers return
   `valuerpc.NewError(code, …)`; callers branch with `valuerpc.CodeOf(err)` or
