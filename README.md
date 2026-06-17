@@ -138,8 +138,10 @@ WebSocket by changing only the address — see [Transports](#transports). Runnab
 output‑checked examples for every pattern and transport are in
 [`valueserver/example_test.go`](valueserver/example_test.go) (they also render on
 pkg.go.dev). Runnable programs for the major features — typed calls, streaming,
-observability, mTLS, reconnect — are under [`examples/`](examples/); the original
-end‑to‑end demo is [`examples/first/sample.go`](examples/first/sample.go) (`make run`).
+cancellation, the Unix/WebSocket/mTLS/custom transports, auth, observability, and
+reconnect — are under [`examples/`](examples/) (see [its index](examples/README.md));
+the original end‑to‑end demo is [`examples/first/sample.go`](examples/first/sample.go)
+(`make run`).
 
 ## The four patterns
 
