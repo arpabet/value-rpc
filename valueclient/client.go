@@ -36,6 +36,8 @@ type rpcClient struct {
 	timeoutMls        atomic.Int64
 	perfMonitor       atomic.Value
 	shuttingDown      atomic.Bool
+	closed            chan struct{} // closed by Close(); wakes the reconnect backoff sleep
+	closeOnce         sync.Once
 	sessionToken      atomic.Pointer[string]                  // server-issued; resent to authorize reconnect
 	credential        atomic.Pointer[value.Value]             // client-supplied; validated by the server Authenticator
 	maxPending        int                                     // per-stream receive pending bound
@@ -116,6 +118,7 @@ func NewClientWithDialer(dialer valuerpc.Dialer, opts ...ClientOption) Client {
 		reconnect:   cfg.reconnect,
 		dialTimeout: cfg.dialTimeout,
 		conn:        NewSyncConn(),
+		closed:      make(chan struct{}),
 	}
 
 	t.timeoutMls.Store(cfg.timeoutMls)
@@ -145,6 +148,7 @@ func (t *rpcClient) Close() error {
 	var self ErrorHandler = t
 	t.errorHandler.Store(&self)
 	t.shuttingDown.Store(true)
+	t.closeOnce.Do(func() { close(t.closed) }) // wake any reconnect backoff
 	t.conn.reset()
 	return nil
 }
@@ -191,7 +195,54 @@ func (t *rpcClient) BadConnection(err error) {
 	t.logger.Warn("bad connection, reconnecting", zap.Error(err))
 	if err = t.Reconnect(); err != nil {
 		t.logger.Error("reconnect failed", zap.Error(err))
+		t.retryReconnect()
 	}
+}
+
+// retryReconnect re-attempts the dial with exponential backoff after the initial
+// reconnect failed. In-flight requests were already disposed by Reconnect; this
+// only re-establishes the connection. No-op unless the reconnect policy enables
+// retries (MaxAttempts != 0). The backoff sleep wakes immediately on Close.
+func (t *rpcClient) retryReconnect() {
+	p := t.reconnect
+	if p.MaxAttempts == 0 {
+		return
+	}
+	delay := p.InitialBackoff
+	if delay <= 0 {
+		delay = DefaultInitialBackoff
+	}
+	maxDelay := p.MaxBackoff
+	if maxDelay <= 0 {
+		maxDelay = DefaultMaxBackoff
+	}
+
+	for attempt := 1; p.MaxAttempts < 0 || attempt <= p.MaxAttempts; attempt++ {
+		d := delay
+		if p.Jitter { // equal jitter: half fixed, half random
+			d = d/2 + time.Duration(rand.Int63n(int64(d/2)+1))
+		}
+		select {
+		case <-time.After(d):
+		case <-t.closed:
+			return
+		}
+		if t.shuttingDown.Load() {
+			return
+		}
+		t.reconnects.Add(1)
+		t.metrics.Reconnect()
+		if err := t.Connect(); err == nil {
+			t.logger.Info("reconnected after backoff", zap.Int("attempt", attempt))
+			return
+		} else {
+			t.logger.Warn("reconnect attempt failed", zap.Int("attempt", attempt), zap.Error(err))
+		}
+		if delay = delay * 2; delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+	t.logger.Error("giving up reconnect", zap.Int("maxAttempts", p.MaxAttempts))
 }
 
 func (t *rpcClient) ProtocolError(rest value.Map, err error) {

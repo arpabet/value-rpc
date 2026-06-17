@@ -167,12 +167,20 @@ func FunctionError(requestId value.Number, code vrpc.Code, format string, args .
 }
 
 // handlerErrCode maps a user-handler error to a Code: the code of a
-// *valuerpc.Error, else Internal.
+// *valuerpc.Error, the matching code for a context deadline/cancellation (which
+// a handler typically returns as ctx.Err()), else Internal.
 func handlerErrCode(err error) vrpc.Code {
 	if code := vrpc.CodeOf(err); code != vrpc.CodeUnknown {
 		return code
 	}
-	return vrpc.CodeInternal
+	switch err {
+	case context.DeadlineExceeded:
+		return vrpc.CodeDeadlineExceeded
+	case context.Canceled:
+		return vrpc.CodeCanceled
+	default:
+		return vrpc.CodeInternal
+	}
 }
 
 // handlerError builds an ErrorResponse from an error returned by a user handler,

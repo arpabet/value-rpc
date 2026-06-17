@@ -17,8 +17,13 @@ All notable changes to this project are documented here. The format is based on
   `valueclient.WithReconnectPolicy(ReconnectPolicy{ReplayUnary: func(method string) bool { … }})`
   — matching calls are re-sent (keeping their original deadline budget) while
   streams and non-idempotent unary calls are still failed fast. Replay is
-  at-least-once. Tests: `valueserver.TestReconnectFailFast`,
-  `TestReconnectReplayIdempotent`.
+  at-least-once. The policy also drives **automatic reconnect backoff**: on a drop
+  the client retries the dial with exponential backoff (`InitialBackoff` →
+  `MaxBackoff`, optional `Jitter`, `MaxAttempts` with `<0` = forever), so it
+  re-establishes the connection on its own after an outage instead of waiting for
+  the next request; the backoff sleep wakes immediately on `Close`. Tests:
+  `valueserver.TestReconnectFailFast`, `TestReconnectReplayIdempotent`,
+  `TestReconnectBackoff`.
 
 - **Metadata / trace-context propagation.** Requests now carry a string→string
   metadata map (new `md` envelope field) for distributed-trace context and
@@ -166,6 +171,15 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **Data race between `Server.Run()` and `Server.Close()`** on the shutdown
+  `WaitGroup`: a connection accepted just as the server was closing could call
+  `wg.Add(1)` concurrently with `Close`'s `wg.Wait()` (a WaitGroup misuse the race
+  detector flags). `Close` now closes the shutdown signal under a mutex that also
+  guards the per-connection `Add`, so no handler is registered once shutdown has
+  begun. (Surfaced under `go test -race` with `go srv.Run(); defer srv.Close()`.)
+- Server handlers that return `context.DeadlineExceeded` / `context.Canceled`
+  (e.g. `ctx.Err()`) now map to `CodeDeadlineExceeded` / `CodeCanceled` instead of
+  `CodeInternal`.
 - `valueserver.Server.Close()` no longer hangs when `Run()` was never called —
   the accept loop was over-counted in the shutdown `WaitGroup`, which now tracks
   only connection-handler goroutines.

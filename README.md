@@ -50,10 +50,11 @@ transport:  TCP  ·  Unix socket  ·  WebSocket        (optional SOCKS5 / wss TL
 - **Context-aware, bounded dial**: `cli.ConnectContext(ctx)` cancels/bounds the
   dial; without a context deadline a default `WithDialTimeout` applies, so connect
   never hangs on an unreachable peer.
-- **Reconnect policy for in-flight requests**: on a drop, in-flight requests
-  fail fast with `ErrConnectionLost` (`CodeUnavailable`) instead of hanging until
-  timeout; opt in to replaying idempotent unary calls on the new connection with
-  `valueclient.WithReconnectPolicy`.
+- **Reconnect policy** (`valueclient.WithReconnectPolicy`): on a drop, in-flight
+  requests fail fast with `ErrConnectionLost` (`CodeUnavailable`) instead of
+  hanging until timeout; opt in to replaying idempotent unary calls on the new
+  connection, and to automatic re-establishment with exponential **backoff** (and
+  jitter).
 - **Authenticated session resumption**: the server issues a per-session token at
   handshake; reconnecting with the matching token resumes the session, so a peer
   can't take it over by guessing the client id.

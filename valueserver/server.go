@@ -45,6 +45,10 @@ type rpcServer struct {
 	listener valuerpc.Listener
 	shutdown chan struct{}
 	wg       sync.WaitGroup
+	// acceptMu serializes the shutdown signal with the per-connection wg.Add in
+	// Run, so a connection accepted as the server is closing can never call Add
+	// concurrently with Close's wg.Wait (a WaitGroup misuse / data race).
+	acceptMu sync.Mutex
 	logger   *zap.Logger
 
 	ctx    context.Context // base context for handlers; cancelled on Close
@@ -209,9 +213,13 @@ func (t *rpcServer) Close() error {
 		t.logger.Info("shutdown vRPC server")
 
 		// Signal all in-flight handlers (via their request contexts) that the
-		// server is going away, then stop accepting and unblock Run().
+		// server is going away, then stop accepting and unblock Run(). Closing
+		// shutdown under acceptMu orders it against Run's wg.Add so no new handler
+		// is added once we proceed to wg.Wait below.
 		t.cancel()
+		t.acceptMu.Lock()
 		close(t.shutdown)
+		t.acceptMu.Unlock()
 		err = t.listener.Close()
 
 		// Unblock every live connection's read loop (pre- and post-handshake)
@@ -271,11 +279,22 @@ func (t *rpcServer) Run() error {
 			continue
 		}
 
+		// Register the handler under acceptMu so wg.Add is ordered against Close's
+		// close(shutdown)+wg.Wait: if shutdown already fired, drop this connection
+		// instead of adding to a WaitGroup that Close is about to wait on.
+		t.acceptMu.Lock()
+		select {
+		case <-t.shutdown:
+			t.acceptMu.Unlock()
+			msgConn.Close()
+			continue
+		default:
+		}
 		// The Listener has already applied transport framing and keepalive.
 		t.liveConns.Add(1)
 		t.connMap.Store(msgConn, struct{}{})
-
 		t.wg.Add(1)
+		t.acceptMu.Unlock()
 		go func() {
 			defer t.wg.Done()
 			defer t.liveConns.Add(-1)

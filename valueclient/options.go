@@ -59,10 +59,14 @@ func newClientConfig(opts []ClientOption) clientConfig {
 	return cfg
 }
 
-// ReconnectPolicy governs what happens to in-flight requests when the connection
-// drops and is re-established. The zero value is fail-fast: every in-flight
-// request (unary and streams) is failed immediately with ErrConnectionLost
-// (CodeUnavailable) instead of hanging until its timeout.
+// DefaultInitialBackoff / DefaultMaxBackoff bound the automatic reconnect retry
+// delay when a ReconnectPolicy enables retries but leaves the bounds unset.
+var DefaultInitialBackoff = 100 * time.Millisecond
+var DefaultMaxBackoff = 30 * time.Second
+
+// ReconnectPolicy governs what happens when the connection drops: how in-flight
+// requests are disposed, and whether/how the client retries re-establishing the
+// connection. The zero value is fail-fast with no automatic retry.
 type ReconnectPolicy struct {
 	// ReplayUnary, when non-nil, reports whether an in-flight unary call to method
 	// is safe to re-send on the new connection (i.e. idempotent). Matching calls
@@ -72,6 +76,19 @@ type ReconnectPolicy struct {
 	// call before the drop, so only opt in methods with no observable effect on
 	// repetition.
 	ReplayUnary func(method string) bool
+
+	// Automatic reconnect backoff. On a drop the client first attempts an
+	// immediate reconnect; if that fails and MaxAttempts != 0, it retries the dial
+	// with exponential backoff from InitialBackoff (default DefaultInitialBackoff),
+	// doubling up to MaxBackoff (default DefaultMaxBackoff). MaxAttempts == 0
+	// disables retry — the connection is re-established lazily on the next request;
+	// MaxAttempts < 0 retries until the peer returns or the client is closed.
+	// Jitter randomizes each delay (equal jitter) to avoid reconnect storms.
+	// In-flight requests are disposed on the first attempt regardless of retries.
+	InitialBackoff time.Duration
+	MaxBackoff     time.Duration
+	MaxAttempts    int
+	Jitter         bool
 }
 
 // ClientOption overrides a single per-client setting. Pass options to any client

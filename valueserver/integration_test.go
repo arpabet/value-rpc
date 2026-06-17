@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -452,8 +453,13 @@ func TestClientContextDeadlineUnary(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	if _, err := cli.CallFunction(ctx, "block", nil); err != context.DeadlineExceeded {
-		t.Fatalf("got %v, want context.DeadlineExceeded", err)
+	// The deadline is also sent as the server SLA, so both sides expire at ~150ms:
+	// the client's local ctx.Done usually wins (context.DeadlineExceeded), but the
+	// server's deadline response can arrive first (CodeDeadlineExceeded). Accept
+	// either — both confirm the deadline propagated and cancelled the call.
+	_, err := cli.CallFunction(ctx, "block", nil)
+	if !errors.Is(err, context.DeadlineExceeded) && valuerpc.CodeOf(err) != valuerpc.CodeDeadlineExceeded {
+		t.Fatalf("got %v, want a deadline error", err)
 	}
 }
 
@@ -879,6 +885,66 @@ func TestClientMetrics(t *testing.T) {
 	}
 	if s.stream < 3 {
 		t.Errorf("stream throughput = %d, want >= 3", s.stream)
+	}
+}
+
+// TestReconnectBackoff: with a backoff policy, the client re-establishes the
+// connection on its own after an outage — without a request driving the dial.
+func TestReconnectBackoff(t *testing.T) {
+	// A stable port so a replacement server can rebind after the first stops.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+
+	newSrv := func() valueserver.Server {
+		s, err := valueserver.NewServer(addr, zap.NewNop())
+		if err != nil {
+			t.Fatalf("bind %s: %v", addr, err)
+		}
+		s.AddFunction("ping", valuerpc.Any, valuerpc.Any,
+			func(_ context.Context, _ value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
+		go s.Run()
+		return s
+	}
+
+	srvA := newSrv()
+	cli := valueclient.NewClient(addr, "", valueclient.WithReconnectPolicy(valueclient.ReconnectPolicy{
+		InitialBackoff: 20 * time.Millisecond,
+		MaxBackoff:     100 * time.Millisecond,
+		MaxAttempts:    -1, // retry until the server returns
+		Jitter:         true,
+	}))
+	defer cli.Close()
+	if err := cli.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if _, err := cli.CallFunction(context.Background(), "ping", nil); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+
+	// Drop the connection (stopping the server triggers the client's BadConnection
+	// → reconnect backoff), then bring a replacement up on the same address.
+	srvA.Close()
+	time.Sleep(150 * time.Millisecond)
+	srvB := newSrv()
+	defer srvB.Close()
+
+	// The backoff loop must reconnect by itself; assert IsActive WITHOUT making a
+	// call (a call would drive ensureConnection and mask the backoff).
+	deadline := time.After(3 * time.Second)
+	for !cli.IsActive() {
+		select {
+		case <-deadline:
+			t.Fatal("client did not auto-reconnect via backoff")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	// And it is usable once reconnected.
+	if _, err := cli.CallFunction(context.Background(), "ping", nil); err != nil {
+		t.Fatalf("ping after auto-reconnect: %v", err)
 	}
 }
 
