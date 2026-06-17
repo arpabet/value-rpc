@@ -215,7 +215,7 @@ Fix: read `VersionField` and compare correctly (and validate it is actually a
 The client serializes `nil` args into the `args` field; it crosses the wire as
 `value.Null`; the server runs `Verify(Null, Void)` which returns **false** —
 `Verify`'s `Void` branch only accepts Go `nil` or an *empty* LIST/MAP, not
-`Null`. Net effect: the shipped `example/sample.go` fails at its first `Void`
+`Null`. Net effect: the shipped `examples/first/sample.go` fails at its first `Void`
 call (`getName`). Reproduced in `TestVoidArgsRejected`.
 
 Fix (any one):

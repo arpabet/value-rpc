@@ -15,7 +15,7 @@ test: vet
 	go test -race -cover ./...
 
 build: test
-	go build -v ./example/sample.go
+	go build -v -o sample ./examples/first/
 
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...

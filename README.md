@@ -137,8 +137,8 @@ The example above uses TCP; the identical code works over a Unix socket or
 WebSocket by changing only the address — see [Transports](#transports). Runnable,
 output‑checked examples for every pattern and transport are in
 [`valueserver/example_test.go`](valueserver/example_test.go) (they also render on
-pkg.go.dev), and a full end‑to‑end demo is in [`example/sample.go`](example/sample.go)
-(`make run`).
+pkg.go.dev), and a full end‑to‑end demo is in
+[`examples/first/sample.go`](examples/first/sample.go) (`make run`).
 
 ## The four patterns
 
