@@ -24,7 +24,7 @@ func assertClosed(t *testing.T, ctx *rpcRequestCtx) {
 }
 
 func TestRequestCtx_ChatClosesOnce_GetThenPut(t *testing.T) {
-	ctx := NewRequestCtx(1, chatKind, value.EmptyMap(true), 4, 0)
+	ctx := NewRequestCtx(1, chatKind, value.EmptyMap(true), 4, 0, nil)
 
 	if done := ctx.TryGetClose(); done {
 		t.Fatal("chat is not finished until the put side also closes")
@@ -37,7 +37,7 @@ func TestRequestCtx_ChatClosesOnce_GetThenPut(t *testing.T) {
 }
 
 func TestRequestCtx_ChatClosesOnce_PutThenGet(t *testing.T) {
-	ctx := NewRequestCtx(2, chatKind, value.EmptyMap(true), 4, 0)
+	ctx := NewRequestCtx(2, chatKind, value.EmptyMap(true), 4, 0, nil)
 
 	if done := ctx.TryPutClose(); done {
 		t.Fatal("chat is not finished until the get side also closes")
@@ -49,7 +49,7 @@ func TestRequestCtx_ChatClosesOnce_PutThenGet(t *testing.T) {
 }
 
 func TestRequestCtx_GetStreamClosesOnGet(t *testing.T) {
-	ctx := NewRequestCtx(3, getStreamKind, value.EmptyMap(true), 1, 0)
+	ctx := NewRequestCtx(3, getStreamKind, value.EmptyMap(true), 1, 0, nil)
 	if done := ctx.TryGetClose(); !done {
 		t.Fatal("get-stream is finished when the get side closes")
 	}
@@ -57,7 +57,7 @@ func TestRequestCtx_GetStreamClosesOnGet(t *testing.T) {
 }
 
 func TestRequestCtx_PutStreamClosesOnPut(t *testing.T) {
-	ctx := NewRequestCtx(4, putStreamKind, value.EmptyMap(true), 1, 0)
+	ctx := NewRequestCtx(4, putStreamKind, value.EmptyMap(true), 1, 0, nil)
 	if done := ctx.TryPutClose(); !done {
 		t.Fatal("put-stream is finished when the put side closes")
 	}
@@ -65,7 +65,7 @@ func TestRequestCtx_PutStreamClosesOnPut(t *testing.T) {
 }
 
 func TestRequestCtx_UnaryCloseIsIdempotent(t *testing.T) {
-	ctx := NewRequestCtx(5, unaryKind, value.EmptyMap(true), 1, 0)
+	ctx := NewRequestCtx(5, unaryKind, value.EmptyMap(true), 1, 0, nil)
 	ctx.Close()
 	ctx.Close() // must not panic (closeOnce)
 	assertClosed(t, ctx)

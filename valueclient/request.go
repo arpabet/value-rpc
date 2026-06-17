@@ -40,6 +40,7 @@ type rpcRequestCtx struct {
 
 	resultCh   chan value.Value
 	resultPump *valuerpc.StreamPump // drains into resultCh for streaming kinds; nil for unary/put
+	sendCredit *valuerpc.CreditGate // gates client->server streamOut (put/chat); nil otherwise
 	done       chan struct{}        // closed together with resultCh
 	closeOnce  sync.Once
 	cancelOnce sync.Once // bounds a slow-consumer cancel to one per request
@@ -47,28 +48,68 @@ type rpcRequestCtx struct {
 	getClosed atomic.Bool // no more server->client values will be delivered
 	putClosed atomic.Bool // client->server side (streamOut) has finished
 
-	resultErr        atomic.Pointer[error] // stdlib has no atomic.Error
-	throttleOutgoing atomic.Int64
-	throttleOnServer atomic.Int64
+	resultErr atomic.Pointer[error] // stdlib has no atomic.Error
+
+	creditWindow  int64       // server->client receive window granted to the server
+	recvDelivered int64       // values delivered since last grant; pump goroutine only
+	grantCredit   func(int64) // sends a StreamCredit to the server (set by the client)
 }
 
-func NewRequestCtx(requestId int64, kind streamKind, req value.Map, receiveCap, maxPending int) *rpcRequestCtx {
+func NewRequestCtx(requestId int64, kind streamKind, req value.Map, receiveCap, maxPending int, grantCredit func(int64)) *rpcRequestCtx {
 	t := &rpcRequestCtx{
-		requestId: requestId,
-		kind:      kind,
-		req:       req,
-		start:     time.Now(),
-		resultCh:  make(chan value.Value, receiveCap),
-		done:      make(chan struct{}),
+		requestId:   requestId,
+		kind:        kind,
+		req:         req,
+		start:       time.Now(),
+		resultCh:    make(chan value.Value, receiveCap),
+		done:        make(chan struct{}),
+		grantCredit: grantCredit,
 	}
 	// Server->client streams (get-stream, chat) deliver through a pump so a slow
 	// consumer cannot block the single response loop and every other request on
-	// the connection (BUG-6). Unary and put-stream receive a single value into a
-	// cap>=1 buffer and never head-of-line block, so they keep the direct path.
+	// the connection (BUG-6). The pump's deliver hook replenishes the server's
+	// send credit as the consumer drains (credit-based flow control). Unary and
+	// put-stream receive a single value into a cap>=1 buffer and never
+	// head-of-line block, so they keep the direct path.
 	if kind == getStreamKind || kind == chatKind {
-		t.resultPump = valuerpc.NewStreamPump(t.resultCh, maxPending)
+		if maxPending <= 0 {
+			maxPending = valuerpc.DefaultMaxPending
+		}
+		t.creditWindow = int64(maxPending)
+		t.resultPump = valuerpc.NewStreamPump(t.resultCh, maxPending, t.grantRecv)
+	}
+	// Client->server streams (put, chat) send through a credit gate granted by
+	// the server.
+	if kind == putStreamKind || kind == chatKind {
+		t.sendCredit = valuerpc.NewCreditGate()
 	}
 	return t
+}
+
+// sendInitialCredit grants the server its initial send window for the
+// server->client direction. Called once the stream is established.
+func (t *rpcRequestCtx) sendInitialCredit() {
+	if t.resultPump != nil && t.grantCredit != nil {
+		t.grantCredit(t.creditWindow)
+	}
+}
+
+// grantRecv replenishes the server's send credit as the consumer drains values.
+// Called once per delivery (pump goroutine only); grants are batched to ~half
+// the window.
+func (t *rpcRequestCtx) grantRecv() {
+	t.recvDelivered++
+	batch := t.creditWindow / 2
+	if batch < 1 {
+		batch = 1
+	}
+	if t.recvDelivered >= batch {
+		n := t.recvDelivered
+		t.recvDelivered = 0
+		if t.grantCredit != nil {
+			t.grantCredit(n)
+		}
+	}
 }
 
 func (t *rpcRequestCtx) Name() string {
@@ -111,6 +152,9 @@ func (t *rpcRequestCtx) notifyResult(res value.Value) bool {
 func (t *rpcRequestCtx) closeResult() {
 	t.closeOnce.Do(func() {
 		close(t.done)
+		if t.sendCredit != nil {
+			t.sendCredit.Close() // unblock streamOut waiting for credit
+		}
 		if t.resultPump != nil {
 			t.resultPump.Close() // drain, then close resultCh
 		} else {
@@ -128,7 +172,7 @@ func (t *rpcRequestCtx) Close() {
 	if t.resultPump != nil {
 		t.resultPump.Stop()
 	}
-	t.closeResult()
+	t.closeResult() // also closes the send-credit gate
 }
 
 func (t *rpcRequestCtx) IsGetOpen() bool {

@@ -24,8 +24,14 @@ const (
 	StreamValue
 	StreamEnd
 	CancelRequest
-	ThrottleIncrease
-	ThrottleDecrease
+	ThrottleIncrease // deprecated: superseded by StreamCredit flow control
+	ThrottleDecrease // deprecated: superseded by StreamCredit flow control
+	// StreamCredit grants the data sender permission to send N more stream values
+	// (credit-based flow control). The receiver sends an initial window when the
+	// stream opens and replenishes credit as it delivers values to the consumer,
+	// so a fast producer can never overrun a slow consumer (lossless), buffering
+	// stays bounded, and the shared connection loop is never blocked.
+	StreamCredit
 )
 
 func (t MessageType) Long() value.Number {
@@ -47,6 +53,7 @@ var FunctionNameField = "fn"
 var ArgumentsField = "args" // allow multiple args if List value in function call
 var ResultField = "res"     // allow multiple results if List in function call
 var ErrorField = "err"
+var CreditField = "cr" // StreamCredit: number of additional stream values granted
 var ValueField = "val" // streaming value field
 
 var HandshakeRequestId = int64(-1)
@@ -65,6 +72,15 @@ func NewHandshakeRequest(clientId int64, token string) value.Map {
 		req = req.Put(SessionTokenField, value.Utf8(token))
 	}
 	return req
+}
+
+// NewStreamCredit builds a StreamCredit message granting the data sender credit
+// additional stream values for the given request.
+func NewStreamCredit(requestId value.Number, credit int64) value.Map {
+	return value.EmptyMap(true).
+		Put(MessageTypeField, StreamCredit.Long()).
+		Put(RequestIdField, requestId).
+		Put(CreditField, value.Long(credit))
 }
 
 // NewHandshakeResponse builds the server handshake reply, carrying the session

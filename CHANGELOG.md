@@ -99,18 +99,21 @@ All notable changes to this project are documented here. The format is based on
 - `valueserver.Server.Close()` no longer hangs when `Run()` was never called —
   the accept loop was over-counted in the shutdown `WaitGroup`, which now tracks
   only connection-handler goroutines.
-- **Inbound flow control (lossless high-throughput streaming).** The server now
-  throttles the client's send side when a handler's inbound buffer fills
-  (mirroring the existing client-side regulation for the reverse direction), so a
-  fast producer on a `PutStream`/`Chat` no longer overruns a slow consumer and
-  gets silently truncated. A single-step toggle with hysteresis (not the
-  escalating scheme) keeps the per-value throttle bounded. Regression test:
-  `valueserver.TestHighThroughputStreamLossless` (and `BenchmarkChatEcho` is now
-  lossless at scale).
-- **Slow-consumer truncation is surfaced (#13).** If a peer ignores flow control
-  and overruns the pump bound, the stream is closed with an explicit error to
-  that peer instead of silently dropping values. Test:
-  `valueserver.TestSlowConsumerTruncationSurfaced`.
+- **Credit-based flow control (lossless high-throughput streaming).** Both
+  directions now use credit windows instead of the crude sleep-based throttle: a
+  receiver grants the sender an initial window (`StreamCredit` message) and
+  replenishes it as it delivers values to the consumer; the sender blocks on a
+  `valuerpc.CreditGate` (its own goroutine only, never the shared loop) when out
+  of credit. A fast producer can no longer overrun a slow consumer — delivery is
+  lossless and bounded with no head-of-line blocking; a stuck consumer simply
+  stalls its own stream. The deprecated `ThrottleIncrease`/`ThrottleDecrease`
+  messages are unused. Regression test: `valueserver.TestHighThroughputStreamLossless`
+  (and `BenchmarkChatEcho` is lossless at scale, ~305k msg/s).
+- **Stream truncation is surfaced (#13).** A peer that ignores its flow-control
+  credit and overruns the buffer has the stream closed with an explicit error
+  (server inbound → `ErrorResponse` to the client; client receive → `StreamError`
+  on the error handler) instead of silently dropping values. Test:
+  `valueserver.TestInboundOverflowSurfaced`.
 - **Client `SetErrorHandler` no longer panics on `Close`.** The error handler was
   stored in an `atomic.Value` that also received `*rpcClient` during `Close`;
   storing two concrete types panics (`store of inconsistently typed value`). It is

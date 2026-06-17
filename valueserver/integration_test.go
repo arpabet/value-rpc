@@ -541,77 +541,76 @@ func TestHighThroughputStreamLossless(t *testing.T) {
 	}
 }
 
-// errCapture is an ErrorHandler that records the last StreamError.
-type errCapture struct {
-	mu  sync.Mutex
-	err error
-}
-
-func (e *errCapture) BadConnection(error)            {}
-func (e *errCapture) ProtocolError(value.Map, error) {}
-func (e *errCapture) StreamError(_ int64, err error) {
-	e.mu.Lock()
-	e.err = err
-	e.mu.Unlock()
-}
-func (e *errCapture) last() error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.err
-}
-
-// TestSlowConsumerTruncationSurfaced pins #13: a consumer that never reads its
-// inbound channel (ignoring the backpressure the client honours) eventually
-// overruns the bounded buffer; the server must surface that as an explicit error
-// to the client rather than silently dropping values.
-func TestSlowConsumerTruncationSurfaced(t *testing.T) {
-	// Shrink the buffers so overflow is reached quickly even though the client
-	// honours throttling.
+// TestInboundOverflowSurfaced pins #13: a *misbehaving* peer that ignores its
+// flow-control credit and floods values overruns the bounded buffer; the server
+// must surface that as an explicit error instead of silently dropping. (A
+// cooperating client cannot trigger this — credit-based flow control makes a
+// stuck consumer stall losslessly — so we drive it with a raw connection that
+// ignores credit.)
+func TestInboundOverflowSurfaced(t *testing.T) {
 	oldICap, oldPending := valueserver.IncomingQueueCap, valuerpc.DefaultMaxPending
 	defer func() {
 		valueserver.IncomingQueueCap = oldICap
 		valuerpc.DefaultMaxPending = oldPending
 	}()
-	valueserver.IncomingQueueCap = 8
-	valuerpc.DefaultMaxPending = 8
+	valueserver.IncomingQueueCap = 4
+	valuerpc.DefaultMaxPending = 4
 
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddIncomingStream("blackhole", valuerpc.Any,
 			func(ctx context.Context, args value.Value, inC <-chan value.Value) error {
-				// Return immediately (per the handler contract) but never read inC:
-				// a stuck consumer.
-				go func() { <-ctx.Done() }()
+				go func() { <-ctx.Done() }() // never reads inC
 				return nil
 			})
 	})
 	defer stop()
 
-	cli := valueclient.NewClient(addr, "")
-	cap := &errCapture{}
-	cli.SetErrorHandler(cap)
-	if err := cli.Connect(); err != nil {
-		t.Fatalf("connect: %v", err)
+	dialer := valuerpc.NewDialer(addr, "", valueclient.KeepAlivePeriod, valueclient.DefaultTimeout)
+	conn, err := dialer.Dial()
+	if err != nil {
+		t.Fatalf("dial: %v", err)
 	}
-	defer cli.Close()
-	cli.SetTimeout(60000)
+	defer conn.Close()
 
-	putC := make(chan value.Value, 4)
-	if err := cli.PutStream(context.Background(), "blackhole", nil, putC); err != nil {
-		t.Fatalf("put stream: %v", err)
+	if err := conn.WriteMessage(valuerpc.NewHandshakeRequest(0x5151, "")); err != nil {
+		t.Fatalf("handshake: %v", err)
 	}
+	if _, err := conn.ReadMessage(); err != nil { // HandshakeResponse
+		t.Fatalf("handshake response: %v", err)
+	}
+
+	const rid = int64(1)
+	put := value.EmptyMap(true).
+		Put(valuerpc.MessageTypeField, valuerpc.PutStreamRequest.Long()).
+		Put(valuerpc.RequestIdField, value.Long(rid)).
+		Put(valuerpc.FunctionNameField, value.Utf8("blackhole")).
+		Put(valuerpc.ArgumentsField, value.Null)
+	if err := conn.WriteMessage(put); err != nil {
+		t.Fatalf("put request: %v", err)
+	}
+
+	// Flood far more than the credit window + buffer, ignoring StreamCredit.
 	go func() {
-		for i := 0; i < 1000; i++ {
-			putC <- value.Long(int64(i))
+		for i := 0; i < 500; i++ {
+			sv := value.EmptyMap(true).
+				Put(valuerpc.MessageTypeField, valuerpc.StreamValue.Long()).
+				Put(valuerpc.RequestIdField, value.Long(rid)).
+				Put(valuerpc.ValueField, value.Long(int64(i)))
+			if conn.WriteMessage(sv) != nil {
+				return
+			}
 		}
-		close(putC)
 	}()
 
-	deadline := time.After(5 * time.Second)
-	for cap.last() == nil {
-		select {
-		case <-deadline:
-			t.Fatal("slow-consumer overflow was not surfaced as a stream error")
-		case <-time.After(20 * time.Millisecond):
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("expected a truncation error response, got read error: %v", err)
+		}
+		if mt, ok := valuerpc.GetNumberField(msg, valuerpc.MessageTypeField); ok &&
+			valuerpc.MessageType(mt.Long()) == valuerpc.ErrorResponse {
+			return // server surfaced the overflow
 		}
 	}
 }

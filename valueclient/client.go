@@ -248,14 +248,20 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 		// BUG-4 fix: an absent value field decodes as value.Null, not Go nil;
 		// only deliver a real payload.
 		if streamValue := resp.Get(valuerpc.ValueField); streamValue != nil && streamValue.Kind() != value.NULL {
-			// BUG-6: notifyResult never blocks the response loop. If it returns
-			// false the consumer fell too far behind; cancel once so the server
-			// stops producing instead of streaming into a dropped buffer.
+			// BUG-6: notifyResult never blocks the response loop. Credit-based
+			// flow control keeps a cooperating server within the buffer; if it
+			// returns false the server ignored its credit and overran us — surface
+			// it as a stream error (#13) and cancel once instead of silently
+			// dropping into a closed buffer.
 			if !requestCtx.notifyResult(streamValue) {
-				requestCtx.cancelOnce.Do(func() { t.CancelRequest(requestCtx.requestId) })
+				requestCtx.cancelOnce.Do(func() {
+					truncErr := errors.Errorf("stream %d truncated: server exceeded flow-control credit", requestCtx.requestId)
+					requestCtx.SetError(truncErr)
+					t.getErrorHandler().StreamError(requestCtx.requestId, truncErr)
+					t.CancelRequest(requestCtx.requestId)
+				})
 			}
 		}
-		t.regulateIncomingStream(requestCtx)
 
 	case valuerpc.StreamEnd:
 		// BUG-4 fix: do not deliver a phantom value.Null at end of stream.
@@ -270,11 +276,11 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 		requestCtx.Close()
 		t.requestCtxMap.Delete(requestCtx.requestId)
 
-	case valuerpc.ThrottleIncrease:
-		requestCtx.throttleOutgoing.Add(1)
-
-	case valuerpc.ThrottleDecrease:
-		requestCtx.throttleOutgoing.Add(-1)
+	case valuerpc.StreamCredit:
+		// The server granted the client's streamOut more credit.
+		if cr, ok := valuerpc.GetNumberField(resp, valuerpc.CreditField); ok && requestCtx.sendCredit != nil {
+			requestCtx.sendCredit.Grant(cr.Long())
+		}
 
 	default:
 		t.getErrorHandler().ProtocolError(resp, ErrUnsupportedMessageType)
@@ -283,15 +289,14 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 
 }
 
-func (t *rpcClient) regulateIncomingStream(requestCtx *rpcRequestCtx) {
-	used, cap := requestCtx.Stats()
-	if used*3 > cap {
-		t.sendSystemRequest(requestCtx.requestId, valuerpc.ThrottleIncrease)
-		requestCtx.throttleOnServer.Add(1)
-	} else if used == 0 && requestCtx.throttleOnServer.Load() > 0 {
-		t.sendSystemRequest(requestCtx.requestId, valuerpc.ThrottleDecrease)
-		requestCtx.throttleOnServer.Add(-1)
+// sendStreamCredit grants the server credit additional server->client stream
+// values for requestId (credit-based flow control). Best-effort: it never blocks
+// and is dropped if there is no connection.
+func (t *rpcClient) sendStreamCredit(requestId int64, credit int64) {
+	if !t.conn.hasConn() {
+		return
 	}
+	t.conn.getConn().SendRequest(valuerpc.NewStreamCredit(value.Long(requestId), credit))
 }
 
 func (t *rpcClient) getResponseHandler() responseHandler {
@@ -334,7 +339,8 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 }
 
 func (t *rpcClient) newRequestCtx(requestId int64, kind streamKind, req value.Map, receiveCap int) *rpcRequestCtx {
-	requestCtx := NewRequestCtx(requestId, kind, req, receiveCap, t.maxPending)
+	requestCtx := NewRequestCtx(requestId, kind, req, receiveCap, t.maxPending,
+		func(n int64) { t.sendStreamCredit(requestId, n) })
 	t.requestCtxMap.Store(requestId, requestCtx)
 	return requestCtx
 }
@@ -457,6 +463,7 @@ func (t *rpcClient) GetStream(ctx context.Context, name string, args value.Value
 		return nil, 0, err
 	}
 
+	requestCtx.sendInitialCredit() // grant the server its initial send window
 	t.watchContext(ctx, requestCtx)
 	return requestCtx.MultiResp(), requestCtx.requestId, err
 }
@@ -503,6 +510,7 @@ func (t *rpcClient) Chat(ctx context.Context, name string, args value.Value, rec
 		return nil, 0, err
 	}
 
+	requestCtx.sendInitialCredit() // grant the server its initial send window (chat output)
 	t.watchContext(ctx, requestCtx)
 	go t.streamOut(requestCtx, putCh)
 
@@ -522,17 +530,19 @@ func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Valu
 			break
 		}
 
+		// Credit-based flow control: wait for the server to have buffer space
+		// before sending. Only this goroutine blocks. A closed gate (teardown)
+		// ends the stream.
+		if requestCtx.sendCredit != nil && !requestCtx.sendCredit.Acquire() {
+			break
+		}
+
 		nextReq := value.EmptyMap(true).
 			Put(valuerpc.MessageTypeField, valuerpc.StreamValue.Long()).
 			Put(valuerpc.RequestIdField, value.Long(requestCtx.requestId)).
 			Put(valuerpc.ValueField, val)
 
 		t.conn.getConn().SendRequest(nextReq)
-
-		th := requestCtx.throttleOutgoing.Load()
-		if th > 0 {
-			time.Sleep(time.Millisecond * time.Duration(th))
-		}
 
 	}
 

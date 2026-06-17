@@ -203,29 +203,6 @@ func (t *servingClient) send(resp value.Map) error {
 	}
 }
 
-// trySend enqueues a message without ever blocking the caller. It returns false
-// if the queue is full or the client is closed. Used for best-effort control
-// messages (flow-control throttling) sent from the connection read loop, which
-// must not block (blocking it would head-of-line block every other request).
-func (t *servingClient) trySend(resp value.Map) bool {
-	select {
-	case t.outgoingQueue <- resp:
-		return true
-	case <-t.done:
-		return false
-	default:
-		return false
-	}
-}
-
-// throttleMessage builds a flow-control message (ThrottleIncrease/Decrease) for
-// the given request.
-func throttleMessage(requestId value.Number, mt vrpc.MessageType) value.Map {
-	return value.EmptyMap(true).
-		Put(vrpc.MessageTypeField, mt.Long()).
-		Put(vrpc.RequestIdField, requestId)
-}
-
 func (t *servingClient) findFunction(name string) (*function, bool) {
 	if fn, ok := t.functionMap.Load(name); ok {
 		return fn.(*function), true
@@ -311,8 +288,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 	case outgoingStream:
 		// Streams outlive this call: the cancel belongs to the serving request
 		// and fires when the stream is torn down (closeRequest / cancel / SLA).
-		sr := t.newServingRequest(ft, reqId)
-		sr.cancel = cancel
+		sr := t.newServingRequest(ft, reqId, cancel)
 		outC, err := fn.outStream(reqCtx, args)
 		if err != nil {
 			sr.closeRequest(t)
@@ -322,8 +298,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		return nil
 
 	case incomingStream:
-		sr := t.newServingRequest(ft, reqId)
-		sr.cancel = cancel
+		sr := t.newServingRequest(ft, reqId, cancel)
 		err := fn.inStream(reqCtx, args, sr.inC)
 		if err != nil {
 			sr.closeRequest(t)
@@ -332,8 +307,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		return StreamReady(reqId)
 
 	case chat:
-		sr := t.newServingRequest(ft, reqId)
-		sr.cancel = cancel
+		sr := t.newServingRequest(ft, reqId, cancel)
 		outC, err := fn.chat(reqCtx, args, sr.inC)
 		if err != nil {
 			sr.closeRequest(t)
@@ -362,8 +336,12 @@ func (t *servingClient) newRequestContext(req value.Map, ft functionType) (conte
 	return context.WithCancel(t.ctx)
 }
 
-func (t *servingClient) newServingRequest(ft functionType, reqId value.Number) *servingRequest {
-	sr := NewServingRequest(ft, reqId, t.cfg.incomingQueueCap, t.cfg.maxPending)
+func (t *servingClient) newServingRequest(ft functionType, reqId value.Number, cancel context.CancelFunc) *servingRequest {
+	sr := NewServingRequest(ft, reqId)
+	sr.cancel = cancel // set before publishing so the read loop never races on it
+	if ft == incomingStream || ft == chat {
+		sr.setupInbound(t, t.cfg.incomingQueueCap, t.cfg.maxPending)
+	}
 	t.requestMap.Store(reqId.Long(), sr)
 	t.liveStreams.Add(1)
 	return sr

@@ -19,7 +19,7 @@ import (
 // the queue is drained.
 func TestStreamPump_DeliversInOrderAndCloses(t *testing.T) {
 	out := make(chan value.Value, 4)
-	p := valuerpc.NewStreamPump(out, 0)
+	p := valuerpc.NewStreamPump(out, 0, nil)
 
 	const n = 100
 	for i := 0; i < n; i++ {
@@ -49,7 +49,7 @@ func TestStreamPump_DeliversInOrderAndCloses(t *testing.T) {
 // full. (A blocking enqueue here is exactly what froze the shared loop.)
 func TestStreamPump_PushNeverBlocks(t *testing.T) {
 	out := make(chan value.Value) // unbuffered; nobody reads it
-	p := valuerpc.NewStreamPump(out, 8)
+	p := valuerpc.NewStreamPump(out, 8, nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -76,7 +76,7 @@ func TestStreamPump_PushNeverBlocks(t *testing.T) {
 // blocked delivering to a consumer that walked away, closing out.
 func TestStreamPump_StopUnblocksStuckDelivery(t *testing.T) {
 	out := make(chan value.Value) // unbuffered, never read
-	p := valuerpc.NewStreamPump(out, 16)
+	p := valuerpc.NewStreamPump(out, 16, nil)
 
 	p.Push(value.Long(1)) // pump goroutine will block on out <- v
 
@@ -99,7 +99,7 @@ func TestStreamPump_StopUnblocksStuckDelivery(t *testing.T) {
 // producers and a Close.
 func TestStreamPump_ConcurrentPushClose(t *testing.T) {
 	out := make(chan value.Value, 16)
-	p := valuerpc.NewStreamPump(out, 0)
+	p := valuerpc.NewStreamPump(out, 0, nil)
 
 	var wg sync.WaitGroup
 	for w := 0; w < 8; w++ {

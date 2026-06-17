@@ -44,20 +44,25 @@ type StreamPump struct {
 	overflow   bool // exceeded maxPending: the consumer was too slow
 	maxPending int
 
+	onDeliver func() // called once per value delivered to out (credit replenishment)
+
 	stopCh   chan struct{} // Stop(): abandon and finish immediately
 	stopOnce sync.Once
 }
 
 // NewStreamPump starts a pump that delivers pushed values into out, in order,
 // at the consumer's pace. out is closed by the pump when it finishes. A
-// maxPending <= 0 uses DefaultMaxPending.
-func NewStreamPump(out chan value.Value, maxPending int) *StreamPump {
+// maxPending <= 0 uses DefaultMaxPending. onDeliver (may be nil) is invoked once
+// per value handed to out, so a receiver can replenish the sender's flow-control
+// credit as its buffer drains.
+func NewStreamPump(out chan value.Value, maxPending int, onDeliver func()) *StreamPump {
 	if maxPending <= 0 {
 		maxPending = DefaultMaxPending
 	}
 	p := &StreamPump{
 		out:        out,
 		maxPending: maxPending,
+		onDeliver:  onDeliver,
 		stopCh:     make(chan struct{}),
 	}
 	p.cond = sync.NewCond(&p.mu)
@@ -159,6 +164,9 @@ func (p *StreamPump) run() {
 		// shared connection loop. Stop() interrupts a stuck send.
 		select {
 		case p.out <- v:
+			if p.onDeliver != nil {
+				p.onDeliver()
+			}
 		case <-p.stopCh:
 			return
 		}

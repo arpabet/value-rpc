@@ -23,7 +23,10 @@ transport:  TCP  ·  Unix socket  ·  WebSocket        (optional SOCKS5 / wss TL
 - **Four call patterns** multiplexed over a single connection (keyed by request id).
 - **Pluggable transports**: TCP, Unix domain sockets, and WebSocket (MessagePack) — one API, pick by address scheme.
 - **Runtime type checking** via `TypeDef` / `Verify` (`Arg`, `List`, `Map`, `Void`, `Any`).
-- **Cancellation**, **timeouts**, and a **throttle**-based flow‑control mechanism.
+- **Cancellation**, **timeouts**, and **credit‑based flow control** (bidirectional):
+  a sender only sends what the receiver has granted credit for, so a fast producer
+  can't overrun a slow consumer — delivery is **lossless**, buffering is **bounded**,
+  and the shared connection loop never blocks.
 - **`context.Context` in every handler**, cancelled on disconnect, shutdown,
   client cancel, or the client's SLA deadline — for deadline/cancellation
   propagation to downstream work.
@@ -529,16 +532,16 @@ Numbers are indicative; run `go test -bench=. ./...` on your hardware.
 | Unary call, loopback, serial (WebSocket) | ~30 µs (~22% over TCP) |
 | Server stream, per value | ~2 µs (~500k values/s) |
 
-Streaming/chat throughput is bounded by the millisecond‑granularity throttle
-once a consumer falls behind; size the receive buffers for your workload. A slow
-consumer applies backpressure to **only its own** request (via the per‑request
-pump) and never stalls other requests on the connection. Flow control is
-**bidirectional**: each side throttles the other when its receive buffer fills,
-so a fast producer can't overrun a slow consumer — delivery stays lossless. Only
-a peer that *ignores* flow control and overruns the buffer (more than
-`valuerpc.DefaultMaxPending` behind) has that one stream failed — with an
-explicit error to that peer — rather than pinning unbounded memory or silently
-dropping values.
+Streaming uses **credit‑based flow control**: the receiver grants the sender an
+initial window (`valuerpc.DefaultMaxPending`, tunable per side) and replenishes
+credit as it delivers values to the consumer; the sender blocks (only its own
+per‑stream goroutine, never the shared loop) when it runs out of credit. So a
+fast producer can't overrun a slow consumer — delivery stays **lossless** with
+**bounded** buffering and no head‑of‑line blocking; a slow or stuck consumer
+simply stalls its own stream. Only a peer that *ignores* its credit and overruns
+the buffer has that one stream failed — with an explicit error to that peer —
+rather than pinning unbounded memory or silently dropping values. Size the window
+(`WithStreamMaxPending`) for your bandwidth‑delay product.
 
 ## Project status
 
@@ -549,7 +552,8 @@ Pre‑1.0 in maturity. The library was recently hardened — see [FINDINGS.md](F
 the bugs that were found and fixed (crash, correctness, DoS, and lifecycle
 issues) and [RESEARCH.md](RESEARCH.md) for how it compares to gRPC / WebSocket /
 msgpack‑rpc and a high‑load/concurrency analysis. Slow‑consumer head‑of‑line
-blocking has been resolved with a per‑request `StreamPump`; session resumption is
+blocking has been resolved with a per‑request `StreamPump`, and streaming uses
+**credit‑based flow control** (lossless, bounded, non‑HOL); session resumption is
 authenticated with a server‑issued token; handlers now receive a
 `context.Context` (cancelled on disconnect/shutdown/cancel and carrying the
 client's SLA deadline) — and the client API takes a context on every call for

@@ -8,7 +8,6 @@ package valueserver
 import (
 	"context"
 	"sync/atomic"
-	"time"
 
 	"github.com/pkg/errors"
 	"go.arpabet.com/value"
@@ -18,42 +17,70 @@ import (
 var IncomingQueueCap = 4096
 
 type servingRequest struct {
-	ft               functionType
-	requestId        value.Number
-	inC              chan value.Value   // handler-facing inbound channel (pump output)
-	inPump           *vrpc.StreamPump   // drains into inC; nil for non-inbound requests
-	cancel           context.CancelFunc // cancels the handler's request context on teardown
-	throttleOutgoing atomic.Int64       // throttle this request's server->client output (set by client)
-	inboundThrottled atomic.Bool        // whether we've asked the client to slow its inbound send
+	ft         functionType
+	requestId  value.Number
+	inC        chan value.Value   // handler-facing inbound channel (pump output)
+	inPump     *vrpc.StreamPump   // drains into inC; nil for non-inbound requests
+	sendCredit *vrpc.CreditGate   // gates server->client StreamValue sends (outgoing/chat)
+	cancel     context.CancelFunc // cancels the handler's request context on teardown
+
+	creditWindow     int64 // inbound flow-control window granted to the client
+	inboundDelivered int64 // values delivered since last credit grant; pump goroutine only
 
 	closed   atomic.Bool
 	inClosed atomic.Bool
 	done     chan struct{}
 }
 
-func NewServingRequest(ft functionType, requestId value.Number, incomingQueueCap, maxPending int) *servingRequest {
-
+func NewServingRequest(ft functionType, requestId value.Number) *servingRequest {
 	sr := &servingRequest{
 		ft:        ft,
 		requestId: requestId,
 		done:      make(chan struct{}),
 	}
-
-	if ft == incomingStream || ft == chat {
-		// The connection read loop feeds inPump (non-blocking); the pump
-		// goroutine delivers into inC at the handler's pace, so a slow handler
-		// can no longer stall the whole connection (BUG-6).
-		sr.inC = make(chan value.Value, incomingQueueCap)
-		sr.inPump = vrpc.NewStreamPump(sr.inC, maxPending)
+	if ft == outgoingStream || ft == chat {
+		// The server sends stream values; the gate blocks the streamer until the
+		// client grants credit (credit-based flow control).
+		sr.sendCredit = vrpc.NewCreditGate()
 	}
-
 	return sr
+}
+
+// setupInbound creates the inbound pump (incoming-stream/chat) and grants the
+// client an initial credit window. The read loop feeds inPump without blocking
+// (BUG-6); the pump's deliver hook replenishes the client's send credit as the
+// handler consumes, so a fast client can never overrun the buffer — lossless,
+// bounded, non-HOL flow control.
+func (t *servingRequest) setupInbound(cli *servingClient, incomingQueueCap, maxPending int) {
+	t.creditWindow = int64(maxPending)
+	t.inC = make(chan value.Value, incomingQueueCap)
+	t.inPump = vrpc.NewStreamPump(t.inC, maxPending, func() { t.grantInbound(cli) })
+	cli.send(vrpc.NewStreamCredit(t.requestId, t.creditWindow))
+}
+
+// grantInbound replenishes the client's send credit as the handler consumes
+// inbound values. Called once per value the pump delivers (pump goroutine only,
+// so the counter needs no lock); grants are batched to ~half the window.
+func (t *servingRequest) grantInbound(cli *servingClient) {
+	t.inboundDelivered++
+	batch := t.creditWindow / 2
+	if batch < 1 {
+		batch = 1
+	}
+	if t.inboundDelivered >= batch {
+		n := t.inboundDelivered
+		t.inboundDelivered = 0
+		_ = cli.send(vrpc.NewStreamCredit(t.requestId, n))
+	}
 }
 
 func (t *servingRequest) Close() {
 	if t.closed.CompareAndSwap(false, true) {
 		close(t.done)
 		t.cancelCtx()
+		if t.sendCredit != nil {
+			t.sendCredit.Close() // unblock a streamer waiting for credit
+		}
 		// Hard teardown: abandon any buffered inbound values and unblock a pump
 		// stuck delivering to a handler that stopped reading.
 		t.inClosed.Store(true)
@@ -103,34 +130,30 @@ func (t *servingRequest) serveRunningRequest(msgType vrpc.MessageType, req value
 		if err := t.incomingStreamValue(req); err != nil {
 			return err
 		}
-		// A consumer that ignored flow control and overran the pump truncates the
-		// stream. Surface it (tell the client, tear down) instead of silently
+		// Credit-based flow control keeps a cooperating client within the buffer.
+		// A client that ignores its credit and overruns the pump truncates the
+		// stream; surface it (tell the client, tear down) instead of silently
 		// dropping values (#13).
 		if t.inPump != nil && t.inPump.Overflowed() {
-			cli.send(FunctionError(t.requestId, "inbound stream %d truncated: consumer too slow", t.requestId.Long()))
+			cli.send(FunctionError(t.requestId, "inbound stream %d truncated: client exceeded flow-control credit", t.requestId.Long()))
 			return t.closeRequest(cli)
 		}
-		// Inbound flow control: throttle the client when our inbound buffer fills
-		// so a fast producer can't overrun a slow consumer (lossless backpressure,
-		// mirroring the client's regulateIncomingStream for the reverse direction).
-		t.regulateInbound(cli)
 		return nil
 
 	case vrpc.StreamEnd:
 		return t.incomingStreamEnd(req, cli)
 
-	case vrpc.ThrottleIncrease:
-		t.throttleOutgoing.Add(1)
-
-	case vrpc.ThrottleDecrease:
-		t.throttleOutgoing.Add(-1)
+	case vrpc.StreamCredit:
+		// The client granted the server's outgoing stream more credit.
+		if cr, ok := vrpc.GetNumberField(req, vrpc.CreditField); ok && t.sendCredit != nil {
+			t.sendCredit.Grant(cr.Long())
+		}
+		return nil
 
 	default:
 		return errors.Errorf("unknown message type in %s", req.String())
 
 	}
-
-	return nil
 
 }
 
@@ -145,34 +168,6 @@ func (t *servingRequest) incomingStreamValue(req value.Map) error {
 	}
 
 	return nil
-}
-
-// regulateInbound applies backpressure to the client's send side based on how
-// full the handler-facing inbound buffer is, so a fast producer can't overrun a
-// slow consumer. It is a single-step toggle with hysteresis: ask the client to
-// throttle once when the buffer passes ~1/3 full, and release once it fully
-// drains. (Deliberately not the escalating scheme the client uses for the
-// reverse direction — under a flood that runs the per-value sleep up to seconds.
-// One step keeps the client's throttleOutgoing at 0/1; combined with the ~2x
-// pump headroom beyond inC it paces the producer without losing data.) Sends are
-// best-effort (trySend) so they never block the read loop.
-func (t *servingRequest) regulateInbound(cli *servingClient) {
-	if t.inC == nil {
-		return
-	}
-	used, capacity := len(t.inC), cap(t.inC)
-	if capacity == 0 {
-		return
-	}
-	if used*3 > capacity { // > ~1/3 full: ask the client to slow down
-		if t.inboundThrottled.CompareAndSwap(false, true) {
-			cli.trySend(throttleMessage(t.requestId, vrpc.ThrottleIncrease))
-		}
-	} else if used == 0 { // drained: let the client resume full speed
-		if t.inboundThrottled.CompareAndSwap(true, false) {
-			cli.trySend(throttleMessage(t.requestId, vrpc.ThrottleDecrease))
-		}
-	}
 }
 
 func (t *servingRequest) incomingStreamEnd(req value.Map, cli *servingClient) error {
@@ -233,12 +228,15 @@ func (t *servingRequest) outgoingStreamer(outC <-chan value.Value, cli *servingC
 			break
 		}
 
-		cli.send(StreamValue(t.requestId, val))
-
-		th := t.throttleOutgoing.Load()
-		if th > 0 {
-			time.Sleep(time.Millisecond * time.Duration(th))
+		// Credit-based flow control: wait for the client to have buffer space
+		// before sending. Only this streamer goroutine blocks — never the shared
+		// connection loop. A closed gate (teardown) ends the stream.
+		if t.sendCredit != nil && !t.sendCredit.Acquire() {
+			t.closeRequest(cli)
+			break
 		}
+
+		cli.send(StreamValue(t.requestId, val))
 
 	}
 
