@@ -52,7 +52,7 @@ type rpcRequestCtx struct {
 	throttleOnServer atomic.Int64
 }
 
-func NewRequestCtx(requestId int64, kind streamKind, req value.Map, receiveCap int) *rpcRequestCtx {
+func NewRequestCtx(requestId int64, kind streamKind, req value.Map, receiveCap, maxPending int) *rpcRequestCtx {
 	t := &rpcRequestCtx{
 		requestId: requestId,
 		kind:      kind,
@@ -66,7 +66,7 @@ func NewRequestCtx(requestId int64, kind streamKind, req value.Map, receiveCap i
 	// the connection (BUG-6). Unary and put-stream receive a single value into a
 	// cap>=1 buffer and never head-of-line block, so they keep the direct path.
 	if kind == getStreamKind || kind == chatKind {
-		t.resultPump = valuerpc.NewStreamPump(t.resultCh, 0)
+		t.resultPump = valuerpc.NewStreamPump(t.resultCh, maxPending)
 	}
 	return t
 }

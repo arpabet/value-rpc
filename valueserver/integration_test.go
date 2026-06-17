@@ -616,6 +616,60 @@ func TestSlowConsumerTruncationSurfaced(t *testing.T) {
 	}
 }
 
+// TestServerOptionPerInstance verifies #12: a server configured via a functional
+// option enforces that setting per-instance, independent of the package-level
+// default (which stays at 4096 here). It also confirms options are read at
+// construction, not from a mutable global at runtime.
+func TestServerOptionPerInstance(t *testing.T) {
+	const limit = 2
+	srv, err := valueserver.NewServer("127.0.0.1:0", zap.NewNop(),
+		valueserver.WithMaxConcurrentRequests(limit))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+
+	release := make(chan struct{})
+	var once sync.Once
+	closeRelease := func() { once.Do(func() { close(release) }) }
+	defer closeRelease()
+
+	srv.AddFunction("hold", valuerpc.Any, valuerpc.Any,
+		func(_ context.Context, _ value.Value) (value.Value, error) {
+			<-release
+			return value.Utf8("ok"), nil
+		})
+	go srv.Run()
+
+	cli := dialClient(t, srv.Addr().String())
+	defer cli.Close()
+	cli.SetTimeout(5000)
+
+	const n = 6
+	var wg sync.WaitGroup
+	var busy int64
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := cli.CallFunction(context.Background(), "hold", nil); err != nil {
+				atomic.AddInt64(&busy, 1)
+			}
+		}()
+	}
+
+	deadline := time.After(5 * time.Second)
+	for atomic.LoadInt64(&busy) < n-limit {
+		select {
+		case <-deadline:
+			t.Fatalf("rejected %d, want %d — per-instance WithMaxConcurrentRequests not applied", atomic.LoadInt64(&busy), n-limit)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	closeRelease()
+	wg.Wait()
+}
+
 // TestConcurrentUnaryCalls exercises the multiplexing/dispatch path: many
 // goroutines share one client and one connection, and each must receive exactly
 // its own response (correct requestId routing under load).

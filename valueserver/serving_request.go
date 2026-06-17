@@ -31,7 +31,7 @@ type servingRequest struct {
 	done     chan struct{}
 }
 
-func NewServingRequest(ft functionType, requestId value.Number) *servingRequest {
+func NewServingRequest(ft functionType, requestId value.Number, incomingQueueCap, maxPending int) *servingRequest {
 
 	sr := &servingRequest{
 		ft:        ft,
@@ -43,8 +43,8 @@ func NewServingRequest(ft functionType, requestId value.Number) *servingRequest 
 		// The connection read loop feeds inPump (non-blocking); the pump
 		// goroutine delivers into inC at the handler's pace, so a slow handler
 		// can no longer stall the whole connection (BUG-6).
-		sr.inC = make(chan value.Value, IncomingQueueCap)
-		sr.inPump = vrpc.NewStreamPump(sr.inC, 0)
+		sr.inC = make(chan value.Value, incomingQueueCap)
+		sr.inPump = vrpc.NewStreamPump(sr.inC, maxPending)
 	}
 
 	return sr

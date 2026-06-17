@@ -58,6 +58,18 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **Per-instance configuration via functional options.** Server and client
+  behavioral tuning is now passed to the constructors as options instead of being
+  read from mutable package globals at runtime, so two servers/clients in one
+  process can be tuned independently and there are no config data races. The
+  package globals remain the *defaults* an option overrides (backward compatible —
+  existing callers and code that sets a global before constructing are unchanged).
+  Server: `WithMaxConnections`, `WithMaxConcurrentRequests`,
+  `WithMaxConcurrentStreams`, `WithOutgoingQueueCap`, `WithIncomingQueueCap`,
+  `WithStreamMaxPending`, `WithHandshakeTimeout`. Client: `WithSendingCap`,
+  `WithTimeout`, `WithStreamMaxPending`. All constructors gained a trailing
+  `opts ...Option` (variadic, non-breaking). Test:
+  `valueserver.TestServerOptionPerInstance`.
 - **BREAKING: `context.Context` is now first-class on both ends.**
   - **Server handlers** take `ctx` as their first argument (`Function`,
     `OutgoingStream`, `IncomingStream`, `Chat`). It is cancelled on disconnect,

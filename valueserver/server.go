@@ -50,6 +50,8 @@ type rpcServer struct {
 	ctx    context.Context // base context for handlers; cancelled on Close
 	cancel context.CancelFunc
 
+	cfg serverConfig // resolved per-server config (defaults + options)
+
 	clientMap   sync.Map // key is clientId, value *servingClient
 	functionMap sync.Map // key is function name, value *function
 	connMap     sync.Map // key is valuerpc.MsgConn, tracks live conns for shutdown (BUG-14)
@@ -91,7 +93,7 @@ func NewDevelopmentServer(address string) (Server, error) {
 // NewServer creates a server bound to address. A bare "host:port" (or ":port")
 // listens on TCP; a scheme selects the transport: "tcp://host:port" or
 // "unix:///path/to.sock". For full control use NewServerWithListener.
-func NewServer(address string, logger *zap.Logger) (Server, error) {
+func NewServer(address string, logger *zap.Logger, opts ...ServerOption) (Server, error) {
 	lis, err := valuerpc.NewListener(address, KeepAlivePeriod, DefaultTimeout)
 	if err != nil {
 		logger.Error("bind the server address",
@@ -99,12 +101,12 @@ func NewServer(address string, logger *zap.Logger) (Server, error) {
 			zap.Error(err))
 		return nil, err
 	}
-	return NewServerWithListener(lis, logger)
+	return NewServerWithListener(lis, logger, opts...)
 }
 
 // NewUnixServer creates a server listening on the Unix-domain socket at path. A
 // stale socket file from a previous run is removed first.
-func NewUnixServer(path string, logger *zap.Logger) (Server, error) {
+func NewUnixServer(path string, logger *zap.Logger, opts ...ServerOption) (Server, error) {
 	lis, err := valuerpc.NewUnixListener(path, DefaultTimeout)
 	if err != nil {
 		logger.Error("bind the unix socket",
@@ -112,14 +114,14 @@ func NewUnixServer(path string, logger *zap.Logger) (Server, error) {
 			zap.Error(err))
 		return nil, err
 	}
-	return NewServerWithListener(lis, logger)
+	return NewServerWithListener(lis, logger, opts...)
 }
 
 // NewWebSocketServer creates a standalone WebSocket server: it owns an HTTP
 // server bound to addr and serves the vRPC endpoint at path (default "/"). Each
 // message travels as one MessagePack binary frame. For wss:// (TLS) or to share
 // a port with other HTTP routes, use NewWebSocketHandler instead.
-func NewWebSocketServer(addr, path string, logger *zap.Logger) (Server, error) {
+func NewWebSocketServer(addr, path string, logger *zap.Logger, opts ...ServerOption) (Server, error) {
 	lis, err := valuerpc.NewWebSocketListener(addr, path, DefaultTimeout)
 	if err != nil {
 		logger.Error("bind the websocket server",
@@ -127,14 +129,14 @@ func NewWebSocketServer(addr, path string, logger *zap.Logger) (Server, error) {
 			zap.Error(err))
 		return nil, err
 	}
-	return NewServerWithListener(lis, logger)
+	return NewServerWithListener(lis, logger, opts...)
 }
 
 // NewTLSServer creates a server listening on TCP with TLS. config must carry a
 // server certificate; set config.ClientAuth (e.g. tls.RequireAndVerifyClientCert)
 // and config.ClientCAs for mutual TLS, then inspect the verified client
 // certificate in a connect-authorizer via valuerpc.PeerCertificates.
-func NewTLSServer(addr string, config *tls.Config, logger *zap.Logger) (Server, error) {
+func NewTLSServer(addr string, config *tls.Config, logger *zap.Logger, opts ...ServerOption) (Server, error) {
 	lis, err := valuerpc.NewTLSListener(addr, config, KeepAlivePeriod, DefaultTimeout)
 	if err != nil {
 		logger.Error("bind the tls server",
@@ -142,14 +144,14 @@ func NewTLSServer(addr string, config *tls.Config, logger *zap.Logger) (Server, 
 			zap.Error(err))
 		return nil, err
 	}
-	return NewServerWithListener(lis, logger)
+	return NewServerWithListener(lis, logger, opts...)
 }
 
 // NewMemServer creates an in-process server registered under name. A client in
 // the same process reaches it with valueclient.NewMemClient(name) (or the
 // "mem://name" address). No sockets, no serialization — ideal for tests and for
 // composing services in one binary before splitting them onto a real transport.
-func NewMemServer(name string, logger *zap.Logger) (Server, error) {
+func NewMemServer(name string, logger *zap.Logger, opts ...ServerOption) (Server, error) {
 	lis, err := valuerpc.NewMemListener(name)
 	if err != nil {
 		logger.Error("register the mem listener",
@@ -157,7 +159,7 @@ func NewMemServer(name string, logger *zap.Logger) (Server, error) {
 			zap.Error(err))
 		return nil, err
 	}
-	return NewServerWithListener(lis, logger)
+	return NewServerWithListener(lis, logger, opts...)
 }
 
 // NewWebSocketHandler returns a server plus an http.Handler to mount on your own
@@ -165,9 +167,9 @@ func NewMemServer(name string, logger *zap.Logger) (Server, error) {
 // own port; register functions and call Run() to serve upgraded connections.
 // This is the path to wss:// (run your own TLS http.Server) and to sharing a
 // port with REST/health/metrics routes.
-func NewWebSocketHandler(logger *zap.Logger) (Server, http.Handler, error) {
+func NewWebSocketHandler(logger *zap.Logger, opts ...ServerOption) (Server, http.Handler, error) {
 	lis, h := valuerpc.NewWebSocketHandler(DefaultTimeout)
-	srv, err := NewServerWithListener(lis, logger)
+	srv, err := NewServerWithListener(lis, logger, opts...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -176,11 +178,12 @@ func NewWebSocketHandler(logger *zap.Logger) (Server, http.Handler, error) {
 
 // NewServerWithListener creates a server over any transport (TCP, Unix socket,
 // WebSocket, …) supplied as a valuerpc.Listener.
-func NewServerWithListener(lis valuerpc.Listener, logger *zap.Logger) (Server, error) {
+func NewServerWithListener(lis valuerpc.Listener, logger *zap.Logger, opts ...ServerOption) (Server, error) {
 	t := &rpcServer{
 		shutdown: make(chan struct{}),
 		logger:   logger,
 		listener: lis,
+		cfg:      newServerConfig(opts),
 	}
 	// ctx is the parent of every handler's request context; cancelling it on
 	// Close signals all in-flight handlers that the server is shutting down.
@@ -256,7 +259,7 @@ func (t *rpcServer) Run() error {
 		// Cap simultaneously open connections so a connection flood cannot
 		// exhaust file descriptors / memory (DoS). Over the limit we close the
 		// new connection immediately and keep serving existing ones.
-		if max := MaxConnections; max > 0 && t.liveConns.Load() >= max {
+		if max := t.cfg.maxConnections; max > 0 && t.liveConns.Load() >= max {
 			t.logger.Warn("connection rejected: max connections reached",
 				zap.Int64("max", max), zap.String("from", msgConn.RemoteAddr()))
 			msgConn.Close()
@@ -295,8 +298,8 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 	// Bound the time to receive a valid handshake (BUG-10), then clear the
 	// deadline so steady-state reads (which may idle on long streams) are not
 	// affected.
-	if HandshakeTimeout > 0 {
-		_ = conn.SetReadDeadline(time.Now().Add(HandshakeTimeout))
+	if t.cfg.handshakeTimeout > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(t.cfg.handshakeTimeout))
 	}
 
 	req, err := conn.ReadMessage()
@@ -304,7 +307,7 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 		return nil, err
 	}
 
-	if HandshakeTimeout > 0 {
+	if t.cfg.handshakeTimeout > 0 {
 		_ = conn.SetReadDeadline(time.Time{})
 	}
 
@@ -373,8 +376,8 @@ func (t *rpcServer) handleConnection(conn valuerpc.MsgConn) error {
 		// Bound the read deadline first: an authorizer that inspects TLS peer
 		// certificates (valuerpc.PeerCertificates) triggers the TLS handshake,
 		// which we must not let a stalled peer block indefinitely.
-		if HandshakeTimeout > 0 {
-			_ = conn.SetReadDeadline(time.Now().Add(HandshakeTimeout))
+		if t.cfg.handshakeTimeout > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(t.cfg.handshakeTimeout))
 		}
 		if err := authz(conn); err != nil {
 			return errors.Errorf("connection rejected by authorizer: %v", err)
@@ -427,7 +430,7 @@ func (t *rpcServer) createOrUpdateServingClient(clientId int64, presentedToken s
 		return nil, errors.Errorf("on handshake, generate session token: %v", err)
 	}
 
-	client := NewServingClient(t.ctx, clientId, token, conn, &t.functionMap, t.logger)
+	client := NewServingClient(t.ctx, clientId, token, conn, &t.functionMap, t.logger, &t.cfg)
 	// LoadOrStore guards a reconnect race for the same (new) clientId: if another
 	// connection won the slot, validate against the winner and discard ours
 	// (closing it stops the sender goroutine NewServingClient started).

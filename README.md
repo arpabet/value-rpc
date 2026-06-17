@@ -162,7 +162,30 @@ valuerpc.Map(valuerpc.Param("name", value.STRING, true)) // named params
 
 ## Configuration
 
-Package‑level knobs (set before constructing servers/clients):
+Most behavioral knobs are **per-instance functional options** passed to the
+constructors; the package-level variables below are the *defaults* an option
+overrides (so two servers/clients in one process can differ, and nothing is read
+from a mutable global at runtime):
+
+```go
+srv, _ := valueserver.NewServer(":9000", logger,
+    valueserver.WithMaxConnections(1000),
+    valueserver.WithMaxConcurrentRequests(256),
+    valueserver.WithMaxConcurrentStreams(64),
+    valueserver.WithHandshakeTimeout(5*time.Second))
+
+cli := valueclient.NewClient("host:9000", "",
+    valueclient.WithTimeout(2000),
+    valueclient.WithSendingCap(2048))
+```
+
+Server options: `WithMaxConnections`, `WithMaxConcurrentRequests`,
+`WithMaxConcurrentStreams`, `WithOutgoingQueueCap`, `WithIncomingQueueCap`,
+`WithStreamMaxPending`, `WithHandshakeTimeout`. Client options: `WithSendingCap`,
+`WithTimeout`, `WithStreamMaxPending`.
+
+The package-level variables (defaults for the above options; the transport-level
+ones — `MaxFrameSize`, keepalive, WS timeouts — are still globals):
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

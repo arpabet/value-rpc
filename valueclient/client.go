@@ -40,6 +40,7 @@ type rpcClient struct {
 	shuttingDown      atomic.Bool
 	sessionToken      atomic.Pointer[string]      // server-issued; resent to authorize reconnect
 	credential        atomic.Pointer[value.Value] // client-supplied; validated by the server Authenticator
+	maxPending        int                         // per-stream receive pending bound
 }
 
 func (t *rpcClient) loadSessionToken() string {
@@ -64,46 +65,48 @@ func (t *rpcClient) loadCredential() value.Value {
 // selects the transport: "tcp://host:port" or "unix:///path/to.sock". A non-empty
 // socks5 (TCP only) routes through a SOCKS5 proxy. For full control use
 // NewClientWithDialer.
-func NewClient(address, socks5 string) Client {
-	return NewClientWithDialer(valuerpc.NewDialer(address, socks5, KeepAlivePeriod, DefaultTimeout))
+func NewClient(address, socks5 string, opts ...ClientOption) Client {
+	return NewClientWithDialer(valuerpc.NewDialer(address, socks5, KeepAlivePeriod, DefaultTimeout), opts...)
 }
 
 // NewUnixClient creates a client that dials the Unix-domain socket at path.
-func NewUnixClient(path string) Client {
-	return NewClientWithDialer(valuerpc.NewStreamDialer("unix", path, "", 0, DefaultTimeout))
+func NewUnixClient(path string, opts ...ClientOption) Client {
+	return NewClientWithDialer(valuerpc.NewStreamDialer("unix", path, "", 0, DefaultTimeout), opts...)
 }
 
 // NewWebSocketClient creates a client that dials a WebSocket URL, e.g.
 // "ws://host:9000/rpc" or "wss://host/rpc".
-func NewWebSocketClient(url string) Client {
-	return NewClientWithDialer(valuerpc.NewDialer(url, "", KeepAlivePeriod, DefaultTimeout))
+func NewWebSocketClient(url string, opts ...ClientOption) Client {
+	return NewClientWithDialer(valuerpc.NewDialer(url, "", KeepAlivePeriod, DefaultTimeout), opts...)
 }
 
 // NewTLSClient creates a client that dials a TLS server over TCP. A nil config
 // verifies against the system root CAs (server name derived from the address);
 // supply a config for custom CAs, a client certificate (mTLS), or test options.
-func NewTLSClient(address string, config *tls.Config) Client {
-	return NewClientWithDialer(valuerpc.NewTLSDialer(address, config, KeepAlivePeriod, DefaultTimeout))
+func NewTLSClient(address string, config *tls.Config, opts ...ClientOption) Client {
+	return NewClientWithDialer(valuerpc.NewTLSDialer(address, config, KeepAlivePeriod, DefaultTimeout), opts...)
 }
 
 // NewMemClient creates a client that connects to an in-process server registered
 // under name (see valueserver.NewMemServer). Same-process only.
-func NewMemClient(name string) Client {
-	return NewClientWithDialer(valuerpc.NewMemDialer(name))
+func NewMemClient(name string, opts ...ClientOption) Client {
+	return NewClientWithDialer(valuerpc.NewMemDialer(name), opts...)
 }
 
 // NewClientWithDialer creates a client over any transport (TCP, Unix socket,
 // WebSocket, …) supplied as a valuerpc.Dialer.
-func NewClientWithDialer(dialer valuerpc.Dialer) Client {
+func NewClientWithDialer(dialer valuerpc.Dialer, opts ...ClientOption) Client {
 
+	cfg := newClientConfig(opts)
 	t := &rpcClient{
 		dialer:     dialer,
 		clientId:   rand.Int63(),
-		sendingCap: DefaultSendingCap,
+		sendingCap: cfg.sendingCap,
+		maxPending: cfg.maxPending,
 		conn:       NewSyncConn(),
 	}
 
-	t.timeoutMls.Store(DefaultTimeoutMls)
+	t.timeoutMls.Store(cfg.timeoutMls)
 	return t
 }
 
@@ -331,7 +334,7 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 }
 
 func (t *rpcClient) newRequestCtx(requestId int64, kind streamKind, req value.Map, receiveCap int) *rpcRequestCtx {
-	requestCtx := NewRequestCtx(requestId, kind, req, receiveCap)
+	requestCtx := NewRequestCtx(requestId, kind, req, receiveCap, t.maxPending)
 	t.requestCtxMap.Store(requestId, requestCtx)
 	return requestCtx
 }

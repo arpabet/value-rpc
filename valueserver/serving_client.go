@@ -41,6 +41,7 @@ type servingClient struct {
 	sessionToken string // server-issued secret; set once, gates reconnect resumption
 	activeConn   atomic.Value
 	functionMap  *sync.Map
+	cfg          *serverConfig // per-server config (caps, queue sizes); never mutated
 
 	logger *zap.Logger
 
@@ -58,13 +59,14 @@ type servingClient struct {
 	closeOnce sync.Once
 }
 
-func NewServingClient(parent context.Context, clientId int64, sessionToken string, conn vrpc.MsgConn, functionMap *sync.Map, logger *zap.Logger) *servingClient {
+func NewServingClient(parent context.Context, clientId int64, sessionToken string, conn vrpc.MsgConn, functionMap *sync.Map, logger *zap.Logger, cfg *serverConfig) *servingClient {
 
 	client := &servingClient{
 		clientId:      clientId,
 		sessionToken:  sessionToken,
 		functionMap:   functionMap,
-		outgoingQueue: make(chan value.Map, OutgoingQueueCap),
+		cfg:           cfg,
+		outgoingQueue: make(chan value.Map, cfg.outgoingQueueCap),
 		done:          make(chan struct{}),
 		logger:        logger,
 	}
@@ -277,7 +279,7 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 	// goroutines/buffers for their lifetime. Reject over the limit rather than
 	// letting a peer open unbounded long-lived streams.
 	if ft != singleFunction {
-		if max := MaxConcurrentStreams; max > 0 && t.liveStreams.Load() >= max {
+		if max := t.cfg.maxConcurrentStreams; max > 0 && t.liveStreams.Load() >= max {
 			return FunctionError(reqId, "server busy: too many concurrent streams (max %d)", max)
 		}
 	}
@@ -361,7 +363,7 @@ func (t *servingClient) newRequestContext(req value.Map, ft functionType) (conte
 }
 
 func (t *servingClient) newServingRequest(ft functionType, reqId value.Number) *servingRequest {
-	sr := NewServingRequest(ft, reqId)
+	sr := NewServingRequest(ft, reqId, t.cfg.incomingQueueCap, t.cfg.maxPending)
 	t.requestMap.Store(reqId.Long(), sr)
 	t.liveStreams.Add(1)
 	return sr
@@ -436,7 +438,7 @@ func (t *servingClient) serveNewRequest(msgType vrpc.MessageType, req value.Map)
 	// error response and keep the connection (and all other requests) healthy,
 	// rather than blocking the read loop or spawning an unbounded goroutine.
 	n := t.inFlight.Add(1)
-	if max := MaxConcurrentRequests; max > 0 && n > max {
+	if max := t.cfg.maxConcurrentRequests; max > 0 && n > max {
 		t.inFlight.Add(-1)
 		if reqId, ok := vrpc.GetNumberField(req, vrpc.RequestIdField); ok {
 			t.send(FunctionError(reqId, "server busy: too many concurrent requests (max %d)", max))
