@@ -24,11 +24,13 @@ import (
 // MessagePack value.Map, so there is no length prefix (the frame is the
 // boundary). MaxFrameSize maps to the WebSocket read limit.
 
-// WSKeepAlive is the interval between WebSocket pings used to detect dead peers.
-// Set to 0 to disable application-level pings.
+// WSKeepAlive is the default interval between WebSocket pings used to detect dead
+// peers; 0 disables application-level pings. Per-instance overrides flow through
+// the keepalive option and are captured at construction.
 var WSKeepAlive = 15 * time.Second
 
-// WSDialTimeout bounds the WebSocket opening handshake on the client.
+// WSDialTimeout is the default bound on the WebSocket opening handshake on the
+// client; captured at construction.
 var WSDialTimeout = 30 * time.Second
 
 type wsMsgConn struct {
@@ -37,6 +39,7 @@ type wsMsgConn struct {
 	cancel     context.CancelFunc
 	remoteAddr string
 	writeTO    time.Duration
+	keepAlive  time.Duration
 
 	writeMu   sync.Mutex
 	readDL    atomic.Pointer[time.Time]
@@ -44,9 +47,12 @@ type wsMsgConn struct {
 	closeOnce sync.Once
 }
 
-func newWSMsgConn(conn *websocket.Conn, remoteAddr string, writeTimeout time.Duration) *wsMsgConn {
-	if MaxFrameSize > 0 {
-		conn.SetReadLimit(int64(MaxFrameSize))
+// newWSMsgConn frames a WebSocket connection. maxFrameSize > 0 sets the read
+// limit, <= 0 means unlimited; keepAlive <= 0 disables pings (a positive value is
+// the ping interval). Both are snapshotted here rather than read from globals.
+func newWSMsgConn(conn *websocket.Conn, remoteAddr string, writeTimeout time.Duration, maxFrameSize int, keepAlive time.Duration) *wsMsgConn {
+	if maxFrameSize > 0 {
+		conn.SetReadLimit(int64(maxFrameSize))
 	} else {
 		conn.SetReadLimit(-1) // unlimited
 	}
@@ -57,9 +63,10 @@ func newWSMsgConn(conn *websocket.Conn, remoteAddr string, writeTimeout time.Dur
 		cancel:     cancel,
 		remoteAddr: remoteAddr,
 		writeTO:    writeTimeout,
+		keepAlive:  keepAlive,
 		done:       make(chan struct{}),
 	}
-	if WSKeepAlive > 0 {
+	if keepAlive > 0 {
 		go t.pinger()
 	}
 	return t
@@ -124,14 +131,14 @@ func (t *wsMsgConn) Close() error {
 // pinger sends periodic pings; a failed ping tears the connection down so the
 // read loop unblocks and the peer is treated as dead.
 func (t *wsMsgConn) pinger() {
-	ticker := time.NewTicker(WSKeepAlive)
+	ticker := time.NewTicker(t.keepAlive)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-t.done:
 			return
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(t.ctx, WSKeepAlive)
+			ctx, cancel := context.WithTimeout(t.ctx, t.keepAlive)
 			err := t.conn.Ping(ctx)
 			cancel()
 			if err != nil {
@@ -150,19 +157,22 @@ func (a wsAddr) Network() string { return "websocket" }
 func (a wsAddr) String() string  { return string(a) }
 
 type wsListener struct {
-	addr      net.Addr
-	path      string
-	writeTO   time.Duration
-	incoming  chan MsgConn
-	done      chan struct{}
-	httpSrv   *http.Server // nil in handler (embedded) mode
-	closeOnce sync.Once
+	addr         net.Addr
+	path         string
+	writeTO      time.Duration
+	maxFrameSize int
+	keepAlive    time.Duration
+	incoming     chan MsgConn
+	done         chan struct{}
+	httpSrv      *http.Server // nil in handler (embedded) mode
+	closeOnce    sync.Once
 }
 
 // NewWebSocketListener creates a standalone WebSocket Listener that owns an HTTP
 // server bound to addr and serves the vRPC upgrade endpoint at path
-// (default "/").
-func NewWebSocketListener(addr, path string, writeTimeout time.Duration) (Listener, error) {
+// (default "/"). maxFrameSize bounds inbound frames (<=0 uses MaxFrameSize);
+// keepAlive is the ping interval (<=0 disables pings).
+func NewWebSocketListener(addr, path string, writeTimeout time.Duration, maxFrameSize int, keepAlive time.Duration) (Listener, error) {
 	if path == "" {
 		path = "/"
 	}
@@ -171,11 +181,13 @@ func NewWebSocketListener(addr, path string, writeTimeout time.Duration) (Listen
 		return nil, err
 	}
 	l := &wsListener{
-		addr:     netLis.Addr(),
-		path:     path,
-		writeTO:  writeTimeout,
-		incoming: make(chan MsgConn),
-		done:     make(chan struct{}),
+		addr:         netLis.Addr(),
+		path:         path,
+		writeTO:      writeTimeout,
+		maxFrameSize: maxFrameSize,
+		keepAlive:    keepAlive,
+		incoming:     make(chan MsgConn),
+		done:         make(chan struct{}),
 	}
 	mux := http.NewServeMux()
 	mux.Handle(path, l.Handler())
@@ -187,12 +199,14 @@ func NewWebSocketListener(addr, path string, writeTimeout time.Duration) (Listen
 // NewWebSocketHandler returns a Listener that does NOT own an HTTP server; mount
 // its Handler() on your own http.ServeMux. This enables sharing a port with
 // other HTTP routes and serving wss:// from your own TLS server.
-func NewWebSocketHandler(writeTimeout time.Duration) (Listener, http.Handler) {
+func NewWebSocketHandler(writeTimeout time.Duration, maxFrameSize int, keepAlive time.Duration) (Listener, http.Handler) {
 	l := &wsListener{
-		addr:     wsAddr("websocket"),
-		writeTO:  writeTimeout,
-		incoming: make(chan MsgConn),
-		done:     make(chan struct{}),
+		addr:         wsAddr("websocket"),
+		writeTO:      writeTimeout,
+		maxFrameSize: maxFrameSize,
+		keepAlive:    keepAlive,
+		incoming:     make(chan MsgConn),
+		done:         make(chan struct{}),
 	}
 	return l, l.Handler()
 }
@@ -204,7 +218,7 @@ func (l *wsListener) Handler() http.Handler {
 		if err != nil {
 			return
 		}
-		mc := newWSMsgConn(c, r.RemoteAddr, l.writeTO)
+		mc := newWSMsgConn(c, r.RemoteAddr, l.writeTO, l.maxFrameSize, l.keepAlive)
 		select {
 		case l.incoming <- mc:
 			// The HTTP handler must live for the whole connection: returning
@@ -244,22 +258,33 @@ func (l *wsListener) Close() error {
 // --- WebSocket dialer ---
 
 type wsDialer struct {
-	url     string
-	writeTO time.Duration
+	url          string
+	writeTO      time.Duration
+	maxFrameSize int
+	keepAlive    time.Duration
+	dialTimeout  time.Duration
 }
 
-func newWSDialer(url string, writeTimeout time.Duration) Dialer {
-	return &wsDialer{url: url, writeTO: writeTimeout}
+// newWSDialer captures the dial timeout from WSDialTimeout at construction.
+// keepAlive is the ping interval (<=0 disables); maxFrameSize <=0 uses MaxFrameSize.
+func newWSDialer(url string, writeTimeout time.Duration, maxFrameSize int, keepAlive time.Duration) Dialer {
+	return &wsDialer{
+		url:          url,
+		writeTO:      writeTimeout,
+		maxFrameSize: maxFrameSize,
+		keepAlive:    keepAlive,
+		dialTimeout:  WSDialTimeout,
+	}
 }
 
 func (d *wsDialer) Dial() (MsgConn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), WSDialTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), d.dialTimeout)
 	defer cancel()
 	c, _, err := websocket.Dial(ctx, d.url, nil)
 	if err != nil {
 		return nil, err
 	}
-	return newWSMsgConn(c, d.url, d.writeTO), nil
+	return newWSMsgConn(c, d.url, d.writeTO, d.maxFrameSize, d.keepAlive), nil
 }
 
 // splitWSPath splits a "host:port/path" address into host and path; a missing

@@ -94,7 +94,8 @@ func NewDevelopmentServer(address string) (Server, error) {
 // listens on TCP; a scheme selects the transport: "tcp://host:port" or
 // "unix:///path/to.sock". For full control use NewServerWithListener.
 func NewServer(address string, logger *zap.Logger, opts ...ServerOption) (Server, error) {
-	lis, err := valuerpc.NewListener(address, KeepAlivePeriod, DefaultTimeout)
+	cfg := newServerConfig(opts)
+	lis, err := valuerpc.NewListener(address, cfg.keepAlive, cfg.writeTimeout, cfg.maxFrameSize)
 	if err != nil {
 		logger.Error("bind the server address",
 			zap.String("addr", address),
@@ -107,7 +108,8 @@ func NewServer(address string, logger *zap.Logger, opts ...ServerOption) (Server
 // NewUnixServer creates a server listening on the Unix-domain socket at path. A
 // stale socket file from a previous run is removed first.
 func NewUnixServer(path string, logger *zap.Logger, opts ...ServerOption) (Server, error) {
-	lis, err := valuerpc.NewUnixListener(path, DefaultTimeout)
+	cfg := newServerConfig(opts)
+	lis, err := valuerpc.NewUnixListener(path, cfg.writeTimeout, cfg.maxFrameSize)
 	if err != nil {
 		logger.Error("bind the unix socket",
 			zap.String("path", path),
@@ -122,7 +124,8 @@ func NewUnixServer(path string, logger *zap.Logger, opts ...ServerOption) (Serve
 // message travels as one MessagePack binary frame. For wss:// (TLS) or to share
 // a port with other HTTP routes, use NewWebSocketHandler instead.
 func NewWebSocketServer(addr, path string, logger *zap.Logger, opts ...ServerOption) (Server, error) {
-	lis, err := valuerpc.NewWebSocketListener(addr, path, DefaultTimeout)
+	cfg := newServerConfig(opts)
+	lis, err := valuerpc.NewWebSocketListener(addr, path, cfg.writeTimeout, cfg.maxFrameSize, cfg.keepAlive)
 	if err != nil {
 		logger.Error("bind the websocket server",
 			zap.String("addr", addr),
@@ -137,7 +140,8 @@ func NewWebSocketServer(addr, path string, logger *zap.Logger, opts ...ServerOpt
 // and config.ClientCAs for mutual TLS, then inspect the verified client
 // certificate in a connect-authorizer via valuerpc.PeerCertificates.
 func NewTLSServer(addr string, config *tls.Config, logger *zap.Logger, opts ...ServerOption) (Server, error) {
-	lis, err := valuerpc.NewTLSListener(addr, config, KeepAlivePeriod, DefaultTimeout)
+	cfg := newServerConfig(opts)
+	lis, err := valuerpc.NewTLSListener(addr, config, cfg.keepAlive, cfg.writeTimeout, cfg.maxFrameSize)
 	if err != nil {
 		logger.Error("bind the tls server",
 			zap.String("addr", addr),
@@ -168,7 +172,8 @@ func NewMemServer(name string, logger *zap.Logger, opts ...ServerOption) (Server
 // This is the path to wss:// (run your own TLS http.Server) and to sharing a
 // port with REST/health/metrics routes.
 func NewWebSocketHandler(logger *zap.Logger, opts ...ServerOption) (Server, http.Handler, error) {
-	lis, h := valuerpc.NewWebSocketHandler(DefaultTimeout)
+	cfg := newServerConfig(opts)
+	lis, h := valuerpc.NewWebSocketHandler(cfg.writeTimeout, cfg.maxFrameSize, cfg.keepAlive)
 	srv, err := NewServerWithListener(lis, logger, opts...)
 	if err != nil {
 		return nil, nil, err

@@ -6,6 +6,8 @@
 package valueclient
 
 import (
+	"time"
+
 	"go.arpabet.com/value-rpc/valuerpc"
 )
 
@@ -15,13 +17,21 @@ type clientConfig struct {
 	sendingCap int64
 	timeoutMls int64
 	maxPending int
+
+	// transport-level (used when a convenience constructor builds the dialer)
+	keepAlive    time.Duration
+	writeTimeout time.Duration
+	maxFrameSize int
 }
 
 func newClientConfig(opts []ClientOption) clientConfig {
 	cfg := clientConfig{
-		sendingCap: DefaultSendingCap,
-		timeoutMls: DefaultTimeoutMls,
-		maxPending: valuerpc.DefaultMaxPending,
+		sendingCap:   DefaultSendingCap,
+		timeoutMls:   DefaultTimeoutMls,
+		maxPending:   valuerpc.DefaultMaxPending,
+		keepAlive:    KeepAlivePeriod,
+		writeTimeout: DefaultTimeout,
+		maxFrameSize: valuerpc.MaxFrameSize,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -48,4 +58,24 @@ func WithTimeout(timeoutMls int64) ClientOption {
 // slow local consumer is failed.
 func WithStreamMaxPending(n int) ClientOption {
 	return func(c *clientConfig) { c.maxPending = n }
+}
+
+// WithKeepAlivePeriod sets TCP keepalive (and the WebSocket ping interval) for a
+// dialer built by a convenience constructor. 0 disables. No effect with
+// NewClientWithDialer.
+func WithKeepAlivePeriod(d time.Duration) ClientOption {
+	return func(c *clientConfig) { c.keepAlive = d }
+}
+
+// WithWriteTimeout bounds each message write for a dialer built by a convenience
+// constructor. No effect with NewClientWithDialer.
+func WithWriteTimeout(d time.Duration) ClientOption {
+	return func(c *clientConfig) { c.writeTimeout = d }
+}
+
+// WithMaxFrameSize bounds inbound message size for a dialer built by a
+// convenience constructor (> 0 enforces, <= 0 unlimited). No effect with
+// NewClientWithDialer.
+func WithMaxFrameSize(n int) ClientOption {
+	return func(c *clientConfig) { c.maxFrameSize = n }
 }

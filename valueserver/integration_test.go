@@ -565,7 +565,7 @@ func TestInboundOverflowSurfaced(t *testing.T) {
 	})
 	defer stop()
 
-	dialer := valuerpc.NewDialer(addr, "", valueclient.KeepAlivePeriod, valueclient.DefaultTimeout)
+	dialer := valuerpc.NewDialer(addr, "", valueclient.KeepAlivePeriod, valueclient.DefaultTimeout, valuerpc.MaxFrameSize)
 	conn, err := dialer.Dial()
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -667,6 +667,36 @@ func TestServerOptionPerInstance(t *testing.T) {
 	}
 	closeRelease()
 	wg.Wait()
+}
+
+// TestServerMaxFrameSizeOption verifies the per-instance WithMaxFrameSize option
+// is enforced on inbound frames, independent of the (large) package default — so
+// the limit is per-server and captured at construction, not read from the global.
+func TestServerMaxFrameSizeOption(t *testing.T) {
+	srv, err := valueserver.NewServer("127.0.0.1:0", zap.NewNop(),
+		valueserver.WithMaxFrameSize(256))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+	srv.AddFunction("echo", valuerpc.Any, valuerpc.Any,
+		func(_ context.Context, args value.Value) (value.Value, error) { return args, nil })
+	go srv.Run()
+
+	cli := dialClient(t, srv.Addr().String())
+	defer cli.Close()
+	cli.SetTimeout(1000)
+
+	// A small message is under the limit and round-trips fine.
+	if _, err := cli.CallFunction(context.Background(), "echo", value.Utf8("hi")); err != nil {
+		t.Fatalf("small call should succeed: %v", err)
+	}
+	// A message larger than the per-server 256-byte limit is rejected by the
+	// server's frame check (which would pass under the ~16 MiB global default).
+	big := value.Utf8(string(make([]byte, 4096)))
+	if _, err := cli.CallFunction(context.Background(), "echo", big); err == nil {
+		t.Fatal("a frame over the per-server MaxFrameSize should be rejected")
+	}
 }
 
 // TestConcurrentUnaryCalls exercises the multiplexing/dispatch path: many

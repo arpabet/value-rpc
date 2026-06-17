@@ -28,8 +28,8 @@ func (r rwcOnly) Close() error                { return r.rwc.Close() }
 // instead of erroring, and RemoteAddr is empty when the stream has no address.
 func TestNewMsgConn_ReadWriteCloser(t *testing.T) {
 	c1, c2 := net.Pipe()
-	a := vrpc.NewMsgConn(rwcOnly{c1}, time.Second)
-	b := vrpc.NewMsgConn(rwcOnly{c2}, time.Second)
+	a := vrpc.NewMsgConn(rwcOnly{c1}, time.Second, vrpc.MaxFrameSize)
+	b := vrpc.NewMsgConn(rwcOnly{c2}, time.Second, vrpc.MaxFrameSize)
 	defer a.Close()
 	defer b.Close()
 

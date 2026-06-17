@@ -66,7 +66,7 @@ func TestAuthenticatorGatesHandshake(t *testing.T) {
 // closed the connection). It lets a test impersonate a peer at the wire level.
 func rawHandshake(t *testing.T, addr string, clientId int64, token string) (valuerpc.MsgConn, value.Map, error) {
 	t.Helper()
-	dialer := valuerpc.NewDialer(addr, "", valueclient.KeepAlivePeriod, valueclient.DefaultTimeout)
+	dialer := valuerpc.NewDialer(addr, "", valueclient.KeepAlivePeriod, valueclient.DefaultTimeout, valuerpc.MaxFrameSize)
 	conn, err := dialer.Dial()
 	if err != nil {
 		t.Fatalf("dial: %v", err)

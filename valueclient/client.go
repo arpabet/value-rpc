@@ -66,25 +66,29 @@ func (t *rpcClient) loadCredential() value.Value {
 // socks5 (TCP only) routes through a SOCKS5 proxy. For full control use
 // NewClientWithDialer.
 func NewClient(address, socks5 string, opts ...ClientOption) Client {
-	return NewClientWithDialer(valuerpc.NewDialer(address, socks5, KeepAlivePeriod, DefaultTimeout), opts...)
+	cfg := newClientConfig(opts)
+	return NewClientWithDialer(valuerpc.NewDialer(address, socks5, cfg.keepAlive, cfg.writeTimeout, cfg.maxFrameSize), opts...)
 }
 
 // NewUnixClient creates a client that dials the Unix-domain socket at path.
 func NewUnixClient(path string, opts ...ClientOption) Client {
-	return NewClientWithDialer(valuerpc.NewStreamDialer("unix", path, "", 0, DefaultTimeout), opts...)
+	cfg := newClientConfig(opts)
+	return NewClientWithDialer(valuerpc.NewStreamDialer("unix", path, "", 0, cfg.writeTimeout, cfg.maxFrameSize), opts...)
 }
 
 // NewWebSocketClient creates a client that dials a WebSocket URL, e.g.
 // "ws://host:9000/rpc" or "wss://host/rpc".
 func NewWebSocketClient(url string, opts ...ClientOption) Client {
-	return NewClientWithDialer(valuerpc.NewDialer(url, "", KeepAlivePeriod, DefaultTimeout), opts...)
+	cfg := newClientConfig(opts)
+	return NewClientWithDialer(valuerpc.NewDialer(url, "", cfg.keepAlive, cfg.writeTimeout, cfg.maxFrameSize), opts...)
 }
 
 // NewTLSClient creates a client that dials a TLS server over TCP. A nil config
 // verifies against the system root CAs (server name derived from the address);
 // supply a config for custom CAs, a client certificate (mTLS), or test options.
 func NewTLSClient(address string, config *tls.Config, opts ...ClientOption) Client {
-	return NewClientWithDialer(valuerpc.NewTLSDialer(address, config, KeepAlivePeriod, DefaultTimeout), opts...)
+	cfg := newClientConfig(opts)
+	return NewClientWithDialer(valuerpc.NewTLSDialer(address, config, cfg.keepAlive, cfg.writeTimeout, cfg.maxFrameSize), opts...)
 }
 
 // NewMemClient creates a client that connects to an in-process server registered

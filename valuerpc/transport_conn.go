@@ -60,7 +60,7 @@ func (d *funcDialer) Dial() (MsgConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewMsgConn(c, d.writeTimeout), nil
+	return NewMsgConn(c, d.writeTimeout, MaxFrameSize), nil
 }
 
 // NewSingleConnDialer returns a Dialer that frames conn and returns it on the
@@ -86,7 +86,7 @@ func (d *singleConnDialer) Dial() (MsgConn, error) {
 		return nil, ErrConnConsumed
 	}
 	d.used = true
-	return NewMsgConn(d.conn, d.writeTimeout), nil
+	return NewMsgConn(d.conn, d.writeTimeout, MaxFrameSize), nil
 }
 
 // NewAcceptListener returns a Listener whose Accept calls accept to obtain and
@@ -115,7 +115,7 @@ func (l *funcListener) Accept() (MsgConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewMsgConn(c, l.writeTimeout), nil
+	return NewMsgConn(c, l.writeTimeout, MaxFrameSize), nil
 }
 
 func (l *funcListener) Addr() net.Addr {

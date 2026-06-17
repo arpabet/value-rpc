@@ -44,18 +44,19 @@ type streamListener struct {
 	lis          net.Listener
 	keepAlive    time.Duration
 	writeTimeout time.Duration
+	maxFrameSize int
 }
 
 // NewStreamListener listens on a stream network ("tcp" or "unix") and returns a
 // Listener whose accepted connections use the length-prefix framing. keepAlive
 // enables TCP keepalive (ignored for non-TCP networks); writeTimeout bounds each
-// message write.
-func NewStreamListener(network, address string, keepAlive, writeTimeout time.Duration) (Listener, error) {
+// message write; maxFrameSize bounds inbound frames (<=0 uses MaxFrameSize).
+func NewStreamListener(network, address string, keepAlive, writeTimeout time.Duration, maxFrameSize int) (Listener, error) {
 	lis, err := net.Listen(network, address)
 	if err != nil {
 		return nil, err
 	}
-	return &streamListener{lis: lis, keepAlive: keepAlive, writeTimeout: writeTimeout}, nil
+	return &streamListener{lis: lis, keepAlive: keepAlive, writeTimeout: writeTimeout, maxFrameSize: maxFrameSize}, nil
 }
 
 func (l *streamListener) Accept() (MsgConn, error) {
@@ -64,7 +65,7 @@ func (l *streamListener) Accept() (MsgConn, error) {
 		return nil, err
 	}
 	enableKeepAlive(c, l.keepAlive)
-	return NewMsgConn(c, l.writeTimeout), nil
+	return NewMsgConn(c, l.writeTimeout, l.maxFrameSize), nil
 }
 
 func (l *streamListener) Addr() net.Addr { return l.lis.Addr() }
@@ -77,17 +78,20 @@ type streamDialer struct {
 	socks5       string
 	keepAlive    time.Duration
 	writeTimeout time.Duration
+	maxFrameSize int
 }
 
 // NewStreamDialer returns a Dialer for a stream network ("tcp" or "unix"). A
 // non-empty socks5 (TCP only) routes the dial through a SOCKS5 proxy.
-func NewStreamDialer(network, address, socks5 string, keepAlive, writeTimeout time.Duration) Dialer {
+// maxFrameSize bounds inbound frames (<=0 uses MaxFrameSize).
+func NewStreamDialer(network, address, socks5 string, keepAlive, writeTimeout time.Duration, maxFrameSize int) Dialer {
 	return &streamDialer{
 		network:      network,
 		address:      address,
 		socks5:       socks5,
 		keepAlive:    keepAlive,
 		writeTimeout: writeTimeout,
+		maxFrameSize: maxFrameSize,
 	}
 }
 
@@ -101,14 +105,14 @@ func (d *streamDialer) Dial() (MsgConn, error) {
 		if err != nil {
 			return nil, err
 		}
-		return NewMsgConn(c, d.writeTimeout), nil
+		return NewMsgConn(c, d.writeTimeout, d.maxFrameSize), nil
 	}
 	c, err := net.Dial(d.network, d.address)
 	if err != nil {
 		return nil, err
 	}
 	enableKeepAlive(c, d.keepAlive)
-	return NewMsgConn(c, d.writeTimeout), nil
+	return NewMsgConn(c, d.writeTimeout, d.maxFrameSize), nil
 }
 
 // enableKeepAlive turns on TCP keepalive for *net.TCPConn; it is a no-op for
@@ -139,16 +143,16 @@ func ParseAddress(address string) (network, addr string) {
 // NewListener builds a Listener from a (possibly schemed) address. "unix"
 // addresses get stale-socket cleanup; unsupported networks return an error
 // (WebSocket arrives in a later phase).
-func NewListener(address string, keepAlive, writeTimeout time.Duration) (Listener, error) {
+func NewListener(address string, keepAlive, writeTimeout time.Duration, maxFrameSize int) (Listener, error) {
 	network, addr := ParseAddress(address)
 	switch network {
 	case "unix", "unixpacket":
-		return NewUnixListener(addr, writeTimeout)
+		return NewUnixListener(addr, writeTimeout, maxFrameSize)
 	case "tcp", "tcp4", "tcp6":
-		return NewStreamListener(network, addr, keepAlive, writeTimeout)
+		return NewStreamListener(network, addr, keepAlive, writeTimeout, maxFrameSize)
 	case "ws":
 		host, path := splitWSPath(addr)
-		return NewWebSocketListener(host, path, writeTimeout)
+		return NewWebSocketListener(host, path, writeTimeout, maxFrameSize, keepAlive)
 	case "wss":
 		return nil, fmt.Errorf("wss:// server needs TLS; mount valueserver.NewWebSocketHandler on your own TLS http.Server")
 	case "tls":
@@ -165,20 +169,20 @@ func NewListener(address string, keepAlive, writeTimeout time.Duration) (Listene
 // NewDialer builds a Dialer from a (possibly schemed) address. An unsupported
 // network yields a Dialer whose Dial returns the error, so callers that do not
 // return an error from construction (e.g. NewClient) surface it at connect time.
-func NewDialer(address, socks5 string, keepAlive, writeTimeout time.Duration) Dialer {
+func NewDialer(address, socks5 string, keepAlive, writeTimeout time.Duration, maxFrameSize int) Dialer {
 	network, addr := ParseAddress(address)
 	switch network {
 	case "unix", "unixpacket":
-		return NewStreamDialer(network, addr, "", 0, writeTimeout)
+		return NewStreamDialer(network, addr, "", 0, writeTimeout, maxFrameSize)
 	case "tcp", "tcp4", "tcp6":
-		return NewStreamDialer(network, addr, socks5, keepAlive, writeTimeout)
+		return NewStreamDialer(network, addr, socks5, keepAlive, writeTimeout, maxFrameSize)
 	case "ws", "wss":
-		return newWSDialer(network+"://"+addr, writeTimeout)
+		return newWSDialer(network+"://"+addr, writeTimeout, maxFrameSize, keepAlive)
 	case "tls":
 		// Default config: verify against the system roots, server name derived
 		// from the address. Use NewTLSDialer / NewTLSClient for custom CAs, a
 		// client certificate (mTLS), or test options.
-		return NewTLSDialer(addr, nil, keepAlive, writeTimeout)
+		return NewTLSDialer(addr, nil, keepAlive, writeTimeout, maxFrameSize)
 	case "quic":
 		return errDialer{fmt.Errorf("quic:// is provided by the separate module go.arpabet.com/value-rpc/quic (valuequic.NewClient)")}
 	case "mem":
@@ -195,11 +199,11 @@ func (d errDialer) Dial() (MsgConn, error) { return nil, d.err }
 // NewUnixListener listens on a Unix-domain socket, cleaning up a stale socket
 // file left behind by a previous (crashed) process first. It refuses to remove
 // a path that is not a socket, so it cannot clobber a regular file.
-func NewUnixListener(path string, writeTimeout time.Duration) (Listener, error) {
+func NewUnixListener(path string, writeTimeout time.Duration, maxFrameSize int) (Listener, error) {
 	if err := removeStaleSocket(path); err != nil {
 		return nil, err
 	}
-	return NewStreamListener("unix", path, 0, writeTimeout)
+	return NewStreamListener("unix", path, 0, writeTimeout, maxFrameSize)
 }
 
 func removeStaleSocket(path string) error {

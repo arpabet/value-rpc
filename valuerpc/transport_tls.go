@@ -20,7 +20,8 @@ import (
 // to a connect-authorizer via PeerCertificates.
 
 // NewTLSListener listens on TCP with TLS. config must carry a server certificate.
-func NewTLSListener(addr string, config *tls.Config, keepAlive, writeTimeout time.Duration) (Listener, error) {
+// maxFrameSize bounds inbound frames (<=0 uses MaxFrameSize).
+func NewTLSListener(addr string, config *tls.Config, keepAlive, writeTimeout time.Duration, maxFrameSize int) (Listener, error) {
 	if config == nil {
 		return nil, fmt.Errorf("tls listener requires a non-nil *tls.Config with a server certificate")
 	}
@@ -32,6 +33,7 @@ func NewTLSListener(addr string, config *tls.Config, keepAlive, writeTimeout tim
 		lis:          tls.NewListener(rawLis, config),
 		keepAlive:    keepAlive,
 		writeTimeout: writeTimeout,
+		maxFrameSize: maxFrameSize,
 	}, nil
 }
 
@@ -40,13 +42,15 @@ type tlsDialer struct {
 	config       *tls.Config
 	keepAlive    time.Duration
 	writeTimeout time.Duration
+	maxFrameSize int
 }
 
 // NewTLSDialer dials a TLS server over TCP. A nil config verifies against the
 // system root CAs and derives the server name from the address; supply a config
-// for custom CAs, a client certificate (mTLS), or test options.
-func NewTLSDialer(address string, config *tls.Config, keepAlive, writeTimeout time.Duration) Dialer {
-	return &tlsDialer{address: address, config: config, keepAlive: keepAlive, writeTimeout: writeTimeout}
+// for custom CAs, a client certificate (mTLS), or test options. maxFrameSize
+// bounds inbound frames (<=0 uses MaxFrameSize).
+func NewTLSDialer(address string, config *tls.Config, keepAlive, writeTimeout time.Duration, maxFrameSize int) Dialer {
+	return &tlsDialer{address: address, config: config, keepAlive: keepAlive, writeTimeout: writeTimeout, maxFrameSize: maxFrameSize}
 }
 
 func (d *tlsDialer) Dial() (MsgConn, error) {
@@ -55,7 +59,7 @@ func (d *tlsDialer) Dial() (MsgConn, error) {
 		return nil, err
 	}
 	enableKeepAlive(conn, d.keepAlive) // unwraps *tls.Conn -> *net.TCPConn
-	return NewMsgConn(conn, d.writeTimeout), nil
+	return NewMsgConn(conn, d.writeTimeout, d.maxFrameSize), nil
 }
 
 // TLSConnectionState reports the TLS connection state when the underlying

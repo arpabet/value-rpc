@@ -66,10 +66,22 @@ All notable changes to this project are documented here. The format is based on
   existing callers and code that sets a global before constructing are unchanged).
   Server: `WithMaxConnections`, `WithMaxConcurrentRequests`,
   `WithMaxConcurrentStreams`, `WithOutgoingQueueCap`, `WithIncomingQueueCap`,
-  `WithStreamMaxPending`, `WithHandshakeTimeout`. Client: `WithSendingCap`,
-  `WithTimeout`, `WithStreamMaxPending`. All constructors gained a trailing
-  `opts ...Option` (variadic, non-breaking). Test:
-  `valueserver.TestServerOptionPerInstance`.
+  `WithStreamMaxPending`, `WithHandshakeTimeout`, plus transport-level
+  `WithKeepAlivePeriod`, `WithWriteTimeout`, `WithMaxFrameSize`. Client:
+  `WithSendingCap`, `WithTimeout`, `WithStreamMaxPending`, `WithKeepAlivePeriod`,
+  `WithWriteTimeout`, `WithMaxFrameSize`. All constructors gained a trailing
+  `opts ...Option` (variadic, non-breaking). Tests:
+  `valueserver.TestServerOptionPerInstance`, `TestServerMaxFrameSizeOption`.
+- **BREAKING (transport API): `MaxFrameSize` is captured per connection.**
+  `valuerpc.NewMsgConn` and the transport constructors (`NewListener`,
+  `NewDialer`, `NewStreamListener`/`Dialer`, `NewUnixListener`, `NewTLSListener`/
+  `Dialer`, `NewWebSocketListener`/`Handler`) gained a trailing `maxFrameSize`
+  argument (and the WS ones a keepalive/ping interval). `messageConnAdapter` now
+  snapshots the limit at construction instead of reading the mutable
+  `valuerpc.MaxFrameSize` global on every read — removing the last config data
+  race. `MaxFrameSize` semantics on a connection: `> 0` enforces, `<= 0` is
+  unlimited; the bring-your-own-connection adapters still default to the package
+  `MaxFrameSize`.
 - **BREAKING: `context.Context` is now first-class on both ends.**
   - **Server handlers** take `ctx` as their first argument (`Function`,
     `OutgoingStream`, `IncomingStream`, `Chat`). It is cancelled on disconnect,

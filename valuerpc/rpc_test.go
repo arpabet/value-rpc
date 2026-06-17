@@ -22,7 +22,7 @@ import (
 func pipePair(t testing.TB) (a, b vrpc.MsgConn, raw1, raw2 net.Conn) {
 	t.Helper()
 	c1, c2 := net.Pipe()
-	return vrpc.NewMsgConn(c1, time.Second), vrpc.NewMsgConn(c2, time.Second), c1, c2
+	return vrpc.NewMsgConn(c1, time.Second, vrpc.MaxFrameSize), vrpc.NewMsgConn(c2, time.Second, vrpc.MaxFrameSize), c1, c2
 }
 
 func TestMsgConn_RoundTrip(t *testing.T) {
@@ -90,7 +90,7 @@ func TestMsgConn_RejectsOversizeFrame(t *testing.T) {
 	defer func() { vrpc.MaxFrameSize = old }()
 
 	c1, c2 := net.Pipe()
-	b := vrpc.NewMsgConn(c2, time.Second)
+	b := vrpc.NewMsgConn(c2, time.Second, vrpc.MaxFrameSize)
 	defer b.Close()
 	defer c1.Close()
 
@@ -145,7 +145,7 @@ func TestMsgConn_AcceptsFrameAtLimit(t *testing.T) {
 // versions depend on this, so an accidental change should fail loudly.
 func TestMsgConn_WireFormat(t *testing.T) {
 	c1, c2 := net.Pipe()
-	a := vrpc.NewMsgConn(c1, time.Second)
+	a := vrpc.NewMsgConn(c1, time.Second, vrpc.MaxFrameSize)
 	defer a.Close()
 	defer c2.Close()
 
@@ -178,7 +178,7 @@ func TestMsgConn_WireFormat(t *testing.T) {
 // the transport-seam refactor (they replaced Conn() net.Conn).
 func TestMsgConn_RemoteAddrAndReadDeadline(t *testing.T) {
 	c1, c2 := net.Pipe()
-	a := vrpc.NewMsgConn(c1, time.Second)
+	a := vrpc.NewMsgConn(c1, time.Second, vrpc.MaxFrameSize)
 	defer a.Close()
 	defer c2.Close()
 
@@ -197,8 +197,8 @@ func TestMsgConn_RemoteAddrAndReadDeadline(t *testing.T) {
 
 func BenchmarkMsgConnWriteRead(b *testing.B) {
 	c1, c2 := net.Pipe()
-	w := vrpc.NewMsgConn(c1, 5*time.Second)
-	r := vrpc.NewMsgConn(c2, 5*time.Second)
+	w := vrpc.NewMsgConn(c1, 5*time.Second, vrpc.MaxFrameSize)
+	r := vrpc.NewMsgConn(c2, 5*time.Second, vrpc.MaxFrameSize)
 	defer w.Close()
 	defer r.Close()
 

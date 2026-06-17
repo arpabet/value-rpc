@@ -35,26 +35,26 @@ func TestParseAddress(t *testing.T) {
 }
 
 func TestNewListener_UnsupportedScheme(t *testing.T) {
-	if _, err := vrpc.NewListener("bogus://addr", 0, time.Second); err == nil {
+	if _, err := vrpc.NewListener("bogus://addr", 0, time.Second, vrpc.MaxFrameSize); err == nil {
 		t.Fatal("expected an error for an unsupported listen scheme")
 	}
 }
 
 func TestNewTLSListener_RequiresConfig(t *testing.T) {
-	if _, err := vrpc.NewTLSListener("127.0.0.1:0", nil, 0, time.Second); err == nil {
+	if _, err := vrpc.NewTLSListener("127.0.0.1:0", nil, 0, time.Second, vrpc.MaxFrameSize); err == nil {
 		t.Fatal("NewTLSListener must require a non-nil *tls.Config")
 	}
 }
 
 func TestNewListener_TLSNeedsConfig(t *testing.T) {
-	if _, err := vrpc.NewListener("tls://127.0.0.1:0", 0, time.Second); err == nil {
+	if _, err := vrpc.NewListener("tls://127.0.0.1:0", 0, time.Second, vrpc.MaxFrameSize); err == nil {
 		t.Fatal("tls:// listener must require NewTLSServer (a *tls.Config)")
 	}
 }
 
 func TestPeerCertificates_NonTLS(t *testing.T) {
 	c1, c2 := net.Pipe()
-	mc := vrpc.NewMsgConn(c1, time.Second)
+	mc := vrpc.NewMsgConn(c1, time.Second, vrpc.MaxFrameSize)
 	defer mc.Close()
 	defer c2.Close()
 	if _, ok := vrpc.PeerCertificates(mc); ok {
@@ -63,7 +63,7 @@ func TestPeerCertificates_NonTLS(t *testing.T) {
 }
 
 func TestNewDialer_UnsupportedSchemeErrorsOnDial(t *testing.T) {
-	d := vrpc.NewDialer("bogus://addr", "", 0, time.Second)
+	d := vrpc.NewDialer("bogus://addr", "", 0, time.Second, vrpc.MaxFrameSize)
 	if _, err := d.Dial(); err == nil {
 		t.Fatal("expected Dial to fail for an unsupported scheme")
 	}
@@ -85,7 +85,7 @@ func TestNewUnixListener_StaleSocketCleanup(t *testing.T) {
 		t.Fatalf("expected the stale socket file to remain: %v", err)
 	}
 
-	lis, err := vrpc.NewUnixListener(path, time.Second)
+	lis, err := vrpc.NewUnixListener(path, time.Second, vrpc.MaxFrameSize)
 	if err != nil {
 		t.Fatalf("NewUnixListener over a stale socket: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestNewUnixListener_RefusesNonSocket(t *testing.T) {
 	if err := os.WriteFile(path, []byte("important"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := vrpc.NewUnixListener(path, time.Second); err == nil {
+	if _, err := vrpc.NewUnixListener(path, time.Second, vrpc.MaxFrameSize); err == nil {
 		t.Fatal("NewUnixListener must refuse to remove a non-socket file")
 	}
 	if _, err := os.Stat(path); err != nil {

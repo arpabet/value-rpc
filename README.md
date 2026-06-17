@@ -184,11 +184,17 @@ cli := valueclient.NewClient("host:9000", "",
 
 Server options: `WithMaxConnections`, `WithMaxConcurrentRequests`,
 `WithMaxConcurrentStreams`, `WithOutgoingQueueCap`, `WithIncomingQueueCap`,
-`WithStreamMaxPending`, `WithHandshakeTimeout`. Client options: `WithSendingCap`,
-`WithTimeout`, `WithStreamMaxPending`.
+`WithStreamMaxPending`, `WithHandshakeTimeout`, `WithKeepAlivePeriod`,
+`WithWriteTimeout`, `WithMaxFrameSize`. Client options: `WithSendingCap`,
+`WithTimeout`, `WithStreamMaxPending`, `WithKeepAlivePeriod`, `WithWriteTimeout`,
+`WithMaxFrameSize`. (The transport-level options — keepalive, write timeout, max
+frame size — apply when a convenience constructor builds the listener/dialer;
+when you bring your own via `NewServerWithListener`/`NewClientWithDialer`, set
+them on the listener/dialer.)
 
-The package-level variables (defaults for the above options; the transport-level
-ones — `MaxFrameSize`, keepalive, WS timeouts — are still globals):
+The package-level variables below are the defaults for the options above;
+`MaxFrameSize` is now captured per connection at construction (never read from
+the global at runtime):
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

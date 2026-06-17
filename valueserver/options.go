@@ -24,6 +24,11 @@ type serverConfig struct {
 	incomingQueueCap      int
 	maxPending            int
 	handshakeTimeout      time.Duration
+
+	// transport-level (used when a convenience constructor builds the listener)
+	keepAlive    time.Duration
+	writeTimeout time.Duration
+	maxFrameSize int
 }
 
 func newServerConfig(opts []ServerOption) serverConfig {
@@ -35,6 +40,9 @@ func newServerConfig(opts []ServerOption) serverConfig {
 		incomingQueueCap:      IncomingQueueCap,
 		maxPending:            valuerpc.DefaultMaxPending,
 		handshakeTimeout:      HandshakeTimeout,
+		keepAlive:             KeepAlivePeriod,
+		writeTimeout:          DefaultTimeout,
+		maxFrameSize:          valuerpc.MaxFrameSize,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -83,4 +91,24 @@ func WithStreamMaxPending(n int) ServerOption {
 // handshake (0 = no limit).
 func WithHandshakeTimeout(d time.Duration) ServerOption {
 	return func(c *serverConfig) { c.handshakeTimeout = d }
+}
+
+// WithKeepAlivePeriod sets TCP keepalive (and the WebSocket ping interval) for
+// connections built by a convenience constructor. 0 disables. No effect when you
+// supply your own listener via NewServerWithListener.
+func WithKeepAlivePeriod(d time.Duration) ServerOption {
+	return func(c *serverConfig) { c.keepAlive = d }
+}
+
+// WithWriteTimeout bounds each message write on connections built by a
+// convenience constructor. No effect with NewServerWithListener.
+func WithWriteTimeout(d time.Duration) ServerOption {
+	return func(c *serverConfig) { c.writeTimeout = d }
+}
+
+// WithMaxFrameSize bounds inbound message size on connections built by a
+// convenience constructor (> 0 enforces, <= 0 unlimited). No effect with
+// NewServerWithListener — set the limit when you build your own listener.
+func WithMaxFrameSize(n int) ServerOption {
+	return func(c *serverConfig) { c.maxFrameSize = n }
 }

@@ -23,10 +23,13 @@ var (
 	ErrClientClosed = fmt.Errorf("client closed")
 )
 
-// MaxFrameSize bounds the size of a single inbound message payload. A 4-byte
-// length prefix would otherwise allow a peer to request a ~4 GiB allocation
-// with a few bytes (BUG-11). Set to 0 to disable the check. Default 16 MiB
-// (gRPC defaults to 4 MiB for comparison).
+// MaxFrameSize is the default bound on the size of a single inbound message
+// payload. A 4-byte length prefix would otherwise allow a peer to request a
+// ~4 GiB allocation with a few bytes (BUG-11). 0 disables the check. Default
+// 16 MiB (gRPC defaults to 4 MiB for comparison). It is the default used when a
+// connection is created without an explicit limit; per-server/per-client
+// overrides flow through NewMsgConn and are captured at construction (so the
+// value is never read from this mutable global at runtime).
 var MaxFrameSize = 16 * 1024 * 1024
 
 // Wire format (unchanged from the previous goframe-based implementation):
@@ -58,11 +61,15 @@ type MsgConn interface {
 // no-op and RemoteAddr is empty. This is the lowest-level transport seam; a custom
 // Dialer or Listener (see NewFuncDialer, NewSingleConnDialer, NewAcceptListener)
 // usually wraps it.
-func NewMsgConn(conn io.ReadWriteCloser, timeout time.Duration) MsgConn {
+// maxFrameSize is the inbound frame limit for this connection: > 0 enforces it,
+// <= 0 means no limit. It is captured here so ReadMessage never reads the mutable
+// MaxFrameSize global. Callers that want the package default pass MaxFrameSize.
+func NewMsgConn(conn io.ReadWriteCloser, timeout time.Duration, maxFrameSize int) MsgConn {
 	return &messageConnAdapter{
-		conn:    conn,
-		reader:  bufio.NewReader(conn),
-		timeout: timeout,
+		conn:         conn,
+		reader:       bufio.NewReader(conn),
+		timeout:      timeout,
+		maxFrameSize: maxFrameSize,
 	}
 }
 
@@ -80,12 +87,13 @@ type (
 const reusableWriteBufCap = 64 * 1024
 
 type messageConnAdapter struct {
-	conn      io.ReadWriteCloser
-	reader    *bufio.Reader
-	timeout   time.Duration
-	writeLock sync.Mutex
-	writeBuf  []byte // reused under writeLock to avoid a per-message frame allocation
-	shutdown  atomic.Bool
+	conn         io.ReadWriteCloser
+	reader       *bufio.Reader
+	timeout      time.Duration
+	maxFrameSize int // captured at construction; never reads the global at runtime
+	writeLock    sync.Mutex
+	writeBuf     []byte // reused under writeLock to avoid a per-message frame allocation
+	shutdown     atomic.Bool
 }
 
 func (t *messageConnAdapter) ReadMessage() (value.Map, error) {
@@ -94,8 +102,8 @@ func (t *messageConnAdapter) ReadMessage() (value.Map, error) {
 		return nil, err
 	}
 	n := binary.BigEndian.Uint32(lenBuf[:])
-	if MaxFrameSize > 0 && int64(n) > int64(MaxFrameSize) {
-		return nil, errors.Errorf("frame too large: %d bytes (max %d)", n, MaxFrameSize)
+	if t.maxFrameSize > 0 && int64(n) > int64(t.maxFrameSize) {
+		return nil, errors.Errorf("frame too large: %d bytes (max %d)", n, t.maxFrameSize)
 	}
 	payload := make([]byte, int(n))
 	if _, err := io.ReadFull(t.reader, payload); err != nil {

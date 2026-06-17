@@ -25,7 +25,7 @@ import (
 // listener built directly, proving the seam is wired end to end.
 func TestSeam_NewServerWithListener_TCP(t *testing.T) {
 	lis, err := valuerpc.NewStreamListener("tcp", "127.0.0.1:0",
-		valueserver.KeepAlivePeriod, valueserver.DefaultTimeout)
+		valueserver.KeepAlivePeriod, valueserver.DefaultTimeout, valuerpc.MaxFrameSize)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestSeam_NewServerWithListener_TCP(t *testing.T) {
 	go srv.Run()
 
 	dialer := valuerpc.NewStreamDialer("tcp", srv.Addr().String(), "",
-		valueclient.KeepAlivePeriod, valueclient.DefaultTimeout)
+		valueclient.KeepAlivePeriod, valueclient.DefaultTimeout, valuerpc.MaxFrameSize)
 	cli := valueclient.NewClientWithDialer(dialer)
 	if err := cli.Connect(); err != nil {
 		t.Fatalf("connect: %v", err)
@@ -68,7 +68,7 @@ func TestSeam_UnixSocketTransport(t *testing.T) {
 	sock := filepath.Join(os.TempDir(), fmt.Sprintf("vrpc-%d.sock", time.Now().UnixNano()))
 	defer os.Remove(sock)
 
-	lis, err := valuerpc.NewStreamListener("unix", sock, 0, valueserver.DefaultTimeout)
+	lis, err := valuerpc.NewStreamListener("unix", sock, 0, valueserver.DefaultTimeout, valuerpc.MaxFrameSize)
 	if err != nil {
 		t.Fatalf("listen unix: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestSeam_UnixSocketTransport(t *testing.T) {
 		})
 	go srv.Run()
 
-	dialer := valuerpc.NewStreamDialer("unix", sock, "", 0, valueclient.DefaultTimeout)
+	dialer := valuerpc.NewStreamDialer("unix", sock, "", 0, valueclient.DefaultTimeout, valuerpc.MaxFrameSize)
 	cli := valueclient.NewClientWithDialer(dialer)
 	if err := cli.Connect(); err != nil {
 		t.Fatalf("connect unix: %v", err)
