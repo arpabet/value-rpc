@@ -25,6 +25,7 @@ type serverConfig struct {
 	incomingQueueCap      int
 	maxPending            int
 	handshakeTimeout      time.Duration
+	metrics               valuerpc.Metrics
 	metadataExtractor     func(ctx context.Context, md valuerpc.Metadata) context.Context
 
 	// transport-level (used when a convenience constructor builds the listener)
@@ -42,12 +43,16 @@ func newServerConfig(opts []ServerOption) serverConfig {
 		incomingQueueCap:      IncomingQueueCap,
 		maxPending:            valuerpc.DefaultMaxPending,
 		handshakeTimeout:      HandshakeTimeout,
+		metrics:               valuerpc.NopMetrics{},
 		keepAlive:             KeepAlivePeriod,
 		writeTimeout:          DefaultTimeout,
 		maxFrameSize:          valuerpc.MaxFrameSize,
 	}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if cfg.metrics == nil {
+		cfg.metrics = valuerpc.NopMetrics{}
 	}
 	return cfg
 }
@@ -93,6 +98,13 @@ func WithStreamMaxPending(n int) ServerOption {
 // handshake (0 = no limit).
 func WithHandshakeTimeout(d time.Duration) ServerOption {
 	return func(c *serverConfig) { c.handshakeTimeout = d }
+}
+
+// WithMetrics installs a metrics sink for server-side request/error counters, the
+// in-flight gauge, and stream throughput (the same valuerpc.Metrics interface as
+// the client). Without it metrics are a no-op.
+func WithMetrics(m valuerpc.Metrics) ServerOption {
+	return func(c *serverConfig) { c.metrics = m }
 }
 
 // WithMetadataExtractor enriches each handler's context from the request's

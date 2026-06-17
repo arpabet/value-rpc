@@ -8,6 +8,7 @@ package valueserver
 import (
 	"context"
 	"sync/atomic"
+	"time"
 
 	"github.com/pkg/errors"
 	"go.arpabet.com/value"
@@ -27,9 +28,18 @@ type servingRequest struct {
 	creditWindow     int64 // inbound flow-control window granted to the client
 	inboundDelivered int64 // values delivered since last credit grant; pump goroutine only
 
+	method string       // function name, for metrics
+	start  time.Time    // request start, for metrics latency
+	code   atomic.Int32 // terminal vrpc.Code for metrics; 0 (CodeOK) unless set on a failure path
+
 	closed   atomic.Bool
 	inClosed atomic.Bool
 	done     chan struct{}
+}
+
+// setCode records the terminal outcome code for metrics (first non-OK wins).
+func (t *servingRequest) setCode(c vrpc.Code) {
+	t.code.CompareAndSwap(int32(vrpc.CodeOK), int32(c))
 }
 
 func NewServingRequest(ft functionType, requestId value.Number) *servingRequest {
@@ -124,18 +134,21 @@ func (t *servingRequest) serveRunningRequest(msgType vrpc.MessageType, req value
 	switch msgType {
 
 	case vrpc.CancelRequest:
+		t.setCode(vrpc.CodeCanceled)
 		return t.closeRequest(cli)
 
 	case vrpc.StreamValue:
 		if err := t.incomingStreamValue(req); err != nil {
 			return err
 		}
+		cli.cfg.metrics.StreamValue(t.method)
 		// Credit-based flow control keeps a cooperating client within the buffer.
 		// A client that ignores its credit and overruns the pump truncates the
 		// stream; surface it (tell the client, tear down) instead of silently
 		// dropping values (#13).
 		if t.inPump != nil && t.inPump.Overflowed() {
 			cli.send(FunctionError(t.requestId, vrpc.CodeResourceExhausted, "inbound stream %d truncated: client exceeded flow-control credit", t.requestId.Long()))
+			t.setCode(vrpc.CodeResourceExhausted)
 			return t.closeRequest(cli)
 		}
 		return nil
@@ -178,6 +191,7 @@ func (t *servingRequest) incomingStreamEnd(req value.Map, cli *servingClient) er
 
 	if val := req.Get(vrpc.ValueField); val != value.Null {
 		t.offer(val)
+		cli.cfg.metrics.StreamValue(t.method)
 	}
 
 	// For chat, the client ending its input must NOT tear down the server's
@@ -237,6 +251,7 @@ func (t *servingRequest) outgoingStreamer(outC <-chan value.Value, cli *servingC
 		}
 
 		cli.send(StreamValue(t.requestId, val))
+		cli.cfg.metrics.StreamValue(t.method)
 
 	}
 

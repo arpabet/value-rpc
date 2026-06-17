@@ -38,9 +38,10 @@ transport:  TCP  ·  Unix socket  ·  WebSocket        (optional SOCKS5 / wss TL
   per‑request pump, so one slow consumer can't stall other multiplexed requests.
 - **Structured logging** via `*zap.Logger` on both server and client (the client
   takes it with `valueclient.WithLogger(logger)`; silent by default).
-- **Pluggable metrics** (`valuerpc.Metrics` via `valueclient.WithMetrics`):
-  request/error counters (by code), in-flight gauge, latency, reconnects, and
-  stream throughput — wire it to Prometheus/OpenTelemetry. No-op by default.
+- **Pluggable metrics** (`valuerpc.Metrics`, on both client `valueclient.WithMetrics`
+  and server `valueserver.WithMetrics`): request/error counters (by code), in-flight
+  gauge, latency, reconnects (client), and stream throughput — wire it to
+  Prometheus/OpenTelemetry. No-op by default.
 - **Metadata / trace-context propagation**: the client injects per-request
   metadata from the call's context (`valueclient.WithMetadata`) into the envelope;
   the server surfaces it on the handler's context (`valuerpc.MetadataFromContext`)

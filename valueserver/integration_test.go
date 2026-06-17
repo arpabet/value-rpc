@@ -739,6 +739,81 @@ func (m *metricsRec) snapshot() metricsSnapshot {
 
 // TestClientMetrics verifies WithMetrics receives request/error counters, the
 // in-flight gauge (begin−end), and stream throughput.
+// TestServerMetrics verifies the same valuerpc.Metrics interface wired on the
+// server: request/error counters, in-flight gauge (begin−end), and stream
+// throughput for unary and streaming requests.
+func TestServerMetrics(t *testing.T) {
+	rec := &metricsRec{}
+	srv, err := valueserver.NewServer("127.0.0.1:0", zap.NewNop(), valueserver.WithMetrics(rec))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.AddFunction("echo", valuerpc.Any, valuerpc.Any,
+		func(_ context.Context, a value.Value) (value.Value, error) { return a, nil })
+	srv.AddFunction("boom", valuerpc.Any, valuerpc.Any,
+		func(_ context.Context, _ value.Value) (value.Value, error) {
+			return nil, valuerpc.NewError(valuerpc.CodeInvalidArgument, "no")
+		})
+	srv.AddOutgoingStream("count", valuerpc.Any,
+		func(_ context.Context, _ value.Value) (<-chan value.Value, error) {
+			out := make(chan value.Value, 3)
+			go func() {
+				defer close(out)
+				for i := 0; i < 3; i++ {
+					out <- value.Long(int64(i))
+				}
+			}()
+			return out, nil
+		})
+	go srv.Run()
+	defer srv.Close()
+
+	cli := dialClient(t, srv.Addr().String())
+	defer cli.Close()
+	ctx := context.Background()
+
+	if _, err := cli.CallFunction(ctx, "echo", value.Utf8("hi")); err != nil {
+		t.Fatalf("echo: %v", err)
+	}
+	if _, err := cli.CallFunction(ctx, "boom", nil); err == nil {
+		t.Fatal("boom should error")
+	}
+	readC, _, err := cli.GetStream(ctx, "count", nil, 8)
+	if err != nil {
+		t.Fatalf("get stream: %v", err)
+	}
+	for range readC {
+	}
+
+	// The stream's RequestEnd fires asynchronously (server teardown) — wait for
+	// all 3 requests to settle.
+	deadline := time.After(3 * time.Second)
+	for {
+		s := rec.snapshot()
+		if s.end >= 3 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("server metrics did not settle: %+v", s)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	s := rec.snapshot()
+	if s.begin != 3 || s.end != 3 {
+		t.Errorf("begin=%d end=%d, want 3/3", s.begin, s.end)
+	}
+	if s.inflight != 0 {
+		t.Errorf("in-flight gauge = %d, want 0", s.inflight)
+	}
+	if s.errs != 1 {
+		t.Errorf("error count = %d, want 1 (boom)", s.errs)
+	}
+	if s.stream < 3 {
+		t.Errorf("stream throughput = %d, want >= 3", s.stream)
+	}
+}
+
 func TestClientMetrics(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("echo", valuerpc.Any, valuerpc.Any,

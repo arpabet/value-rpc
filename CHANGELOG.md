@@ -34,10 +34,13 @@ All notable changes to this project are documented here. The format is based on
   with a `NopMetrics` default) feeds request/error counters (grouped by
   `valuerpc.Code`), an in-flight gauge (begin−end), per-call latency, reconnect
   counts, and stream throughput to Prometheus/OpenTelemetry/etc. Install on the
-  client with `valueclient.WithMetrics(m)`; `RequestBegin` fires when a call/stream
-  starts and `RequestEnd` once at teardown (so the gauge spans a stream's whole
-  lifetime). The client's `reconnects` stat is now actually incremented. Test:
-  `valueserver.TestClientMetrics`.
+  client with `valueclient.WithMetrics(m)` and on the server with
+  `valueserver.WithMetrics(m)`; `RequestBegin` fires when a call/stream starts and
+  `RequestEnd` once at teardown (so the gauge spans a stream's whole lifetime).
+  On the server, unary requests are metered synchronously and streams via
+  `newServingRequest`/`deleteRequest` (the single idempotent retirement point);
+  `Reconnect` is client-only. The client's `reconnects` stat is now actually
+  incremented. Tests: `valueserver.TestClientMetrics`, `TestServerMetrics`.
 - **Context-aware, bounded dial.** The `valuerpc.Dialer` interface is now
   `Dial(ctx context.Context)`, and the client gained `ConnectContext(ctx)`. The
   dial honours the context's deadline/cancellation; when the context carries no

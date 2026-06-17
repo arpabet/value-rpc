@@ -166,14 +166,35 @@ func FunctionError(requestId value.Number, code vrpc.Code, format string, args .
 		Put(vrpc.ErrorField, value.Utf8(msg))
 }
 
+// handlerErrCode maps a user-handler error to a Code: the code of a
+// *valuerpc.Error, else Internal.
+func handlerErrCode(err error) vrpc.Code {
+	if code := vrpc.CodeOf(err); code != vrpc.CodeUnknown {
+		return code
+	}
+	return vrpc.CodeInternal
+}
+
 // handlerError builds an ErrorResponse from an error returned by a user handler,
 // honouring its code when it is a *valuerpc.Error and defaulting to Internal.
 func handlerError(requestId value.Number, where string, err error) value.Map {
-	code := vrpc.CodeOf(err)
-	if code == vrpc.CodeUnknown {
-		code = vrpc.CodeInternal
+	return FunctionError(requestId, handlerErrCode(err), "%s: %v", where, err)
+}
+
+// responseCode extracts the Code from a synchronous response map: the ErrorResponse
+// code, or CodeOK for a successful FunctionResponse. nil (a stream established with
+// no synchronous reply) reads as CodeOK.
+func responseCode(resp value.Map) vrpc.Code {
+	if resp == nil {
+		return vrpc.CodeOK
 	}
-	return FunctionError(requestId, code, "%s: %v", where, err)
+	if mt, ok := vrpc.GetNumberField(resp, vrpc.MessageTypeField); ok && vrpc.MessageType(mt.Long()) == vrpc.ErrorResponse {
+		if c, ok := vrpc.GetNumberField(resp, vrpc.CodeField); ok {
+			return vrpc.Code(c.Long())
+		}
+		return vrpc.CodeUnknown
+	}
+	return vrpc.CodeOK
 }
 
 func (t *servingClient) sender() {
@@ -231,6 +252,25 @@ func (t *servingClient) serveFunctionRequest(ft functionType, req value.Map) {
 		}
 		t.inFlight.Add(-1) // paired with the increment in serveNewRequest
 	}()
+
+	// Unary requests complete synchronously here, so bracket them with
+	// RequestBegin/RequestEnd (code from the response). Streams complete on their
+	// own lifecycle and are metered via newServingRequest/deleteRequest instead.
+	if ft == singleFunction {
+		name := ""
+		if method, ok := vrpc.GetStringField(req, vrpc.FunctionNameField); ok {
+			name = method.String()
+		}
+		t.cfg.metrics.RequestBegin(name)
+		start := time.Now()
+		resp := t.doServeFunctionRequest(ft, req)
+		t.cfg.metrics.RequestEnd(name, responseCode(resp), time.Since(start))
+		if resp != nil {
+			t.send(resp)
+		}
+		return
+	}
+
 	resp := t.doServeFunctionRequest(ft, req)
 	if resp != nil {
 		t.send(resp)
@@ -310,9 +350,10 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 	case outgoingStream:
 		// Streams outlive this call: the cancel belongs to the serving request
 		// and fires when the stream is torn down (closeRequest / cancel / SLA).
-		sr := t.newServingRequest(ft, reqId, cancel)
+		sr := t.newServingRequest(ft, reqId, name.String(), cancel)
 		outC, err := fn.outStream(reqCtx, args)
 		if err != nil {
+			sr.setCode(handlerErrCode(err))
 			sr.closeRequest(t)
 			return handlerError(reqId, "out stream "+name.String(), err)
 		}
@@ -320,18 +361,20 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		return nil
 
 	case incomingStream:
-		sr := t.newServingRequest(ft, reqId, cancel)
+		sr := t.newServingRequest(ft, reqId, name.String(), cancel)
 		err := fn.inStream(reqCtx, args, sr.inC)
 		if err != nil {
+			sr.setCode(handlerErrCode(err))
 			sr.closeRequest(t)
 			return handlerError(reqId, "in stream "+name.String(), err)
 		}
 		return StreamReady(reqId)
 
 	case chat:
-		sr := t.newServingRequest(ft, reqId, cancel)
+		sr := t.newServingRequest(ft, reqId, name.String(), cancel)
 		outC, err := fn.chat(reqCtx, args, sr.inC)
 		if err != nil {
+			sr.setCode(handlerErrCode(err))
 			sr.closeRequest(t)
 			return handlerError(reqId, "chat "+name.String(), err)
 		}
@@ -358,12 +401,17 @@ func (t *servingClient) newRequestContext(req value.Map, ft functionType) (conte
 	return context.WithCancel(t.ctx)
 }
 
-func (t *servingClient) newServingRequest(ft functionType, reqId value.Number, cancel context.CancelFunc) *servingRequest {
+func (t *servingClient) newServingRequest(ft functionType, reqId value.Number, name string, cancel context.CancelFunc) *servingRequest {
 	sr := NewServingRequest(ft, reqId)
 	sr.cancel = cancel // set before publishing so the read loop never races on it
+	sr.method = name
+	sr.start = time.Now()
 	if ft == incomingStream || ft == chat {
 		sr.setupInbound(t, t.cfg.incomingQueueCap, t.cfg.maxPending)
 	}
+	// Stream enters flight here; RequestEnd fires once at deleteRequest (the single
+	// idempotent retirement point used by every teardown path).
+	t.cfg.metrics.RequestBegin(name)
 	t.requestMap.Store(reqId.Long(), sr)
 	t.liveStreams.Add(1)
 	return sr
@@ -382,9 +430,13 @@ func (t *servingClient) findServingRequest(reqId value.Number) (*servingRequest,
 
 func (t *servingClient) deleteRequest(requestId value.Number) {
 	// LoadAndDelete so the stream counter is decremented exactly once even if a
-	// teardown path calls deleteRequest more than once for the same request.
-	if _, existed := t.requestMap.LoadAndDelete(requestId.Long()); existed {
+	// teardown path calls deleteRequest more than once for the same request. This
+	// is also the single retirement point for stream metrics (RequestEnd fires
+	// exactly once, paired with RequestBegin in newServingRequest).
+	if v, existed := t.requestMap.LoadAndDelete(requestId.Long()); existed {
 		t.liveStreams.Add(-1)
+		sr := v.(*servingRequest)
+		t.cfg.metrics.RequestEnd(sr.method, vrpc.Code(sr.code.Load()), time.Since(sr.start))
 	}
 }
 
