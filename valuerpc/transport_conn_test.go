@@ -6,6 +6,7 @@
 package valuerpc_test
 
 import (
+	"context"
 	"io"
 	"net"
 	"testing"
@@ -63,12 +64,12 @@ func TestSingleConnDialer_ConsumedOnce(t *testing.T) {
 	defer c2.Close()
 	d := vrpc.NewSingleConnDialer(c1, time.Second)
 
-	mc, err := d.Dial()
+	mc, err := d.Dial(context.Background())
 	if err != nil {
 		t.Fatalf("first Dial: %v", err)
 	}
 	defer mc.Close()
-	if _, err := d.Dial(); err != vrpc.ErrConnConsumed {
+	if _, err := d.Dial(context.Background()); err != vrpc.ErrConnConsumed {
 		t.Fatalf("second Dial err = %v, want ErrConnConsumed", err)
 	}
 }
@@ -77,7 +78,7 @@ func TestSingleConnDialer_ConsumedOnce(t *testing.T) {
 // reconnect gets a freshly established, framed connection.
 func TestFuncDialer_ReconnectEstablishes(t *testing.T) {
 	var dials int
-	d := vrpc.NewFuncDialer(func() (io.ReadWriteCloser, error) {
+	d := vrpc.NewFuncDialer(func(ctx context.Context) (io.ReadWriteCloser, error) {
 		dials++
 		c1, c2 := net.Pipe()
 		go func() { <-time.After(time.Millisecond); c2.Close() }()
@@ -85,7 +86,7 @@ func TestFuncDialer_ReconnectEstablishes(t *testing.T) {
 	}, time.Second)
 
 	for i := 0; i < 3; i++ {
-		mc, err := d.Dial()
+		mc, err := d.Dial(context.Background())
 		if err != nil {
 			t.Fatalf("Dial %d: %v", i, err)
 		}

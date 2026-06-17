@@ -6,6 +6,7 @@
 package valuerpc
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -24,8 +25,9 @@ import (
 // the standard Dialer / Listener interfaces used by valueclient.NewClientWithDialer
 // and valueserver.NewServerWithListener. The canonical obfuscation wiring is:
 //
-//	dialer := valuerpc.NewFuncDialer(func() (io.ReadWriteCloser, error) {
-//		base, err := net.Dial("tcp", addr) // or any base transport
+//	dialer := valuerpc.NewFuncDialer(func(ctx context.Context) (io.ReadWriteCloser, error) {
+//		var nd net.Dialer
+//		base, err := nd.DialContext(ctx, "tcp", addr) // or any base transport
 //		if err != nil {
 //			return nil, err
 //		}
@@ -46,17 +48,17 @@ var ErrListenerClosed = fmt.Errorf("value-rpc: listener closed")
 // length-prefix codec. It is the general client seam for custom and obfuscated
 // transports: connect establishes the byte stream and the RPC layer frames and
 // uses it unchanged.
-func NewFuncDialer(connect func() (io.ReadWriteCloser, error), writeTimeout time.Duration) Dialer {
+func NewFuncDialer(connect func(ctx context.Context) (io.ReadWriteCloser, error), writeTimeout time.Duration) Dialer {
 	return &funcDialer{connect: connect, writeTimeout: writeTimeout}
 }
 
 type funcDialer struct {
-	connect      func() (io.ReadWriteCloser, error)
+	connect      func(ctx context.Context) (io.ReadWriteCloser, error)
 	writeTimeout time.Duration
 }
 
-func (d *funcDialer) Dial() (MsgConn, error) {
-	c, err := d.connect()
+func (d *funcDialer) Dial(ctx context.Context) (MsgConn, error) {
+	c, err := d.connect(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +81,7 @@ type singleConnDialer struct {
 	used         bool
 }
 
-func (d *singleConnDialer) Dial() (MsgConn, error) {
+func (d *singleConnDialer) Dial(context.Context) (MsgConn, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.used {

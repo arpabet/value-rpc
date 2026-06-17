@@ -38,6 +38,9 @@ transport:  TCP  ·  Unix socket  ·  WebSocket        (optional SOCKS5 / wss TL
   per‑request pump, so one slow consumer can't stall other multiplexed requests.
 - **Structured logging** via `*zap.Logger` on both server and client (the client
   takes it with `valueclient.WithLogger(logger)`; silent by default).
+- **Context-aware, bounded dial**: `cli.ConnectContext(ctx)` cancels/bounds the
+  dial; without a context deadline a default `WithDialTimeout` applies, so connect
+  never hangs on an unreachable peer.
 - **Authenticated session resumption**: the server issues a per-session token at
   handshake; reconnecting with the matching token resumes the session, so a peer
   can't take it over by guessing the client id.

@@ -277,9 +277,14 @@ func newWSDialer(url string, writeTimeout time.Duration, maxFrameSize int, keepA
 	}
 }
 
-func (d *wsDialer) Dial() (MsgConn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), d.dialTimeout)
-	defer cancel()
+func (d *wsDialer) Dial(ctx context.Context) (MsgConn, error) {
+	// Honour the caller's deadline; apply the dialer's own timeout only when the
+	// context carries none (e.g. a direct caller without a bounded ConnectContext).
+	if _, ok := ctx.Deadline(); !ok && d.dialTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, d.dialTimeout)
+		defer cancel()
+	}
 	c, _, err := websocket.Dial(ctx, d.url, nil)
 	if err != nil {
 		return nil, err

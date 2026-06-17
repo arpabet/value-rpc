@@ -568,7 +568,7 @@ func TestInboundOverflowSurfaced(t *testing.T) {
 	defer stop()
 
 	dialer := valuerpc.NewDialer(addr, "", valueclient.KeepAlivePeriod, valueclient.DefaultTimeout, valuerpc.MaxFrameSize)
-	conn, err := dialer.Dial()
+	conn, err := dialer.Dial(context.Background())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -730,6 +730,40 @@ func TestClientLogger(t *testing.T) {
 			t.Fatal("expected a 'connection established' entry via the injected logger")
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+}
+
+// TestConnectContextCanceled: a cancelled context aborts the dial promptly
+// instead of blocking on connection establishment.
+func TestConnectContextCanceled(t *testing.T) {
+	cli := valueclient.NewClient("192.0.2.1:9", "") // TEST-NET-1: unroutable
+	defer cli.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled
+
+	start := time.Now()
+	if err := cli.ConnectContext(ctx); err == nil {
+		t.Fatal("expected ConnectContext to fail for a cancelled context")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("cancelled dial was not aborted promptly: took %v", d)
+	}
+}
+
+// TestConnectDialTimeout: WithDialTimeout bounds a dial to an unreachable peer so
+// Connect cannot hang on the OS default connect timeout.
+func TestConnectDialTimeout(t *testing.T) {
+	cli := valueclient.NewClient("192.0.2.1:9", "", // TEST-NET-1: blackholed
+		valueclient.WithDialTimeout(200*time.Millisecond))
+	defer cli.Close()
+
+	start := time.Now()
+	if err := cli.Connect(); err == nil {
+		t.Fatal("expected the dial to an unroutable address to fail")
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("dial was not bounded by WithDialTimeout: took %v", d)
 	}
 }
 

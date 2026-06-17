@@ -496,9 +496,14 @@ type quicDialer struct {
 	writeTO time.Duration
 }
 
-func (d *quicDialer) Dial() (valuerpc.MsgConn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), DialTimeout)
-	defer cancel()
+func (d *quicDialer) Dial(ctx context.Context) (valuerpc.MsgConn, error) {
+	// Honour the caller's deadline; apply the package DialTimeout only when the
+	// context carries none.
+	if _, ok := ctx.Deadline(); !ok && DialTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DialTimeout)
+		defer cancel()
+	}
 	conn, err := quic.DialAddr(ctx, d.addr, clientTLS(d.config, d.addr), quicConfig())
 	if err != nil {
 		return nil, err

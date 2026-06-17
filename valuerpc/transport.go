@@ -6,6 +6,7 @@
 package valuerpc
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -29,9 +30,10 @@ type Listener interface {
 }
 
 // Dialer establishes a single outbound MsgConn. It is the client-side transport
-// seam.
+// seam. ctx bounds and cancels the dial (connection establishment / handshake);
+// once Dial returns, the connection's lifetime is independent of ctx.
 type Dialer interface {
-	Dial() (MsgConn, error)
+	Dial(ctx context.Context) (MsgConn, error)
 }
 
 // --- stream transport: length-prefix framed reliable byte streams ---
@@ -95,19 +97,25 @@ func NewStreamDialer(network, address, socks5 string, keepAlive, writeTimeout ti
 	}
 }
 
-func (d *streamDialer) Dial() (MsgConn, error) {
+func (d *streamDialer) Dial(ctx context.Context) (MsgConn, error) {
 	if d.socks5 != "" {
 		p, err := proxy.SOCKS5(d.network, d.socks5, nil, proxy.Direct)
 		if err != nil {
 			return nil, err
 		}
-		c, err := p.Dial(d.network, d.address)
+		var c net.Conn
+		if cd, ok := p.(proxy.ContextDialer); ok {
+			c, err = cd.DialContext(ctx, d.network, d.address)
+		} else {
+			c, err = p.Dial(d.network, d.address) // older proxy.Dialer: ctx best-effort
+		}
 		if err != nil {
 			return nil, err
 		}
 		return NewMsgConn(c, d.writeTimeout, d.maxFrameSize), nil
 	}
-	c, err := net.Dial(d.network, d.address)
+	var nd net.Dialer
+	c, err := nd.DialContext(ctx, d.network, d.address)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +202,7 @@ func NewDialer(address, socks5 string, keepAlive, writeTimeout time.Duration, ma
 
 type errDialer struct{ err error }
 
-func (d errDialer) Dial() (MsgConn, error) { return nil, d.err }
+func (d errDialer) Dial(context.Context) (MsgConn, error) { return nil, d.err }
 
 // NewUnixListener listens on a Unix-domain socket, cleaning up a stale socket
 // file left behind by a previous (crashed) process first. It refuses to remove

@@ -24,7 +24,12 @@ type clientConfig struct {
 	keepAlive    time.Duration
 	writeTimeout time.Duration
 	maxFrameSize int
+	dialTimeout  time.Duration
 }
+
+// DefaultDialTimeout bounds a connection dial when the connect context carries no
+// deadline, so Connect cannot block indefinitely on an unreachable peer.
+var DefaultDialTimeout = 30 * time.Second
 
 func newClientConfig(opts []ClientOption) clientConfig {
 	cfg := clientConfig{
@@ -35,6 +40,7 @@ func newClientConfig(opts []ClientOption) clientConfig {
 		keepAlive:    KeepAlivePeriod,
 		writeTimeout: DefaultTimeout,
 		maxFrameSize: valuerpc.MaxFrameSize,
+		dialTimeout:  DefaultDialTimeout,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -84,6 +90,13 @@ func WithWriteTimeout(d time.Duration) ClientOption {
 // NewClientWithDialer.
 func WithMaxFrameSize(n int) ClientOption {
 	return func(c *clientConfig) { c.maxFrameSize = n }
+}
+
+// WithDialTimeout bounds a connection dial when ConnectContext (or Connect) is
+// called with a context that carries no deadline. 0 disables the bound. Ignored
+// when the connect context already has a deadline.
+func WithDialTimeout(d time.Duration) ClientOption {
+	return func(c *clientConfig) { c.dialTimeout = d }
 }
 
 // WithLogger sets the structured logger the client uses for connection,

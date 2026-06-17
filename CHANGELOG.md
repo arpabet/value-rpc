@@ -9,6 +9,16 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Context-aware, bounded dial.** The `valuerpc.Dialer` interface is now
+  `Dial(ctx context.Context)`, and the client gained `ConnectContext(ctx)`. The
+  dial honours the context's deadline/cancellation; when the context carries no
+  deadline a configurable dial timeout applies (`valueclient.WithDialTimeout`,
+  default 30s via `DefaultDialTimeout`), so `Connect()` can no longer block on the
+  OS connect timeout to an unreachable peer. Implicit connect-on-first-call uses
+  the call's context. Stream dialers use `net.Dialer.DialContext` /
+  `tls.Dialer.DialContext`; the bring-your-own `NewFuncDialer` connect func now
+  takes a `context.Context`. Tests: `valueserver.TestConnectContextCanceled`,
+  `TestConnectDialTimeout`.
 - **Pluggable client logger (`*zap.Logger`).** The client no longer uses stdlib
   `log`; connection, reconnect, and protocol diagnostics now go through an
   injected `*zap.Logger` — the same structured logger glue applications already

@@ -6,6 +6,7 @@
 package valuerpc_test
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -64,7 +65,7 @@ func TestPeerCertificates_NonTLS(t *testing.T) {
 
 func TestNewDialer_UnsupportedSchemeErrorsOnDial(t *testing.T) {
 	d := vrpc.NewDialer("bogus://addr", "", 0, time.Second, vrpc.MaxFrameSize)
-	if _, err := d.Dial(); err == nil {
+	if _, err := d.Dial(context.Background()); err == nil {
 		t.Fatal("expected Dial to fail for an unsupported scheme")
 	}
 }

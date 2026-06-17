@@ -20,6 +20,10 @@ type Client interface {
 
 	Connect() error
 
+	// ConnectContext is Connect with a context bounding the dial. Without a
+	// context deadline the configured dial timeout (WithDialTimeout) applies.
+	ConnectContext(ctx context.Context) error
+
 	Reconnect() error
 
 	IsActive() bool

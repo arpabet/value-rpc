@@ -6,6 +6,7 @@
 package valuerpc
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -53,8 +54,9 @@ func NewTLSDialer(address string, config *tls.Config, keepAlive, writeTimeout ti
 	return &tlsDialer{address: address, config: config, keepAlive: keepAlive, writeTimeout: writeTimeout, maxFrameSize: maxFrameSize}
 }
 
-func (d *tlsDialer) Dial() (MsgConn, error) {
-	conn, err := tls.Dial("tcp", d.address, d.config) // performs the TLS handshake
+func (d *tlsDialer) Dial(ctx context.Context) (MsgConn, error) {
+	td := &tls.Dialer{Config: d.config} // TCP connect + TLS handshake, both bounded by ctx
+	conn, err := td.DialContext(ctx, "tcp", d.address)
 	if err != nil {
 		return nil, err
 	}

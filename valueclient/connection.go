@@ -6,6 +6,7 @@
 package valueclient
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -30,9 +31,9 @@ type rpcConn struct {
 	closeOnce    sync.Once
 }
 
-func newConn(dialer valuerpc.Dialer, clientId int64, sessionToken string, credential value.Value, sendingCap int64, respHandler responseHandler, errorHandler ErrorHandler) (*rpcConn, error) {
+func newConn(ctx context.Context, dialer valuerpc.Dialer, clientId int64, sessionToken string, credential value.Value, sendingCap int64, respHandler responseHandler, errorHandler ErrorHandler) (*rpcConn, error) {
 
-	conn, err := dialer.Dial()
+	conn, err := dialer.Dial(ctx)
 	if err != nil {
 		return nil, err
 	}

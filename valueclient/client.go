@@ -40,6 +40,7 @@ type rpcClient struct {
 	credential        atomic.Pointer[value.Value] // client-supplied; validated by the server Authenticator
 	maxPending        int                         // per-stream receive pending bound
 	logger            *zap.Logger                 // structured diagnostics; no-op unless WithLogger set
+	dialTimeout       time.Duration               // bounds a dial when the context carries no deadline
 }
 
 func (t *rpcClient) loadSessionToken() string {
@@ -102,12 +103,13 @@ func NewClientWithDialer(dialer valuerpc.Dialer, opts ...ClientOption) Client {
 
 	cfg := newClientConfig(opts)
 	t := &rpcClient{
-		dialer:     dialer,
-		clientId:   rand.Int63(),
-		sendingCap: cfg.sendingCap,
-		maxPending: cfg.maxPending,
-		logger:     cfg.logger,
-		conn:       NewSyncConn(),
+		dialer:      dialer,
+		clientId:    rand.Int63(),
+		sendingCap:  cfg.sendingCap,
+		maxPending:  cfg.maxPending,
+		logger:      cfg.logger,
+		dialTimeout: cfg.dialTimeout,
+		conn:        NewSyncConn(),
 	}
 
 	t.timeoutMls.Store(cfg.timeoutMls)
@@ -199,10 +201,23 @@ func (t *rpcClient) IsActive() bool {
 }
 
 func (t *rpcClient) Connect() error {
+	return t.ConnectContext(context.Background())
+}
+
+// ConnectContext establishes the connection, bounding the dial by ctx. When ctx
+// carries no deadline, the configured dial timeout (WithDialTimeout) is applied
+// so a dial to an unreachable peer cannot block indefinitely. ctx only bounds the
+// dial; the established connection's lifetime is independent of it.
+func (t *rpcClient) ConnectContext(ctx context.Context) error {
 	if t.conn.hasConn() {
 		return nil
 	}
-	return t.conn.connect(t.dialer, t.clientId, t.loadSessionToken(), t.loadCredential(), t.sendingCap, t.getResponseHandler(), t.getErrorHandler())
+	if _, ok := ctx.Deadline(); !ok && t.dialTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, t.dialTimeout)
+		defer cancel()
+	}
+	return t.conn.connect(ctx, t.dialer, t.clientId, t.loadSessionToken(), t.loadCredential(), t.sendingCap, t.getResponseHandler(), t.getErrorHandler())
 }
 
 func (t *rpcClient) Reconnect() error {
@@ -351,18 +366,18 @@ func (t *rpcClient) newRequestCtx(requestId int64, kind streamKind, req value.Ma
 	return requestCtx
 }
 
-func (t *rpcClient) ensureConnection() error {
+func (t *rpcClient) ensureConnection(ctx context.Context) error {
 
 	if !t.conn.hasConn() {
-		return t.Connect()
+		return t.ConnectContext(ctx)
 	}
 
 	return nil
 }
 
-func (t *rpcClient) sendRequest(kind streamKind, req value.Map, receiveCap int) (*rpcRequestCtx, error) {
+func (t *rpcClient) sendRequest(ctx context.Context, kind streamKind, req value.Map, receiveCap int) (*rpcRequestCtx, error) {
 
-	err := t.ensureConnection()
+	err := t.ensureConnection(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -379,8 +394,9 @@ func (t *rpcClient) sendRequest(kind streamKind, req value.Map, receiveCap int) 
 
 func (t *rpcClient) sendSystemRequest(requestId int64, mt valuerpc.MessageType) {
 
-	err := t.ensureConnection()
-	if err != nil {
+	// System messages (cancel, credit) are fire-and-forget on the existing
+	// connection; the bounded default dial applies if a reconnect is needed.
+	if err := t.ensureConnection(context.Background()); err != nil {
 		return
 	}
 
@@ -435,7 +451,7 @@ func (t *rpcClient) CallFunction(ctx context.Context, name string, args value.Va
 	timeout := t.effectiveTimeout(ctx)
 	req := t.constructRequest(valuerpc.FunctionRequest, name, args, timeout)
 
-	requestCtx, err := t.sendRequest(unaryKind, req, 1)
+	requestCtx, err := t.sendRequest(ctx, unaryKind, req, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -456,7 +472,7 @@ func (t *rpcClient) GetStream(ctx context.Context, name string, args value.Value
 	timeout := t.effectiveTimeout(ctx)
 	req := t.constructRequest(valuerpc.GetStreamRequest, name, args, timeout)
 
-	requestCtx, err := t.sendRequest(getStreamKind, req, receiveCap)
+	requestCtx, err := t.sendRequest(ctx, getStreamKind, req, receiveCap)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -479,7 +495,7 @@ func (t *rpcClient) PutStream(ctx context.Context, name string, args value.Value
 	timeout := t.effectiveTimeout(ctx)
 	req := t.constructRequest(valuerpc.PutStreamRequest, name, args, timeout)
 
-	requestCtx, err := t.sendRequest(putStreamKind, req, 1)
+	requestCtx, err := t.sendRequest(ctx, putStreamKind, req, 1)
 	if err != nil {
 		return err
 	}
@@ -503,7 +519,7 @@ func (t *rpcClient) Chat(ctx context.Context, name string, args value.Value, rec
 	timeout := t.effectiveTimeout(ctx)
 	req := t.constructRequest(valuerpc.ChatRequest, name, args, timeout)
 
-	requestCtx, err := t.sendRequest(chatKind, req, receiveCap+1)
+	requestCtx, err := t.sendRequest(ctx, chatKind, req, receiveCap+1)
 	if err != nil {
 		return nil, 0, err
 	}

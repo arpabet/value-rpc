@@ -67,7 +67,7 @@ func TestAuthenticatorGatesHandshake(t *testing.T) {
 func rawHandshake(t *testing.T, addr string, clientId int64, token string) (valuerpc.MsgConn, value.Map, error) {
 	t.Helper()
 	dialer := valuerpc.NewDialer(addr, "", valueclient.KeepAlivePeriod, valueclient.DefaultTimeout, valuerpc.MaxFrameSize)
-	conn, err := dialer.Dial()
+	conn, err := dialer.Dial(context.Background())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

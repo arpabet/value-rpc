@@ -6,6 +6,7 @@
 package valuerpc
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -89,7 +90,7 @@ func NewMemDialer(name string) Dialer { return &memDialer{name: name} }
 
 type memDialer struct{ name string }
 
-func (d *memDialer) Dial() (MsgConn, error) {
+func (d *memDialer) Dial(ctx context.Context) (MsgConn, error) {
 	memRegistry.mu.Lock()
 	l, ok := memRegistry.m[d.name]
 	memRegistry.mu.Unlock()
@@ -102,6 +103,8 @@ func (d *memDialer) Dial() (MsgConn, error) {
 		return client, nil
 	case <-l.done:
 		return nil, fmt.Errorf("mem listener %q closed", d.name)
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
