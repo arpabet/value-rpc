@@ -41,6 +41,11 @@ transport:  TCP  ·  Unix socket  ·  WebSocket        (optional SOCKS5 / wss TL
 - **Pluggable metrics** (`valuerpc.Metrics` via `valueclient.WithMetrics`):
   request/error counters (by code), in-flight gauge, latency, reconnects, and
   stream throughput — wire it to Prometheus/OpenTelemetry. No-op by default.
+- **Metadata / trace-context propagation**: the client injects per-request
+  metadata from the call's context (`valueclient.WithMetadata`) into the envelope;
+  the server surfaces it on the handler's context (`valuerpc.MetadataFromContext`)
+  and can enrich that context via `valueserver.WithMetadataExtractor` — the
+  dependency-free seam for OpenTelemetry / W3C `traceparent`.
 - **Context-aware, bounded dial**: `cli.ConnectContext(ctx)` cancels/bounds the
   dial; without a context deadline a default `WithDialTimeout` applies, so connect
   never hangs on an unreachable peer.

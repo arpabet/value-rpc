@@ -6,6 +6,7 @@
 package valueclient
 
 import (
+	"context"
 	"time"
 
 	"go.arpabet.com/value-rpc/valuerpc"
@@ -20,6 +21,7 @@ type clientConfig struct {
 	maxPending int
 	logger     *zap.Logger
 	metrics    valuerpc.Metrics
+	metadata   func(context.Context) valuerpc.Metadata
 
 	// transport-level (used when a convenience constructor builds the dialer)
 	keepAlive    time.Duration
@@ -108,6 +110,20 @@ func WithDialTimeout(d time.Duration) ClientOption {
 // in-flight gauge, and stream throughput. Without it metrics are a no-op.
 func WithMetrics(m valuerpc.Metrics) ClientOption {
 	return func(c *clientConfig) { c.metrics = m }
+}
+
+// WithMetadata installs an injector that produces per-request metadata from the
+// call's context (string key/value pairs added to the request envelope and
+// surfaced on the server handler's context). This is the seam for distributed
+// tracing; with OpenTelemetry:
+//
+//	WithMetadata(func(ctx context.Context) valuerpc.Metadata {
+//		c := propagation.MapCarrier{}
+//		otel.GetTextMapPropagator().Inject(ctx, c)
+//		return c
+//	})
+func WithMetadata(inject func(ctx context.Context) valuerpc.Metadata) ClientOption {
+	return func(c *clientConfig) { c.metadata = inject }
 }
 
 // WithLogger sets the structured logger the client uses for connection,

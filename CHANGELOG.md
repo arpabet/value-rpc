@@ -9,6 +9,15 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Metadata / trace-context propagation.** Requests now carry a string→string
+  metadata map (new `md` envelope field) for distributed-trace context and
+  baggage. The client injects it per request from the call's context
+  (`valueclient.WithMetadata(func(ctx) valuerpc.Metadata)`); the server surfaces
+  it on the handler's context (`valuerpc.MetadataFromContext(ctx)`) and can turn
+  it into a propagated context via `valueserver.WithMetadataExtractor` — the
+  dependency-free seam for OpenTelemetry/W3C `traceparent` (carrier helpers
+  `valuerpc.EncodeMetadata`/`DecodeMetadata`, `Metadata` type alias). Test:
+  `valueserver.TestMetadataPropagation`.
 - **Pluggable metrics (`valuerpc.Metrics`).** A small event interface
   (`RequestBegin`/`RequestEnd(method, code, elapsed)`/`StreamValue`/`Reconnect`,
   with a `NopMetrics` default) feeds request/error counters (grouped by

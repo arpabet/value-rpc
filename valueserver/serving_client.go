@@ -279,6 +279,16 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 	// and are bounded by client cancellation, not the per-call SLA.
 	reqCtx, cancel := t.newRequestContext(req, ft)
 
+	// Surface incoming request metadata (trace context, baggage) on the handler's
+	// context, then let an optional extractor turn it into a real propagated
+	// context (e.g. an OTel span context). Children inherit cancel.
+	if md := vrpc.DecodeMetadata(req); md != nil {
+		reqCtx = vrpc.ContextWithMetadata(reqCtx, md)
+		if t.cfg.metadataExtractor != nil {
+			reqCtx = t.cfg.metadataExtractor(reqCtx, md)
+		}
+	}
+
 	switch fn.ft {
 	case singleFunction:
 		// Register the cancel so a CancelRequest for this in-flight unary call

@@ -53,9 +53,10 @@ var FunctionNameField = "fn"
 var ArgumentsField = "args" // allow multiple args if List value in function call
 var ResultField = "res"     // allow multiple results if List in function call
 var ErrorField = "err"
-var CodeField = "code" // ErrorResponse: machine-readable Code
-var CreditField = "cr" // StreamCredit: number of additional stream values granted
-var ValueField = "val" // streaming value field
+var CodeField = "code"   // ErrorResponse: machine-readable Code
+var CreditField = "cr"   // StreamCredit: number of additional stream values granted
+var MetadataField = "md" // request metadata (trace context, baggage): string->string map
+var ValueField = "val"   // streaming value field
 
 var HandshakeRequestId = int64(-1)
 

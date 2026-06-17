@@ -36,12 +36,13 @@ type rpcClient struct {
 	timeoutMls        atomic.Int64
 	perfMonitor       atomic.Value
 	shuttingDown      atomic.Bool
-	sessionToken      atomic.Pointer[string]      // server-issued; resent to authorize reconnect
-	credential        atomic.Pointer[value.Value] // client-supplied; validated by the server Authenticator
-	maxPending        int                         // per-stream receive pending bound
-	logger            *zap.Logger                 // structured diagnostics; no-op unless WithLogger set
-	metrics           valuerpc.Metrics            // observability sink; no-op unless WithMetrics set
-	dialTimeout       time.Duration               // bounds a dial when the context carries no deadline
+	sessionToken      atomic.Pointer[string]                  // server-issued; resent to authorize reconnect
+	credential        atomic.Pointer[value.Value]             // client-supplied; validated by the server Authenticator
+	maxPending        int                                     // per-stream receive pending bound
+	logger            *zap.Logger                             // structured diagnostics; no-op unless WithLogger set
+	metrics           valuerpc.Metrics                        // observability sink; no-op unless WithMetrics set
+	metadata          func(context.Context) valuerpc.Metadata // per-request metadata injector; nil unless WithMetadata set
+	dialTimeout       time.Duration                           // bounds a dial when the context carries no deadline
 }
 
 func (t *rpcClient) loadSessionToken() string {
@@ -110,6 +111,7 @@ func NewClientWithDialer(dialer valuerpc.Dialer, opts ...ClientOption) Client {
 		maxPending:  cfg.maxPending,
 		logger:      cfg.logger,
 		metrics:     cfg.metrics,
+		metadata:    cfg.metadata,
 		dialTimeout: cfg.dialTimeout,
 		conn:        NewSyncConn(),
 	}
@@ -457,7 +459,7 @@ func (t *rpcClient) watchContext(ctx context.Context, requestCtx *rpcRequestCtx)
 func (t *rpcClient) CallFunction(ctx context.Context, name string, args value.Value) (value.Value, error) {
 
 	timeout := t.effectiveTimeout(ctx)
-	req := t.constructRequest(valuerpc.FunctionRequest, name, args, timeout)
+	req := t.constructRequest(ctx, valuerpc.FunctionRequest, name, args, timeout)
 
 	requestCtx, err := t.sendRequest(ctx, unaryKind, req, 1)
 	if err != nil {
@@ -479,7 +481,7 @@ func (t *rpcClient) CallFunction(ctx context.Context, name string, args value.Va
 func (t *rpcClient) GetStream(ctx context.Context, name string, args value.Value, receiveCap int) (<-chan value.Value, int64, error) {
 
 	timeout := t.effectiveTimeout(ctx)
-	req := t.constructRequest(valuerpc.GetStreamRequest, name, args, timeout)
+	req := t.constructRequest(ctx, valuerpc.GetStreamRequest, name, args, timeout)
 
 	requestCtx, err := t.sendRequest(ctx, getStreamKind, req, receiveCap)
 	if err != nil {
@@ -503,7 +505,7 @@ func (t *rpcClient) GetStream(ctx context.Context, name string, args value.Value
 func (t *rpcClient) PutStream(ctx context.Context, name string, args value.Value, putCh <-chan value.Value) error {
 
 	timeout := t.effectiveTimeout(ctx)
-	req := t.constructRequest(valuerpc.PutStreamRequest, name, args, timeout)
+	req := t.constructRequest(ctx, valuerpc.PutStreamRequest, name, args, timeout)
 
 	requestCtx, err := t.sendRequest(ctx, putStreamKind, req, 1)
 	if err != nil {
@@ -528,7 +530,7 @@ func (t *rpcClient) PutStream(ctx context.Context, name string, args value.Value
 func (t *rpcClient) Chat(ctx context.Context, name string, args value.Value, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error) {
 
 	timeout := t.effectiveTimeout(ctx)
-	req := t.constructRequest(valuerpc.ChatRequest, name, args, timeout)
+	req := t.constructRequest(ctx, valuerpc.ChatRequest, name, args, timeout)
 
 	requestCtx, err := t.sendRequest(ctx, chatKind, req, receiveCap+1)
 	if err != nil {
@@ -587,7 +589,7 @@ func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Valu
 
 }
 
-func (t *rpcClient) constructRequest(mt valuerpc.MessageType, name string, args value.Value, timeout int64) value.Map {
+func (t *rpcClient) constructRequest(ctx context.Context, mt valuerpc.MessageType, name string, args value.Value, timeout int64) value.Map {
 
 	req := value.EmptyMap(true).
 		Put(valuerpc.MessageTypeField, mt.Long()).
@@ -596,6 +598,13 @@ func (t *rpcClient) constructRequest(mt valuerpc.MessageType, name string, args 
 
 	if timeout > 0 {
 		req = req.Put(valuerpc.TimeoutField, value.Long(timeout))
+	}
+
+	// Inject request metadata (trace context, baggage) from the call's context.
+	if t.metadata != nil {
+		if md := valuerpc.EncodeMetadata(t.metadata(ctx)); md != nil {
+			req = req.Put(valuerpc.MetadataField, md)
+		}
 	}
 
 	return req

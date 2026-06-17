@@ -6,6 +6,7 @@
 package valueserver
 
 import (
+	"context"
 	"time"
 
 	"go.arpabet.com/value-rpc/valuerpc"
@@ -24,6 +25,7 @@ type serverConfig struct {
 	incomingQueueCap      int
 	maxPending            int
 	handshakeTimeout      time.Duration
+	metadataExtractor     func(ctx context.Context, md valuerpc.Metadata) context.Context
 
 	// transport-level (used when a convenience constructor builds the listener)
 	keepAlive    time.Duration
@@ -91,6 +93,19 @@ func WithStreamMaxPending(n int) ServerOption {
 // handshake (0 = no limit).
 func WithHandshakeTimeout(d time.Duration) ServerOption {
 	return func(c *serverConfig) { c.handshakeTimeout = d }
+}
+
+// WithMetadataExtractor enriches each handler's context from the request's
+// incoming metadata before the handler runs — the server-side seam for
+// distributed tracing. The raw metadata is always available via
+// valuerpc.MetadataFromContext; this hook lets a propagator turn it into a real
+// context (e.g. an OpenTelemetry span context):
+//
+//	WithMetadataExtractor(func(ctx context.Context, md valuerpc.Metadata) context.Context {
+//		return otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(md))
+//	})
+func WithMetadataExtractor(extract func(ctx context.Context, md valuerpc.Metadata) context.Context) ServerOption {
+	return func(c *serverConfig) { c.metadataExtractor = extract }
 }
 
 // WithKeepAlivePeriod sets TCP keepalive (and the WebSocket ping interval) for

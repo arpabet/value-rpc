@@ -807,6 +807,59 @@ func TestClientMetrics(t *testing.T) {
 	}
 }
 
+// TestMetadataPropagation verifies trace/baggage metadata flows from the call's
+// context, through the envelope, onto the server handler's context — both as raw
+// metadata and via the WithMetadataExtractor enrichment hook.
+func TestMetadataPropagation(t *testing.T) {
+	type tpKey struct{}   // client: trace id carried in the call context
+	type spanKey struct{} // server: value produced by the extractor
+
+	var (
+		mu           sync.Mutex
+		gotMD        valuerpc.Metadata
+		gotExtracted string
+	)
+
+	srv, err := valueserver.NewServer("127.0.0.1:0", zap.NewNop(),
+		valueserver.WithMetadataExtractor(func(ctx context.Context, md valuerpc.Metadata) context.Context {
+			return context.WithValue(ctx, spanKey{}, md["traceparent"])
+		}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.AddFunction("trace", valuerpc.Any, valuerpc.Any,
+		func(ctx context.Context, _ value.Value) (value.Value, error) {
+			mu.Lock()
+			gotMD = valuerpc.MetadataFromContext(ctx)
+			gotExtracted, _ = ctx.Value(spanKey{}).(string)
+			mu.Unlock()
+			return value.Utf8("ok"), nil
+		})
+	go srv.Run()
+	defer srv.Close()
+
+	cli := valueclient.NewClient(srv.Addr().String(), "",
+		valueclient.WithMetadata(func(ctx context.Context) valuerpc.Metadata {
+			tp, _ := ctx.Value(tpKey{}).(string)
+			return valuerpc.Metadata{"traceparent": tp, "baggage": "x=1"}
+		}))
+	defer cli.Close()
+
+	ctx := context.WithValue(context.Background(), tpKey{}, "00-abc-def-01")
+	if _, err := cli.CallFunction(ctx, "trace", nil); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotMD["traceparent"] != "00-abc-def-01" || gotMD["baggage"] != "x=1" {
+		t.Errorf("handler metadata = %v, want traceparent=00-abc-def-01 baggage=x=1", gotMD)
+	}
+	if gotExtracted != "00-abc-def-01" {
+		t.Errorf("extractor-enriched ctx value = %q, want %q", gotExtracted, "00-abc-def-01")
+	}
+}
+
 // TestClientLogger verifies the client routes diagnostics through the injected
 // *zap.Logger (WithLogger) — the same structured logger glue apps pass to the
 // server — instead of stdlib log.
