@@ -289,6 +289,39 @@ srv.SetAuthenticator(func(conn valuerpc.MsgConn, cred value.Value) error {
 cli.SetCredential(value.Utf8(token))
 ```
 
+## Resilience (service governance)
+
+Core ships a unary **interceptor seam** (`valuerpc.ClientInterceptor`,
+`valueclient.WithInterceptors`) but no policy. Service-governance policies live in
+the separate **`go.arpabet.com/value-rpc/resilience`** module, so a plain client
+carries none of their weight. Each is a `ClientInterceptor` you compose into a
+chain — the first is outermost:
+
+```go
+import "go.arpabet.com/value-rpc/resilience"
+
+cli := valueclient.NewClient(addr, "", valueclient.WithInterceptors(
+    resilience.RateLimit(100, 20),                  // outermost: shed load over 100 req/s (burst 20)
+    resilience.CircuitBreaker(),                    // stop hammering an unhealthy peer
+    resilience.Retry(resilience.WithMaxAttempts(3)),// re-issue transient failures
+    resilience.Timeout(2*time.Second),              // innermost: bound each attempt
+))
+```
+
+| Policy | Behavior |
+|--------|----------|
+| `Retry(opts…)` | Re-invokes on a retryable outcome with exponential backoff + jitter, up to `WithMaxAttempts`. Default retries only `CodeUnavailable` / `CodeResourceExhausted` — codes that mean the server didn’t process the request, so retrying is safe even for non-idempotent calls. Widen with `WithRetryable` (then restrict to idempotent methods). Backoff honors the context. |
+| `CircuitBreaker(opts…)` | Per-method breaker: after `WithFailureThreshold` consecutive failures it opens and fast-fails with `CodeUnavailable` for `WithCooldown`, then half-opens to probe recovery. Caller faults (`InvalidArgument`/`NotFound`/`Unauthenticated`/`Canceled`) don’t trip it. |
+| `Timeout(d)` | Bounds each call (or each attempt, when placed inside `Retry`) with a context deadline, sent to the server as the request SLA. |
+| `RateLimit(perSec, burst)` | Client-side token bucket; calls over the rate fail fast with `CodeResourceExhausted` (load shedding). |
+| `Bulkhead(n)` | Caps concurrent in-flight calls at `n`, isolating a slow dependency; waits for a slot, honoring the context. |
+| `Fallback(fn)` | On failure, returns `fn`’s value/error instead — a cached or default response, or a transformed error. |
+
+Recommended order is rate limit → circuit breaker → retry → timeout → call, so the
+breaker observes whole (post-retry) operations while the timeout bounds each
+attempt. Policies classify outcomes with `valuerpc.CodeOf`. See the module’s
+`Example` / `Example_fallback` (rendered on pkg.go.dev) for runnable samples.
+
 ## Transports
 
 The RPC layer is decoupled from the wire transport behind a small seam

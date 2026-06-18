@@ -36,3 +36,12 @@ go run ./examples/<name>/
 | [`auth`](auth/) | Handshake `Authenticator` (bearer token → principal) and session resumption bound to the authenticated principal. |
 | [`observability`](observability/) | Pluggable metrics (`valuerpc.Metrics`) on client and server, plus trace-context propagation (`WithMetadata` / `WithMetadataExtractor`). |
 | [`reconnect`](reconnect/) | Reconnect policy: in-flight requests fail fast with `CodeUnavailable`, and the client auto-reconnects with exponential backoff after an outage. |
+
+### Resilience (separate module)
+
+Service-governance policies (retry, circuit breaker, timeout, rate limit,
+bulkhead, fallback) live in the **`go.arpabet.com/value-rpc/resilience`** module —
+they can't sit under this core-module `examples/` folder without making core depend
+on them. See the runnable, output-verified `Example` and `Example_fallback` in
+[`../resilience`](../resilience/) (and on pkg.go.dev), and the **Resilience**
+section of the top-level [README](../README.md#resilience-service-governance).
