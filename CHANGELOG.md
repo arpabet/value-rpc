@@ -252,6 +252,14 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **Inbound stream registration race (lost initial client-stream values).** The
+  server published a new client-stream/chat request in its read-loop map *after*
+  it had already sent the client the initial flow-control credit. A value the
+  client sent in response to that credit could therefore arrive before the request
+  was registered, be mis-dispatched as a new request, and be dropped. The server
+  now registers the request first and grants the initial inbound credit only
+  afterwards, so the first value a client sends always finds its request. (Found
+  via a load-dependent hang in the inbound-overflow test.)
 - **Stream flow-control off-by-one (spurious truncation under load).** A
   server->client stream could falsely truncate with `CodeResourceExhausted`
   ("server exceeded flow-control credit") when the consumer was slow. The

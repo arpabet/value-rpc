@@ -597,6 +597,22 @@ func TestInboundOverflowSurfaced(t *testing.T) {
 		t.Fatalf("put request: %v", err)
 	}
 
+	// Wait for the server's initial credit grant before sending. It is granted only
+	// after the request is registered, so flooding after it guarantees our values
+	// reach the inbound pump (rather than racing registration and being dropped).
+	// This mirrors a real client, which sends only once the stream is established.
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	for {
+		msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("waiting for initial credit grant: %v", err)
+		}
+		if mt, ok := valuerpc.GetNumberField(msg, valuerpc.DefaultDialect.MessageTypeField); ok &&
+			valuerpc.MessageType(mt.Long()) == valuerpc.StreamCredit {
+			break
+		}
+	}
+
 	// Flood far more than the credit window + buffer, ignoring StreamCredit.
 	go func() {
 		for i := 0; i < 500; i++ {
@@ -610,7 +626,11 @@ func TestInboundOverflowSurfaced(t *testing.T) {
 		}
 	}()
 
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	// Generous deadline: this asserts the overflow *eventually* surfaces, not how
+	// fast. Under `-race` on an oversubscribed CI runner the flood→overflow→error
+	// round-trip can take a while, so a tight bound would flake without indicating
+	// any real fault.
+	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	for {
 		msg, err := conn.ReadMessage()
 		if err != nil {

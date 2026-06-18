@@ -56,15 +56,23 @@ func NewServingRequest(ft functionType, requestId value.Number) *servingRequest 
 	return sr
 }
 
-// setupInbound creates the inbound pump (incoming-stream/chat) and grants the
-// client an initial credit window. The read loop feeds inPump without blocking
-// (BUG-6); the pump's deliver hook replenishes the client's send credit as the
-// handler consumes, so a fast client can never overrun the buffer — lossless,
-// bounded, non-HOL flow control.
-func (t *servingRequest) setupInbound(cli *servingClient, incomingQueueCap, maxPending int) {
+// setupInbound creates the inbound pump (incoming-stream/chat). The read loop
+// feeds inPump without blocking (BUG-6); the pump's deliver hook replenishes the
+// client's send credit as the handler consumes, so a fast client can never
+// overrun the buffer — lossless, bounded, non-HOL flow control. The initial
+// credit window is granted separately (grantInitialInbound) AFTER the request is
+// registered, so a value the client sends in response to that grant always finds
+// the request in the read loop's map.
+func (t *servingRequest) setupInbound(incomingQueueCap, maxPending int, cli *servingClient) {
 	t.creditWindow = int64(maxPending)
 	t.inC = make(chan value.Value, incomingQueueCap)
 	t.inPump = vrpc.NewStreamPump(t.inC, maxPending, func() { t.grantInbound(cli) })
+}
+
+// grantInitialInbound sends the client its initial inbound send window. Call it
+// only after the request is published in the read loop's map, so the first value
+// the client sends back cannot race ahead of registration and be dropped.
+func (t *servingRequest) grantInitialInbound(cli *servingClient) {
 	cli.send(vrpc.NewStreamCredit(t.requestId, t.creditWindow))
 }
 

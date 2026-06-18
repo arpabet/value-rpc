@@ -423,13 +423,19 @@ func (t *servingClient) newServingRequest(ft functionType, reqId value.Number, n
 	sr.method = name
 	sr.start = time.Now()
 	if ft == incomingStream || ft == chat {
-		sr.setupInbound(t, t.cfg.incomingQueueCap, t.cfg.maxPending)
+		sr.setupInbound(t.cfg.incomingQueueCap, t.cfg.maxPending, t)
 	}
 	// Stream enters flight here; RequestEnd fires once at deleteRequest (the single
 	// idempotent retirement point used by every teardown path).
 	t.cfg.metrics.RequestBegin(name)
 	t.requestMap.Store(reqId.Long(), sr)
 	t.liveStreams.Add(1)
+	// Grant the initial inbound window only after the request is published, so a
+	// value the client sends in response cannot arrive before registration (which
+	// would mis-dispatch it as a new request and drop it).
+	if ft == incomingStream || ft == chat {
+		sr.grantInitialInbound(t)
+	}
 	return sr
 }
 
