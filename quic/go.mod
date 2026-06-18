@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/quic-go/quic-go v0.60.0
 	go.arpabet.com/value v1.2.0
-	go.arpabet.com/value-rpc v1.4.1
+	go.arpabet.com/value-rpc v1.4.2
 	go.uber.org/zap v1.28.0
 )
 
