@@ -252,6 +252,20 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **Stream flow-control off-by-one (spurious truncation under load).** A
+  server->client stream could falsely truncate with `CodeResourceExhausted`
+  ("server exceeded flow-control credit") when the consumer was slow. The
+  `StreamReady` ack is delivered to the receiver through its pump (to wake the
+  stream establisher) but is sent before the server acquires any credit; the
+  receiver was counting that ack toward credit replenishment, so the first batch
+  granted the sender one slot beyond the window and a slow consumer overran the
+  pump by exactly one. The receiver no longer counts the ack (`recvDelivered`
+  starts at -1), so credit grants now correspond exactly to drained buffer slots.
+  Lossless delivery now holds under heavy load (verified with a 5000-value stream
+  under `-race` on a constrained CPU). The credit accounting was also audited for
+  concurrency: the per-stream replenishment counters (`recvDelivered`,
+  `inboundDelivered`) are touched only by the single pump-delivery goroutine, and
+  the shared send credit (`CreditGate`) is mutex+cond guarded.
 - **Reconnect robustness.** Three fixes that together eliminate a reconnect storm
   that could stall an in-flight call: (1) `Connect` now completes the handshake
   synchronously — capturing the server-issued session token — before returning, so
