@@ -62,6 +62,33 @@ jobs:
         working-directory: quic
         run: go test -race -cover ./...
 
+  # Service-governance policies (retry, circuit breaker, …) are a separate module
+  # (go.arpabet.com/value-rpc/resilience) so they impose no deps on plain clients.
+  resilience:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: [ '1.25.x', '1.26.x' ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Build
+        working-directory: resilience
+        run: go build ./...
+
+      - name: Vet
+        working-directory: resilience
+        run: go vet ./...
+
+      - name: Test
+        working-directory: resilience
+        run: go test -race -cover ./...
+
   bench:
     runs-on: ubuntu-latest
     steps:
@@ -96,6 +123,10 @@ jobs:
 
       - name: govulncheck (quic submodule)
         working-directory: quic
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: govulncheck (resilience submodule)
+        working-directory: resilience
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   # gofmt gate: the whole tree (both modules — gofmt is file-based) must be

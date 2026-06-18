@@ -48,9 +48,9 @@ schema‑first, polyglot, ecosystem → gRPC.**
   streaming variants) for static Go types over the schemaless wire.
 - **Unary client interceptors** (`valueclient.WithInterceptors`): a composable
   middleware seam for cross-cutting concerns. Core ships only the seam (no policy);
-  service-governance — retries, circuit breaking, deadline budgets, fallback,
-  rate limiting — lives in a separate module and plugs in here, classifying
-  outcomes with `valuerpc.CodeOf`.
+  service-governance — `Retry`, `CircuitBreaker`, `Timeout`, `RateLimit`,
+  `Bulkhead`, `Fallback` — lives in the separate `go.arpabet.com/value-rpc/resilience`
+  module and plugs in here, classifying outcomes with `valuerpc.CodeOf`.
 - **Machine-readable error codes**: failures carry a `valuerpc.Code` (NotFound,
   InvalidArgument, ResourceExhausted, Unavailable, Internal, …). Handlers return
   `valuerpc.NewError(code, …)`; callers branch with `valuerpc.CodeOf(err)` or
@@ -94,7 +94,7 @@ schema‑first, polyglot, ecosystem → gRPC.**
   shaping, not a substitute for encryption.)
 - **Bounded frames** (`MaxFrameSize`), **keepalive**, **handshake deadline**,
   and **graceful shutdown** out of the box.
-- Core dependencies: `value`, `zap`, `golang.org/x/net`, `golang.org/x/sys`, `coder/websocket`. QUIC lives in a **separate module** (`go.arpabet.com/value-rpc/quic`) so `quic-go` is pulled in only if you use it.
+- Core dependencies: `value`, `zap`, `golang.org/x/net`, `golang.org/x/sys`, `coder/websocket`. QUIC lives in a **separate module** (`go.arpabet.com/value-rpc/quic`) so `quic-go` is pulled in only if you use it; service-governance policies (retry, circuit breaker, …) live in the **separate** `go.arpabet.com/value-rpc/resilience` module.
 
 ## Install
 

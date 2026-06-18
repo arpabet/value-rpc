@@ -67,6 +67,14 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **`resilience` module (`go.arpabet.com/value-rpc/resilience`).** A new separate
+  module of service-governance policies built on the interceptor seam, so plain
+  clients carry none of it: `Retry` (backoff+jitter, retryable-code classification
+  via `valuerpc.CodeOf`), `CircuitBreaker` (per-method, consecutive-failure trip +
+  cooldown + half-open probes), `Timeout`, `RateLimit` (token bucket), `Bulkhead`
+  (concurrency cap), and `Fallback` — each a `valuerpc.ClientInterceptor` installed
+  with `valueclient.WithInterceptors`. Zero third-party dependencies. Built/tested
+  in CI as its own module (see `RELEASE.md`).
 - **Unary client interceptor seam.** `valuerpc.ClientInterceptor` / `Invoker` and
   `valueclient.WithInterceptors(...)` add a composable middleware chain around
   `CallFunction` (first interceptor outermost). An interceptor can modify the
