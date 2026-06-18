@@ -5,6 +5,17 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  # Manual run from the GitHub Actions UI ("Run workflow" button) or the API/CLI
+  # (`gh workflow run "Value-RPC CI"`). Lets a maintainer kick off the full suite
+  # on demand — e.g. before tagging a release or after a dependency bump — and
+  # optionally run a longer fuzz campaign than the per-push smoke.
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "Per-target fuzz duration for this run (e.g. 30s, 5m)"
+        required: false
+        default: "30s"
+        type: string
 
 # Keep go.arpabet.com modules off Google's public module proxy/checksum DB:
 # GOPRIVATE expands to GONOPROXY + GONOSUMDB, so these modules are fetched
@@ -154,6 +165,11 @@ jobs:
   # surviving adversarial input. This is a robustness gate, not a long campaign.
   fuzz:
     runs-on: ubuntu-latest
+    # On push/PR `inputs.fuzztime` is empty, so it falls back to the 30s smoke; a
+    # manual run can pass a longer duration from the UI. Routed through an env var
+    # (not interpolated into the run script) to avoid shell injection.
+    env:
+      FUZZTIME: ${{ inputs.fuzztime || '30s' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -163,7 +179,7 @@ jobs:
           go-version: '1.25.x'
 
       - name: Fuzz ReadMessage (smoke)
-        run: go test ./valuerpc/ -run='^$' -fuzz='^FuzzReadMessage$' -fuzztime=30s
+        run: go test ./valuerpc/ -run='^$' -fuzz='^FuzzReadMessage$' -fuzztime="$FUZZTIME"
 
       - name: Fuzz Unpack (smoke)
-        run: go test ./valuerpc/ -run='^$' -fuzz='^FuzzUnpack$' -fuzztime=30s
+        run: go test ./valuerpc/ -run='^$' -fuzz='^FuzzUnpack$' -fuzztime="$FUZZTIME"
