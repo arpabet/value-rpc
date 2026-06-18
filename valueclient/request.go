@@ -79,6 +79,15 @@ func NewRequestCtx(requestId int64, kind streamKind, req value.Map, receiveCap, 
 			maxPending = valuerpc.DefaultMaxPending
 		}
 		t.creditWindow = int64(maxPending)
+		// The server sends a StreamReady ack before acquiring any credit, and the
+		// client delivers it through the pump (as a nil) to wake the establisher.
+		// That delivery consumed no send credit, so it must not count toward credit
+		// replenishment — otherwise the first batch grants the server one slot more
+		// than the window, and a slow consumer overruns the pump by one (a spurious
+		// "exceeded flow-control credit" truncation under load). Start at -1 so the
+		// ack delivery brings recvDelivered to 0; absent an ack this merely delays
+		// the first grant by one (still safe).
+		t.recvDelivered = -1
 		t.resultPump = valuerpc.NewStreamPump(t.resultCh, maxPending, t.grantRecv)
 	}
 	// Client->server streams (put, chat) send through a credit gate granted by
