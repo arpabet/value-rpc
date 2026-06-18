@@ -67,6 +67,15 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Unary client interceptor seam.** `valuerpc.ClientInterceptor` / `Invoker` and
+  `valueclient.WithInterceptors(...)` add a composable middleware chain around
+  `CallFunction` (first interceptor outermost). An interceptor can modify the
+  context/request, short-circuit, call the next step zero or more times (retry,
+  hedging), or transform the result/error. Core ships only the seam — no policy;
+  service-governance (retry, circuit breaking, deadline budgets, fallback, rate
+  limiting) is intended to live in a separate module and plug in here, classifying
+  outcomes with `valuerpc.CodeOf`. Tests: `valuerpc.TestChainClientInterceptors`,
+  `valueclient.TestUnaryInterceptorRetry` / `TestUnaryInterceptorOrderAndShortCircuit`.
 - **Typed-client ergonomics.** New generic helpers give statically-typed call
   sites over the schemaless wire without codegen: `valuerpc.Codec[T]` (an explicit
   per-type encode/decode), `valueclient.CallUnary` / `GetStreamTyped` /

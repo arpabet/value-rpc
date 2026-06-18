@@ -46,6 +46,11 @@ schema‑first, polyglot, ecosystem → gRPC.**
 - **Optional typed call sites** without codegen: define a `valuerpc.Codec[T]` per
   message and use the generic `valueclient.CallUnary` / `valueserver.AddUnary` (and
   streaming variants) for static Go types over the schemaless wire.
+- **Unary client interceptors** (`valueclient.WithInterceptors`): a composable
+  middleware seam for cross-cutting concerns. Core ships only the seam (no policy);
+  service-governance — retries, circuit breaking, deadline budgets, fallback,
+  rate limiting — lives in a separate module and plugs in here, classifying
+  outcomes with `valuerpc.CodeOf`.
 - **Machine-readable error codes**: failures carry a `valuerpc.Code` (NotFound,
   InvalidArgument, ResourceExhausted, Unavailable, Internal, …). Handlers return
   `valuerpc.NewError(code, …)`; callers branch with `valuerpc.CodeOf(err)` or

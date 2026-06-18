@@ -47,6 +47,7 @@ type rpcClient struct {
 	metadata          func(context.Context) valuerpc.Metadata // per-request metadata injector; nil unless WithMetadata set
 	reconnect         ReconnectPolicy                         // in-flight request disposition across a reconnect
 	dialTimeout       time.Duration                           // bounds a dial when the context carries no deadline
+	unaryInvoker      valuerpc.Invoker                        // invokeUnary wrapped by the configured unary interceptors
 }
 
 func (t *rpcClient) loadSessionToken() string {
@@ -123,6 +124,9 @@ func NewClientWithDialer(dialer valuerpc.Dialer, opts ...ClientOption) Client {
 	}
 
 	t.timeoutMls.Store(cfg.timeoutMls)
+	// Build the unary call path once: the actual call (invokeUnary) wrapped by the
+	// configured interceptors (outermost first).
+	t.unaryInvoker = valuerpc.ChainClientInterceptors(t.invokeUnary, cfg.interceptors...)
 	return t
 }
 
@@ -570,7 +574,14 @@ func (t *rpcClient) watchContext(ctx context.Context, requestCtx *rpcRequestCtx)
 	}()
 }
 
+// CallFunction makes a unary call, running it through any installed unary
+// interceptors (WithInterceptors); the interceptor chain's innermost step is
+// invokeUnary, the actual network call.
 func (t *rpcClient) CallFunction(ctx context.Context, name string, args value.Value) (value.Value, error) {
+	return t.unaryInvoker(ctx, name, args)
+}
+
+func (t *rpcClient) invokeUnary(ctx context.Context, name string, args value.Value) (value.Value, error) {
 
 	timeout := t.effectiveTimeout(ctx)
 	req := t.constructRequest(ctx, valuerpc.FunctionRequest, name, args, timeout)

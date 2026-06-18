@@ -16,13 +16,14 @@ import (
 // clientConfig is the resolved per-client configuration, seeded from the
 // package-level defaults and overridden by ClientOptions at construction.
 type clientConfig struct {
-	sendingCap int64
-	timeoutMls int64
-	maxPending int
-	logger     *zap.Logger
-	metrics    valuerpc.Metrics
-	metadata   func(context.Context) valuerpc.Metadata
-	reconnect  ReconnectPolicy
+	sendingCap   int64
+	timeoutMls   int64
+	maxPending   int
+	logger       *zap.Logger
+	metrics      valuerpc.Metrics
+	metadata     func(context.Context) valuerpc.Metadata
+	reconnect    ReconnectPolicy
+	interceptors []valuerpc.ClientInterceptor
 
 	// transport-level (used when a convenience constructor builds the dialer)
 	keepAlive    time.Duration
@@ -149,6 +150,15 @@ func WithDialTimeout(d time.Duration) ClientOption {
 // in-flight gauge, and stream throughput. Without it metrics are a no-op.
 func WithMetrics(m valuerpc.Metrics) ClientOption {
 	return func(c *clientConfig) { c.metrics = m }
+}
+
+// WithInterceptors installs unary client interceptors, applied around
+// CallFunction. The first interceptor is outermost. This is the seam for
+// service-governance policies (retry, circuit breaking, deadline budgets,
+// fallback, rate limiting) — core provides only the seam; the policies live
+// outside core (e.g. go.arpabet.com/value-rpc/resilience). Repeated calls append.
+func WithInterceptors(interceptors ...valuerpc.ClientInterceptor) ClientOption {
+	return func(c *clientConfig) { c.interceptors = append(c.interceptors, interceptors...) }
 }
 
 // WithMetadata installs an injector that produces per-request metadata from the
