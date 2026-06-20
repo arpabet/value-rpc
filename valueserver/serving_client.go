@@ -345,6 +345,14 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		}
 	}
 
+	// Surface the authenticated principal (derived by the handshake
+	// Authenticator, bound to this session) on the handler's context, so
+	// handlers attribute/authorize work to the connection-bound identity rather
+	// than trusting an identity field in the request payload.
+	if t.principal != "" {
+		reqCtx = vrpc.ContextWithPrincipal(reqCtx, t.principal)
+	}
+
 	switch fn.ft {
 	case singleFunction:
 		// Register the cancel so a CancelRequest for this in-flight unary call
