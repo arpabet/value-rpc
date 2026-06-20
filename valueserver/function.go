@@ -26,10 +26,10 @@ type function struct {
 	args      vrpc.TypeDef
 	res       vrpc.TypeDef
 	ft        functionType
-	singleFn  Function
-	outStream OutgoingStream
-	inStream  IncomingStream
-	chat      Chat
+	singleFn  vrpc.Function
+	outStream vrpc.OutgoingStream
+	inStream  vrpc.IncomingStream
+	chat      vrpc.Chat
 }
 
 func (t *rpcServer) hasFunction(name string) bool {
@@ -39,7 +39,7 @@ func (t *rpcServer) hasFunction(name string) bool {
 	return false
 }
 
-func (t *rpcServer) AddFunction(name string, args vrpc.TypeDef, res vrpc.TypeDef, cb Function) error {
+func (t *rpcServer) AddFunction(name string, args vrpc.TypeDef, res vrpc.TypeDef, cb vrpc.Function) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
@@ -57,7 +57,7 @@ func (t *rpcServer) AddFunction(name string, args vrpc.TypeDef, res vrpc.TypeDef
 }
 
 // GET for client
-func (t *rpcServer) AddOutgoingStream(name string, args vrpc.TypeDef, cb OutgoingStream) error {
+func (t *rpcServer) AddOutgoingStream(name string, args vrpc.TypeDef, cb vrpc.OutgoingStream) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
@@ -75,7 +75,7 @@ func (t *rpcServer) AddOutgoingStream(name string, args vrpc.TypeDef, cb Outgoin
 }
 
 // PUT for client
-func (t *rpcServer) AddIncomingStream(name string, args vrpc.TypeDef, cb IncomingStream) error {
+func (t *rpcServer) AddIncomingStream(name string, args vrpc.TypeDef, cb vrpc.IncomingStream) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}
@@ -92,7 +92,7 @@ func (t *rpcServer) AddIncomingStream(name string, args vrpc.TypeDef, cb Incomin
 	return nil
 }
 
-func (t *rpcServer) AddChat(name string, args vrpc.TypeDef, cb Chat) error {
+func (t *rpcServer) AddChat(name string, args vrpc.TypeDef, cb vrpc.Chat) error {
 	if t.hasFunction(name) {
 		return ErrFunctionAlreadyExist
 	}

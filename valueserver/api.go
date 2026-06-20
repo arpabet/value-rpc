@@ -12,17 +12,6 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 )
 
-// The handler types are aliases of the shared valuerpc handler types, so the
-// registration surface (valuerpc.Registrar) is literally identical on the server
-// and the client. Each handler receives a context.Context cancelled when the
-// connection drops, the server shuts down, the request is cancelled (client
-// CancelRequest), or the client's SLA deadline elapses — honour it for
-// cancellation and deadline propagation to downstream work.
-type Function = valuerpc.Function
-type OutgoingStream = valuerpc.OutgoingStream
-type IncomingStream = valuerpc.IncomingStream
-type Chat = valuerpc.Chat
-
 // ConnectAuthorizer is called once per new connection, before the handshake. If
 // it returns an error the connection is rejected and closed. Combine it with
 // valuerpc.PeerCredOf for Unix-domain-socket peer authorization.
