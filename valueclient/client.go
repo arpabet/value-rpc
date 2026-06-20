@@ -8,6 +8,7 @@ package valueclient
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -48,6 +49,10 @@ type rpcClient struct {
 	reconnect         ReconnectPolicy                         // in-flight request disposition across a reconnect
 	dialTimeout       time.Duration                           // bounds a dial when the context carries no deadline
 	unaryInvoker      valuerpc.Invoker                        // invokeUnary wrapped by the configured unary interceptors
+
+	functionMap sync.Map           // name -> *clientFunction the peer (server) may call (reverse RPC)
+	baseCtx     context.Context    // parent for inbound-call handler contexts; cancelled on Close
+	baseCancel  context.CancelFunc // cancels baseCtx
 }
 
 func (t *rpcClient) loadSessionToken() string {
@@ -122,6 +127,7 @@ func NewClientWithDialer(dialer valuerpc.Dialer, opts ...ClientOption) Client {
 		conn:        NewSyncConn(),
 		closed:      make(chan struct{}),
 	}
+	t.baseCtx, t.baseCancel = context.WithCancel(context.Background())
 
 	t.timeoutMls.Store(cfg.timeoutMls)
 	// Build the unary call path once: the actual call (invokeUnary) wrapped by the
@@ -154,6 +160,9 @@ func (t *rpcClient) Close() error {
 	t.errorHandler.Store(&self)
 	t.shuttingDown.Store(true)
 	t.closeOnce.Do(func() { close(t.closed) }) // wake any reconnect backoff
+	if t.baseCancel != nil {
+		t.baseCancel() // cancel in-flight inbound-call handlers
+	}
 	t.conn.reset()
 	return nil
 }
@@ -470,6 +479,14 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 			return
 		}
 
+		// Inbound FunctionRequest = the peer (server) is calling a function this
+		// client registered (reverse RPC). Dispatch it to our functionMap rather
+		// than correlating it to one of our own outstanding requests.
+		if msgType == valuerpc.FunctionRequest {
+			t.serveInboundCall(resp)
+			return
+		}
+
 		id, ok := valuerpc.GetNumberField(resp, valuerpc.DefaultDialect.RequestIdField)
 		if !ok {
 			t.getErrorHandler().ProtocolError(resp, ErrIdFieldNotFound)
@@ -482,6 +499,78 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 		} else {
 			t.getErrorHandler().ProtocolError(resp, ErrRequestNotFound)
 		}
+	}
+}
+
+// clientFunction is a handler the client registered for the peer (server) to
+// call; mirrors the server's per-function record.
+type clientFunction struct {
+	args valuerpc.TypeDef
+	res  valuerpc.TypeDef
+	fn   valuerpc.Function
+}
+
+// Compile-time check that the client implements the symmetric Peer surface.
+var _ valuerpc.Peer = (*rpcClient)(nil)
+
+// AddFunction registers a unary handler the peer (server) may invoke on this
+// client via a server->client call. Safe to call before or after Connect;
+// registrations persist across reconnects. Pass valuerpc.Any for args/res to
+// accept any argument/result shape.
+func (t *rpcClient) AddFunction(name string, args, res valuerpc.TypeDef, fn valuerpc.Function) error {
+	if name == "" || fn == nil {
+		return fmt.Errorf("valueclient: AddFunction requires a name and a handler")
+	}
+	t.functionMap.Store(name, &clientFunction{args: args, res: res, fn: fn})
+	return nil
+}
+
+// serveInboundCall dispatches a server->client FunctionRequest to a registered
+// handler and replies with the result or an error. The handler runs on its own
+// goroutine so the single response loop is never blocked.
+func (t *rpcClient) serveInboundCall(req value.Map) {
+	reqId, ok := valuerpc.GetNumberField(req, valuerpc.DefaultDialect.RequestIdField)
+	if !ok {
+		t.getErrorHandler().ProtocolError(req, ErrIdFieldNotFound)
+		return
+	}
+	name, ok := valuerpc.GetStringField(req, valuerpc.DefaultDialect.FunctionNameField)
+	if !ok {
+		t.reply(valuerpc.NewFunctionError(reqId, valuerpc.CodeInvalidArgument, "function name field not found"))
+		return
+	}
+	entry, ok := t.functionMap.Load(name.String())
+	if !ok {
+		t.reply(valuerpc.NewFunctionError(reqId, valuerpc.CodeNotFound, "function not found %s", name.String()))
+		return
+	}
+	cf := entry.(*clientFunction)
+	args := req.Get(valuerpc.DefaultDialect.ArgumentsField)
+	if !valuerpc.Verify(args, cf.args) {
+		t.reply(valuerpc.NewFunctionError(reqId, valuerpc.CodeInvalidArgument, "function '%s' invalid args", name.String()))
+		return
+	}
+	// TODO(reverse-rpc): bound inbound-call concurrency (cf. server MaxConcurrentRequests).
+	go func() {
+		ctx, cancel := context.WithCancel(t.baseCtx)
+		defer cancel()
+		res, err := cf.fn(ctx, args)
+		if err != nil {
+			t.reply(valuerpc.NewHandlerError(reqId, "function "+name.String(), err))
+			return
+		}
+		if !valuerpc.Verify(res, cf.res) {
+			t.reply(valuerpc.NewFunctionError(reqId, valuerpc.CodeInternal, "function '%s' invalid result", name.String()))
+			return
+		}
+		t.reply(valuerpc.NewFunctionResult(reqId, res))
+	}()
+}
+
+// reply best-effort sends a response to the peer over the current connection.
+func (t *rpcClient) reply(resp value.Map) {
+	if t.conn.hasConn() {
+		t.conn.getConn().SendRequest(resp)
 	}
 }
 

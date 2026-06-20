@@ -57,8 +57,13 @@ func (t MessageType) Long() value.Number {
 // one cheap layer to combine with TLS and a traffic-shaping/mimicry transport, not
 // as a substitute for encryption.
 type Dialect struct {
-	Magic              string
-	Version            float64
+	Magic   string
+	Version float64
+	// HandshakeRequestId is the request id carried by the handshake exchange. It
+	// is 0 — the one integer that is neither positive nor negative — so the two
+	// call directions get disjoint, sign-keyed id spaces on a connection:
+	// client-initiated requests are positive (1, 2, …) and server-initiated
+	// requests (server->client reverse calls) are negative (-1, -2, …).
 	HandshakeRequestId int64
 
 	MessageTypeField  string
@@ -86,7 +91,7 @@ func NewDialect() *Dialect {
 	return &Dialect{
 		Magic:              "vRPC",
 		Version:            1.0,
-		HandshakeRequestId: -1,
+		HandshakeRequestId: 0,
 		MessageTypeField:   "t",
 		MagicField:         "m",
 		VersionField:       "v",

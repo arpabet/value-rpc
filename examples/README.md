@@ -20,6 +20,12 @@ go run ./examples/<name>/
 | [`streaming`](streaming/) | Unary, server-stream, client-stream, and chat over one connection; a 10k-value server stream stays lossless under credit-based flow control. |
 | [`cancellation`](cancellation/) | Context deadline / cancellation propagation — a slow handler observes the client's deadline on its own `ctx` and abandons work early. |
 
+### Bidirectional (peer) calls
+
+| Example | Shows |
+|---------|-------|
+| [`peer`](peer/) | Server→client calls: the server invokes a function the *client* registered (`Client.AddFunction` + `valueserver.ClientFromContext`). Builds the relay pattern — client A asks the server to reach client B, the server calls B back and returns B's answer to A. |
+
 ### Transports
 
 | Example | Shows |

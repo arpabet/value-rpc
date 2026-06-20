@@ -41,6 +41,11 @@ schema‑first, polyglot, ecosystem → gRPC.**
 
 - **No codegen, no `.proto`.** Register Go functions, call them by name.
 - **Four call patterns** multiplexed over a single connection (keyed by request id).
+- **Bidirectional (peer-symmetric) calls**: the server can call a function the
+  *client* registered (`Client.AddFunction` + `valueserver.ClientFromContext`),
+  not only the reverse. Both ends expose one `valuerpc.Peer` surface, so call
+  sites read the same on either side — and a server handler can route a call from
+  client A through to client B.
 - **Pluggable transports**: TCP, Unix domain sockets, and WebSocket (MessagePack) — one API, pick by address scheme.
 - **Runtime type checking** via `TypeDef` / `Verify` (`Arg`, `List`, `Map`, `Void`, `Any`).
 - **Optional typed call sites** without codegen: define a `valuerpc.Codec[T]` per
@@ -209,6 +214,45 @@ _ = reqID // pass to cli.CancelRequest(reqID) to cancel early
 For chat you may close the send channel and keep receiving — the server's output
 stream stays open until it finishes.
 
+## Peer symmetry: calling the client (server → client)
+
+Calls are **bidirectional**: a client can register handlers with
+`Client.AddFunction`, and the server can invoke them — the mirror of the usual
+client→server call. "Client" and "server" name who *dialed*; once connected, both
+ends expose the same `valuerpc.Peer` surface, so call sites read the same on
+either side. A handler reaches the client on the current connection with
+`valueserver.ClientFromContext`:
+
+```go
+// Client registers a handler the server may invoke.
+cli.AddFunction("notify", valuerpc.String, valuerpc.Void,
+    func(ctx context.Context, args value.Value) (value.Value, error) {
+        fmt.Println("server says:", args.(value.String).String())
+        return nil, nil
+    })
+
+// A server handler calls back into the client that invoked it.
+srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
+    func(ctx context.Context, _ value.Value) (value.Value, error) {
+        caller, ok := valueserver.ClientFromContext(ctx)
+        if !ok {
+            return nil, valuerpc.NewError(valuerpc.CodeInternal, "no client handle")
+        }
+        return caller.CallFunction(ctx, "notify", value.Utf8("pong"))
+    })
+```
+
+The caller handle stays valid for the connection's lifetime, so a handler can
+cache it — e.g. keyed by the authenticated principal (`valuerpc.PrincipalFromContext`) —
+to reach that client later from a *different* request. That is the basis for
+**routing a call from client A through the server to client B**; see
+[`examples/peer`](examples/peer/) for the relay end to end.
+
+On the wire this reuses the existing `FunctionRequest` / `FunctionResponse`
+messages; the two directions get disjoint, sign-keyed request ids on a connection
+(handshake `0`, client-initiated positive, server-initiated negative), so a
+response always correlates to the side that made the call.
+
 ## Type definitions
 
 Arguments and results are validated against a `valuerpc.TypeDef`:
@@ -276,14 +320,17 @@ For transport security and authentication: use the **`tls://`** transport or
 authz; a **connect-authorizer** (`SetConnectAuthorizer`) for pre-handshake checks
 on the connection (TLS cert, peer creds); or a **handshake authenticator**
 (`SetAuthenticator`) to validate a client credential carried in the handshake
-(bearer token, API key) — the client attaches it with `cli.SetCredential(...)`:
+(bearer token, API key) and derive a **principal** bound to the connection
+(readable in handlers via `valuerpc.PrincipalFromContext`, and used to bind
+session resumption) — the client attaches the credential with
+`cli.SetCredential(...)`:
 
 ```go
-srv.SetAuthenticator(func(conn valuerpc.MsgConn, cred value.Value) error {
+srv.SetAuthenticator(func(conn valuerpc.MsgConn, cred value.Value) (string, error) {
     if cred == nil || cred.Kind() != value.STRING || cred.(value.String).String() != token {
-        return errors.New("unauthorized")
+        return "", errors.New("unauthorized")
     }
-    return nil
+    return "billing-service", nil // the authenticated principal, bound to the session
 })
 // client:
 cli.SetCredential(value.Utf8(token))

@@ -57,6 +57,9 @@ type servingClient struct {
 	inFlight       atomic.Int64 // concurrent request handlers (MaxConcurrentRequests)
 	liveStreams    atomic.Int64 // open streaming requests (MaxConcurrentStreams)
 
+	pendingCalls      sync.Map     // server-initiated reqId -> chan callResult (server->client reverse RPC)
+	lastServerRequest atomic.Int64 // allocator for server-initiated (negative) request ids
+
 	closeOnce sync.Once
 }
 
@@ -252,6 +255,70 @@ func (t *servingClient) send(resp value.Map) error {
 	}
 }
 
+// callResult carries the outcome of a server->client call back to CallFunction.
+type callResult struct {
+	value value.Value
+	err   error
+}
+
+// Compile-time check: a serving client is a Caller (it can call its client back).
+var _ vrpc.Caller = (*servingClient)(nil)
+
+// CallFunction invokes a function the client registered (server->client reverse
+// RPC) and returns its result. The request id is drawn from the server-initiated
+// (negative) id space so it never collides with the client's own request ids on
+// this connection. The call is bound by ctx and by the connection lifetime.
+func (t *servingClient) CallFunction(ctx context.Context, name string, args value.Value) (value.Value, error) {
+	// Server-initiated id space: -1, -2, ... (handshake owns 0; the client owns >= 1).
+	reqId := -t.lastServerRequest.Add(1)
+
+	resCh := make(chan callResult, 1)
+	t.pendingCalls.Store(reqId, resCh)
+	defer t.pendingCalls.Delete(reqId)
+
+	if err := t.send(vrpc.NewFunctionRequest(reqId, name, args)); err != nil {
+		return nil, err
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-t.done:
+		return nil, vrpc.ErrClientClosed
+	case r := <-resCh:
+		return r.value, r.err
+	}
+}
+
+// completePendingCall delivers a client's reply to the CallFunction waiting on
+// reqId. An unknown reqId (a late reply arriving after ctx cancellation or
+// disconnect) is ignored.
+func (t *servingClient) completePendingCall(reqId value.Number, msgType vrpc.MessageType, resp value.Map) {
+	v, ok := t.pendingCalls.LoadAndDelete(reqId.Long())
+	if !ok {
+		return
+	}
+	resCh := v.(chan callResult)
+	if msgType == vrpc.ErrorResponse {
+		code := vrpc.CodeUnknown
+		if c, ok := vrpc.GetNumberField(resp, vrpc.DefaultDialect.CodeField); ok {
+			code = vrpc.Code(c.Long())
+		}
+		msg := ""
+		if s, ok := vrpc.GetStringField(resp, vrpc.DefaultDialect.ErrorField); ok {
+			msg = s.String()
+		}
+		resCh <- callResult{err: &vrpc.Error{Code: code, Message: msg}}
+		return
+	}
+	// FunctionResponse: an absent/Null result is a void return -> nil.
+	result := resp.Get(vrpc.DefaultDialect.ResultField)
+	if result != nil && result.Kind() == value.NULL {
+		result = nil
+	}
+	resCh <- callResult{value: result}
+}
+
 func (t *servingClient) findFunction(name string) (*function, bool) {
 	if fn, ok := t.functionMap.Load(name); ok {
 		return fn.(*function), true
@@ -352,6 +419,10 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 	if t.principal != "" {
 		reqCtx = vrpc.ContextWithPrincipal(reqCtx, t.principal)
 	}
+
+	// Expose this connection's caller handle so a handler can call a function
+	// back on the client (server->client reverse RPC) via ClientFromContext.
+	reqCtx = contextWithClient(reqCtx, t)
 
 	switch fn.ft {
 	case singleFunction:
@@ -482,6 +553,14 @@ func (t *servingClient) processRequest(req value.Map) error {
 	reqId, ok := vrpc.GetNumberField(req, vrpc.DefaultDialect.RequestIdField)
 	if !ok {
 		return errors.Errorf("request id not found%s", reqDetail(req))
+	}
+
+	// Inbound FunctionResponse/ErrorResponse = the client replying to a
+	// server->client call we initiated (reverse RPC). Complete that pending call
+	// rather than treating it as a new inbound request.
+	if msgType == vrpc.FunctionResponse || msgType == vrpc.ErrorResponse {
+		t.completePendingCall(reqId, msgType, req)
+		return nil
 	}
 
 	if sr, ok := t.findServingRequest(reqId); ok {
