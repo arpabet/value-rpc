@@ -44,7 +44,7 @@ schema‑first, polyglot, ecosystem → gRPC.**
 - **Bidirectional (peer-symmetric)**: either end can both initiate and serve all
   four patterns. The server can call — or open a stream to — a handler the
   *client* registered (`Client.AddFunction` / `AddOutgoingStream` /
-  `AddIncomingStream` / `AddChat`, reached via `valueserver.ClientFromContext`),
+  `AddIncomingStream` / `AddChat`, reached via `valueserver.PeerFromContext`),
   not only the reverse. Both ends expose one `valuerpc.Peer` surface, so call
   sites read the same on either side — and a server handler can route a call from
   client A through to client B.
@@ -223,7 +223,7 @@ Calls are **bidirectional**: a client can register handlers with
 client→server call. "Client" and "server" name who *dialed*; once connected, both
 ends expose the same `valuerpc.Peer` surface, so call sites read the same on
 either side. A handler reaches the client on the current connection with
-`valueserver.ClientFromContext`:
+`valueserver.PeerFromContext`:
 
 ```go
 // Client registers a handler the server may invoke.
@@ -236,7 +236,7 @@ cli.AddFunction("notify", valuerpc.String, valuerpc.Void,
 // A server handler calls back into the client that invoked it.
 srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
     func(ctx context.Context, _ value.Value) (value.Value, error) {
-        caller, ok := valueserver.ClientFromContext(ctx)
+        caller, ok := valueserver.PeerFromContext(ctx)
         if !ok {
             return nil, valuerpc.NewError(valuerpc.CodeInternal, "no client handle")
         }

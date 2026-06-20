@@ -27,7 +27,7 @@ func TestReverseUnaryCall(t *testing.T) {
 		// "reverse" calls back into the client that invoked it and relays the result.
 		s.AddFunction("reverse", valuerpc.Any, valuerpc.Any,
 			func(ctx context.Context, args value.Value) (value.Value, error) {
-				caller, ok := valueserver.ClientFromContext(ctx)
+				caller, ok := valueserver.PeerFromContext(ctx)
 				if !ok {
 					return nil, valuerpc.NewError(valuerpc.CodeInternal, "no client in context")
 				}
@@ -62,7 +62,7 @@ func TestReverseUnaryError(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("reverseFail", valuerpc.Any, valuerpc.Any,
 			func(ctx context.Context, args value.Value) (value.Value, error) {
-				caller, ok := valueserver.ClientFromContext(ctx)
+				caller, ok := valueserver.PeerFromContext(ctx)
 				if !ok {
 					return nil, valuerpc.NewError(valuerpc.CodeInternal, "no client in context")
 				}
@@ -97,7 +97,7 @@ func TestReverseUnaryConcurrent(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("reverse", valuerpc.Any, valuerpc.Any,
 			func(ctx context.Context, args value.Value) (value.Value, error) {
-				caller, ok := valueserver.ClientFromContext(ctx)
+				caller, ok := valueserver.PeerFromContext(ctx)
 				if !ok {
 					return nil, valuerpc.NewError(valuerpc.CodeInternal, "no client in context")
 				}

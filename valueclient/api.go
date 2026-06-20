@@ -54,16 +54,11 @@ type Client interface {
 
 	CancelRequest(requestId int64)
 
-	// AddFunction / AddOutgoingStream / AddIncomingStream / AddChat register
-	// handlers the connected server may invoke or open on this client
-	// (server->client / reverse RPC), the mirror of valueserver's registrar. So
-	// the client both calls the server (via the embedded Peer) and serves the
-	// server, and the two sides of value-rpc are symmetric. Registrations persist
-	// across reconnects.
-	AddFunction(name string, args, res valuerpc.TypeDef, fn valuerpc.Function) error
-	AddOutgoingStream(name string, args valuerpc.TypeDef, fn valuerpc.OutgoingStream) error
-	AddIncomingStream(name string, args valuerpc.TypeDef, fn valuerpc.IncomingStream) error
-	AddChat(name string, args valuerpc.TypeDef, fn valuerpc.Chat) error
+	// Registrar is the handler-registration surface for serving the server's
+	// reverse calls/streams (AddFunction / AddOutgoingStream / AddIncomingStream /
+	// AddChat) — identical to valueserver.Server's, so the two sides of value-rpc
+	// register handlers the same way. Registrations persist across reconnects.
+	valuerpc.Registrar
 
 	Close() error
 }

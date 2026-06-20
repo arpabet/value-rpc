@@ -17,7 +17,7 @@
 //
 // The pieces: the client registers handlers with Client.AddFunction (so it can
 // be called); the server reaches a specific client with the caller handle from
-// valueserver.ClientFromContext; identities come from the handshake
+// valueserver.PeerFromContext; identities come from the handshake
 // Authenticator (valuerpc.PrincipalFromContext).
 package main
 
@@ -57,12 +57,12 @@ func main() {
 	clients := map[string]valuerpc.Caller{}
 
 	// register: a client announces itself. We capture its caller handle from the
-	// request context (ClientFromContext) and remember it under the principal the
+	// request context (PeerFromContext) and remember it under the principal the
 	// Authenticator bound to the connection.
 	srv.AddFunction("register", valuerpc.Any, valuerpc.String,
 		func(ctx context.Context, _ value.Value) (value.Value, error) {
 			who := valuerpc.PrincipalFromContext(ctx)
-			caller, ok := valueserver.ClientFromContext(ctx)
+			caller, ok := valueserver.PeerFromContext(ctx)
 			if !ok {
 				return nil, valuerpc.NewError(valuerpc.CodeInternal, "no client handle on connection")
 			}

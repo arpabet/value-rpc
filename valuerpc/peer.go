@@ -46,6 +46,18 @@ type Peer interface {
 	Chat(ctx context.Context, name string, args value.Value, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error)
 }
 
+// Registrar is the handler-registration surface of an endpoint: the handlers it
+// serves for its peer. The server registers handlers its clients call; the
+// client registers handlers the server calls back (reverse RPC). Both
+// valueserver.Server and valueclient.Client embed Registrar, so registration is
+// identical on either side of a connection.
+type Registrar interface {
+	AddFunction(name string, args, res TypeDef, fn Function) error
+	AddOutgoingStream(name string, args TypeDef, fn OutgoingStream) error
+	AddIncomingStream(name string, args TypeDef, fn IncomingStream) error
+	AddChat(name string, args TypeDef, fn Chat) error
+}
+
 // NewFunctionRequest builds a FunctionRequest envelope using dialect d. The
 // caller assigns the request id; for a server->client call it must come from the
 // server-initiated (negative) id space so it cannot collide with a client's own

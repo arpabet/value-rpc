@@ -22,7 +22,7 @@ func TestReverseGetStream(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("sumFromClient", valuerpc.Any, valuerpc.Any,
 			func(ctx context.Context, _ value.Value) (value.Value, error) {
-				caller, ok := valueserver.ClientFromContext(ctx)
+				caller, ok := valueserver.PeerFromContext(ctx)
 				if !ok {
 					return nil, valuerpc.NewError(valuerpc.CodeInternal, "no client")
 				}
@@ -74,7 +74,7 @@ func TestReversePutStream(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("pushToClient", valuerpc.Any, valuerpc.Any,
 			func(ctx context.Context, _ value.Value) (value.Value, error) {
-				caller, ok := valueserver.ClientFromContext(ctx)
+				caller, ok := valueserver.PeerFromContext(ctx)
 				if !ok {
 					return nil, valuerpc.NewError(valuerpc.CodeInternal, "no client")
 				}
@@ -130,7 +130,7 @@ func TestReverseChat(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("chatWithClient", valuerpc.Any, valuerpc.Any,
 			func(ctx context.Context, _ value.Value) (value.Value, error) {
-				caller, ok := valueserver.ClientFromContext(ctx)
+				caller, ok := valueserver.PeerFromContext(ctx)
 				if !ok {
 					return nil, valuerpc.NewError(valuerpc.CodeInternal, "no client")
 				}

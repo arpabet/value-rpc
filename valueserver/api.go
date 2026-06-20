@@ -6,22 +6,22 @@
 package valueserver
 
 import (
-	"context"
 	"net"
 
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
 )
 
-// Handler signatures receive a context.Context as their first argument. The
-// context is cancelled when the connection drops, the server shuts down, the
-// request is cancelled (client CancelRequest), or the client's SLA deadline
-// elapses — handlers should honour it for cancellation and deadline propagation
-// to downstream work.
-type Function func(ctx context.Context, args value.Value) (value.Value, error)
-type OutgoingStream func(ctx context.Context, args value.Value) (<-chan value.Value, error)
-type IncomingStream func(ctx context.Context, args value.Value, inC <-chan value.Value) error
-type Chat func(ctx context.Context, args value.Value, inC <-chan value.Value) (<-chan value.Value, error)
+// The handler types are aliases of the shared valuerpc handler types, so the
+// registration surface (valuerpc.Registrar) is literally identical on the server
+// and the client. Each handler receives a context.Context cancelled when the
+// connection drops, the server shuts down, the request is cancelled (client
+// CancelRequest), or the client's SLA deadline elapses — honour it for
+// cancellation and deadline propagation to downstream work.
+type Function = valuerpc.Function
+type OutgoingStream = valuerpc.OutgoingStream
+type IncomingStream = valuerpc.IncomingStream
+type Chat = valuerpc.Chat
 
 // ConnectAuthorizer is called once per new connection, before the handshake. If
 // it returns an error the connection is rejected and closed. Combine it with
@@ -43,16 +43,11 @@ type ConnectAuthorizer func(conn valuerpc.MsgConn) error
 type Authenticator func(conn valuerpc.MsgConn, credential value.Value) (principal string, err error)
 
 type Server interface {
-	AddFunction(name string, args valuerpc.TypeDef, res valuerpc.TypeDef, cb Function) error
-
-	// GET for client
-	AddOutgoingStream(name string, args valuerpc.TypeDef, cb OutgoingStream) error
-
-	// PUT for client
-	AddIncomingStream(name string, args valuerpc.TypeDef, cb IncomingStream) error
-
-	// Dual channel chat
-	AddChat(name string, args valuerpc.TypeDef, cb Chat) error
+	// Registrar is the shared handler-registration surface (AddFunction,
+	// AddOutgoingStream, AddIncomingStream, AddChat) — identical to
+	// valueclient.Client's, so both sides of a connection register handlers the
+	// same way.
+	valuerpc.Registrar
 
 	// Addr returns the address the server is listening on. Useful when binding
 	// to an ephemeral port (":0").

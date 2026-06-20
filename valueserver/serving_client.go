@@ -274,6 +274,11 @@ type callResult struct {
 // client side, which also implements valuerpc.Peer.
 var _ vrpc.Peer = (*servingClient)(nil)
 
+// asPeer returns the serving client as a Peer — the surface a handler uses to
+// call back into the connected client. Naming the conversion keeps the intent
+// explicit at the otherwise-implicit interface boundary (see PeerFromContext).
+func (t *servingClient) asPeer() vrpc.Peer { return t }
+
 // CallFunction invokes a function the client registered (server->client reverse
 // RPC) and returns its result. The request id is drawn from the server-initiated
 // (negative) id space so it never collides with the client's own request ids on
@@ -429,9 +434,9 @@ func (t *servingClient) doServeFunctionRequest(ft functionType, req value.Map) v
 		reqCtx = vrpc.ContextWithPrincipal(reqCtx, t.principal)
 	}
 
-	// Expose this connection's caller handle so a handler can call a function
-	// back on the client (server->client reverse RPC) via ClientFromContext.
-	reqCtx = contextWithClient(reqCtx, t)
+	// Expose this connection's Peer handle so a handler can call back into the
+	// client (server->client reverse RPC) via PeerFromContext.
+	reqCtx = contextWithPeer(reqCtx, t.asPeer())
 
 	switch fn.ft {
 	case singleFunction:

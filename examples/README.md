@@ -24,7 +24,7 @@ go run ./examples/<name>/
 
 | Example | Shows |
 |---------|-------|
-| [`peer`](peer/) | Server→client calls: the server invokes a function the *client* registered (`Client.AddFunction` + `valueserver.ClientFromContext`). Builds the relay pattern — client A asks the server to reach client B, the server calls B back and returns B's answer to A. |
+| [`peer`](peer/) | Server→client calls: the server invokes a function the *client* registered (`Client.AddFunction` + `valueserver.PeerFromContext`). Builds the relay pattern — client A asks the server to reach client B, the server calls B back and returns B's answer to A. |
 
 ### Transports
 
