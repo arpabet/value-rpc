@@ -41,8 +41,10 @@ schema‑first, polyglot, ecosystem → gRPC.**
 
 - **No codegen, no `.proto`.** Register Go functions, call them by name.
 - **Four call patterns** multiplexed over a single connection (keyed by request id).
-- **Bidirectional (peer-symmetric) calls**: the server can call a function the
-  *client* registered (`Client.AddFunction` + `valueserver.ClientFromContext`),
+- **Bidirectional (peer-symmetric)**: either end can both initiate and serve all
+  four patterns. The server can call — or open a stream to — a handler the
+  *client* registered (`Client.AddFunction` / `AddOutgoingStream` /
+  `AddIncomingStream` / `AddChat`, reached via `valueserver.ClientFromContext`),
   not only the reverse. Both ends expose one `valuerpc.Peer` surface, so call
   sites read the same on either side — and a server handler can route a call from
   client A through to client B.
@@ -241,6 +243,12 @@ srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
         return caller.CallFunction(ctx, "notify", value.Utf8("pong"))
     })
 ```
+
+The same handle also exposes `GetStream`, `PutStream`, and `Chat`, so the server
+can open any of the four patterns toward a client (which serves them with
+`AddOutgoingStream` / `AddIncomingStream` / `AddChat`) — value-rpc is fully
+peer-symmetric, and the shared credit-based flow control applies in both
+directions.
 
 The caller handle stays valid for the connection's lifetime, so a handler can
 cache it — e.g. keyed by the authenticated principal (`valuerpc.PrincipalFromContext`) —

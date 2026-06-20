@@ -57,7 +57,8 @@ type servingClient struct {
 	inFlight       atomic.Int64 // concurrent request handlers (MaxConcurrentRequests)
 	liveStreams    atomic.Int64 // open streaming requests (MaxConcurrentStreams)
 
-	pendingCalls      sync.Map     // server-initiated reqId -> chan callResult (server->client reverse RPC)
+	pendingCalls      sync.Map     // server-initiated reqId -> chan callResult (server->client reverse unary)
+	pendingStreams    sync.Map     // server-initiated reqId -> *clientStream (server->client reverse streams)
 	lastServerRequest atomic.Int64 // allocator for server-initiated (negative) request ids
 
 	closeOnce sync.Once
@@ -104,6 +105,13 @@ func (t *servingClient) Close() {
 		t.requestMap.Range(func(key, value interface{}) bool {
 			sr := value.(*servingRequest)
 			sr.Close()
+			return true
+		})
+
+		// Tear down server-initiated reverse streams so their streamers/consumers
+		// unblock (pending reverse-unary calls already unblock via <-t.done).
+		t.pendingStreams.Range(func(_, v interface{}) bool {
+			v.(*clientStream).Close()
 			return true
 		})
 	})
@@ -261,16 +269,17 @@ type callResult struct {
 	err   error
 }
 
-// Compile-time check: a serving client is a Caller (it can call its client back).
-var _ vrpc.Caller = (*servingClient)(nil)
+// Compile-time check: a serving client is a full Peer (it can call its client
+// back and open streams toward it), so the server side is symmetric with the
+// client side, which also implements valuerpc.Peer.
+var _ vrpc.Peer = (*servingClient)(nil)
 
 // CallFunction invokes a function the client registered (server->client reverse
 // RPC) and returns its result. The request id is drawn from the server-initiated
 // (negative) id space so it never collides with the client's own request ids on
 // this connection. The call is bound by ctx and by the connection lifetime.
 func (t *servingClient) CallFunction(ctx context.Context, name string, args value.Value) (value.Value, error) {
-	// Server-initiated id space: -1, -2, ... (handshake owns 0; the client owns >= 1).
-	reqId := -t.lastServerRequest.Add(1)
+	reqId := t.nextServerRequestId()
 
 	resCh := make(chan callResult, 1)
 	t.pendingCalls.Store(reqId, resCh)
@@ -555,8 +564,16 @@ func (t *servingClient) processRequest(req value.Map) error {
 		return errors.Errorf("request id not found%s", reqDetail(req))
 	}
 
+	// Inbound frames for a server-initiated stream (reverse stream): the client
+	// is the responder. Route StreamReady/Value/End/Credit/Error by request id to
+	// the client stream. Server-initiated ids are negative, so they never collide
+	// with the client's own (positive) serving requests below.
+	if cs, ok := t.findPendingStream(reqId); ok {
+		return cs.handleInbound(msgType, req, t)
+	}
+
 	// Inbound FunctionResponse/ErrorResponse = the client replying to a
-	// server->client call we initiated (reverse RPC). Complete that pending call
+	// server->client call we initiated (reverse unary). Complete that pending call
 	// rather than treating it as a new inbound request.
 	if msgType == vrpc.FunctionResponse || msgType == vrpc.ErrorResponse {
 		t.completePendingCall(reqId, msgType, req)

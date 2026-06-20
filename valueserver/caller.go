@@ -13,18 +13,19 @@ import (
 
 type clientCtxKey struct{}
 
-func contextWithClient(ctx context.Context, c vrpc.Caller) context.Context {
-	return context.WithValue(ctx, clientCtxKey{}, c)
+func contextWithClient(ctx context.Context, p vrpc.Peer) context.Context {
+	return context.WithValue(ctx, clientCtxKey{}, p)
 }
 
-// ClientFromContext returns the caller handle for the client whose request is
-// currently being served, so a handler can call a function back on that client
-// (server->client reverse RPC). The handle stays valid for the connection's
-// lifetime, so a handler can cache it — e.g. keyed by the authenticated
-// principal — to reach this client later from a different request (the pattern
-// for routing a call from client A through the server to client B). Returns
-// false when the served connection has no caller handle.
-func ClientFromContext(ctx context.Context) (vrpc.Caller, bool) {
-	c, ok := ctx.Value(clientCtxKey{}).(vrpc.Caller)
-	return c, ok
+// ClientFromContext returns the Peer handle for the client whose request is
+// currently being served, so a handler can call back into that client
+// (server->client reverse RPC) — CallFunction, GetStream, PutStream, or Chat,
+// the same surface the client uses toward the server. The handle stays valid for
+// the connection's lifetime, so a handler can cache it — e.g. keyed by the
+// authenticated principal — to reach this client later from a different request
+// (the pattern for routing a call from client A through the server to client B).
+// Returns false when the served connection has no peer handle.
+func ClientFromContext(ctx context.Context) (vrpc.Peer, bool) {
+	p, ok := ctx.Value(clientCtxKey{}).(vrpc.Peer)
+	return p, ok
 }

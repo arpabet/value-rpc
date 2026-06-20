@@ -50,7 +50,8 @@ type rpcClient struct {
 	dialTimeout       time.Duration                           // bounds a dial when the context carries no deadline
 	unaryInvoker      valuerpc.Invoker                        // invokeUnary wrapped by the configured unary interceptors
 
-	functionMap sync.Map           // name -> *clientFunction the peer (server) may call (reverse RPC)
+	functionMap sync.Map           // name -> *clientFunction the peer (server) may call/open (reverse RPC)
+	servingMap  sync.Map           // server-initiated reqId -> *clientServingRequest (reverse streams)
 	baseCtx     context.Context    // parent for inbound-call handler contexts; cancelled on Close
 	baseCancel  context.CancelFunc // cancels baseCtx
 }
@@ -163,6 +164,12 @@ func (t *rpcClient) Close() error {
 	if t.baseCancel != nil {
 		t.baseCancel() // cancel in-flight inbound-call handlers
 	}
+	// Tear down streams this client is serving for the peer (reverse streams) so
+	// their streamer/consumer goroutines unblock.
+	t.servingMap.Range(func(_, v interface{}) bool {
+		v.(*clientServingRequest).Close()
+		return true
+	})
 	t.conn.reset()
 	return nil
 }
@@ -479,7 +486,7 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 			return
 		}
 
-		// Inbound FunctionRequest = the peer (server) is calling a function this
+		// Inbound FunctionRequest = the peer (server) calling a unary function this
 		// client registered (reverse RPC). Dispatch it to our functionMap rather
 		// than correlating it to one of our own outstanding requests.
 		if msgType == valuerpc.FunctionRequest {
@@ -487,9 +494,24 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 			return
 		}
 
+		// Inbound stream-open request = the server opening a stream this client
+		// serves (reverse stream).
+		if msgType == valuerpc.GetStreamRequest || msgType == valuerpc.PutStreamRequest || msgType == valuerpc.ChatRequest {
+			t.serveInboundStream(msgType, resp)
+			return
+		}
+
 		id, ok := valuerpc.GetNumberField(resp, valuerpc.DefaultDialect.RequestIdField)
 		if !ok {
 			t.getErrorHandler().ProtocolError(resp, ErrIdFieldNotFound)
+			return
+		}
+
+		// Running frame for a stream this client is serving (server-initiated,
+		// negative id): route to its serving request before the client's own
+		// (positive-id) request map.
+		if entry, ok := t.servingMap.Load(id.Long()); ok {
+			entry.(*clientServingRequest).serveRunning(msgType, resp, t)
 			return
 		}
 
@@ -502,12 +524,25 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 	}
 }
 
+// clientFnKind tags which handler shape a registered client function is.
+type clientFnKind int
+
+const (
+	cfnUnary clientFnKind = iota
+	cfnOut
+	cfnIn
+	cfnChat
+)
+
 // clientFunction is a handler the client registered for the peer (server) to
-// call; mirrors the server's per-function record.
+// call or open (reverse RPC); mirrors the server's per-function record.
 type clientFunction struct {
-	args valuerpc.TypeDef
-	res  valuerpc.TypeDef
-	fn   valuerpc.Function
+	ft        clientFnKind
+	args, res valuerpc.TypeDef
+	fn        valuerpc.Function
+	outStream valuerpc.OutgoingStream
+	inStream  valuerpc.IncomingStream
+	chat      valuerpc.Chat
 }
 
 // Compile-time check that the client implements the symmetric Peer surface.
@@ -521,7 +556,7 @@ func (t *rpcClient) AddFunction(name string, args, res valuerpc.TypeDef, fn valu
 	if name == "" || fn == nil {
 		return fmt.Errorf("valueclient: AddFunction requires a name and a handler")
 	}
-	t.functionMap.Store(name, &clientFunction{args: args, res: res, fn: fn})
+	t.functionMap.Store(name, &clientFunction{ft: cfnUnary, args: args, res: res, fn: fn})
 	return nil
 }
 
@@ -545,6 +580,10 @@ func (t *rpcClient) serveInboundCall(req value.Map) {
 		return
 	}
 	cf := entry.(*clientFunction)
+	if cf.ft != cfnUnary {
+		t.reply(valuerpc.NewFunctionError(reqId, valuerpc.CodeInvalidArgument, "function '%s' is not unary", name.String()))
+		return
+	}
 	args := req.Get(valuerpc.DefaultDialect.ArgumentsField)
 	if !valuerpc.Verify(args, cf.args) {
 		t.reply(valuerpc.NewFunctionError(reqId, valuerpc.CodeInvalidArgument, "function '%s' invalid args", name.String()))

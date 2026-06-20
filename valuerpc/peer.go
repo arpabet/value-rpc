@@ -18,6 +18,14 @@ import (
 // type lives here in the shared core rather than on one side of the connection.
 type Function func(ctx context.Context, args value.Value) (value.Value, error)
 
+// OutgoingStream, IncomingStream, and Chat are the streaming handler types. Like
+// Function, they live in the shared core because either end can register them:
+// the server serves streams the client opens, and (symmetrically) the client
+// serves streams the server opens.
+type OutgoingStream func(ctx context.Context, args value.Value) (<-chan value.Value, error)
+type IncomingStream func(ctx context.Context, args value.Value, inC <-chan value.Value) error
+type Chat func(ctx context.Context, args value.Value, inC <-chan value.Value) (<-chan value.Value, error)
+
 // Caller is the established-connection surface for *initiating* a unary call to
 // the peer at the other end of the connection. Both valueclient.Client and the
 // server's per-connection handle implement it, so a call site reads the same
@@ -82,6 +90,47 @@ func NewFunctionError(requestId value.Number, code Code, format string, args ...
 		Put(DefaultDialect.RequestIdField, requestId).
 		Put(DefaultDialect.CodeField, value.Long(int64(code))).
 		Put(DefaultDialect.ErrorField, value.Utf8(msg))
+}
+
+// NewStreamRequest builds a stream-opening request (GetStreamRequest /
+// PutStreamRequest / ChatRequest) using dialect-default fields. The caller
+// assigns the request id (server-initiated streams use the negative id space).
+func NewStreamRequest(mt MessageType, requestId int64, name string, args value.Value) value.Map {
+	req := value.EmptyMap(true).
+		Put(DefaultDialect.MessageTypeField, mt.Long()).
+		Put(DefaultDialect.RequestIdField, value.Long(requestId)).
+		Put(DefaultDialect.FunctionNameField, value.Utf8(name))
+	if args != nil {
+		req = req.Put(DefaultDialect.ArgumentsField, args)
+	}
+	return req
+}
+
+// NewStreamReady builds the StreamReady ack a stream responder sends once its
+// handler is established (before it acquires any send credit).
+func NewStreamReady(requestId value.Number) value.Map {
+	return value.EmptyMap(true).
+		Put(DefaultDialect.MessageTypeField, StreamReady.Long()).
+		Put(DefaultDialect.RequestIdField, requestId)
+}
+
+// NewStreamValue builds a StreamValue frame carrying one streamed value.
+func NewStreamValue(requestId value.Number, val value.Value) value.Map {
+	return value.EmptyMap(true).
+		Put(DefaultDialect.MessageTypeField, StreamValue.Long()).
+		Put(DefaultDialect.RequestIdField, requestId).
+		Put(DefaultDialect.ValueField, val)
+}
+
+// NewStreamEnd builds a StreamEnd frame, optionally carrying a final value.
+func NewStreamEnd(requestId value.Number, val value.Value) value.Map {
+	resp := value.EmptyMap(true).
+		Put(DefaultDialect.MessageTypeField, StreamEnd.Long()).
+		Put(DefaultDialect.RequestIdField, requestId)
+	if val != nil {
+		resp = resp.Put(DefaultDialect.ValueField, val)
+	}
+	return resp
 }
 
 // HandlerErrorCode maps a user-handler error to a Code: the code of a
