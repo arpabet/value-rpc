@@ -13,7 +13,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"fmt"
 	"math/big"
 	"net"
 	"strings"
@@ -27,6 +26,7 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
 	"go.uber.org/zap"
+	"golang.org/x/xerrors"
 )
 
 // genCertPair builds a throwaway CA and issues a loopback server certificate and
@@ -288,7 +288,7 @@ func TestQUIC_MutualAuth(t *testing.T) {
 	srv.SetConnectAuthorizer(func(conn valuerpc.MsgConn) error {
 		certs, ok := valuerpc.PeerCertificates(conn)
 		if !ok {
-			return fmt.Errorf("no client certificate")
+			return xerrors.New("no client certificate")
 		}
 		select {
 		case cnCh <- certs[0].Subject.CommonName:
@@ -389,11 +389,11 @@ func TestQUIC_Concurrent(t *testing.T) {
 				n := int64(base*callsPer + i)
 				res, err := cli.CallFunction(context.Background(), "square", value.Tuple(value.Long(n)))
 				if err != nil {
-					errc <- fmt.Errorf("n=%d: %w", n, err)
+					errc <- xerrors.Errorf("n=%d: %w", n, err)
 					return
 				}
 				if got := res.(value.Number).Long(); got != n*n {
-					errc <- fmt.Errorf("square(%d) = %d, want %d (mis-routed?)", n, got, n*n)
+					errc <- xerrors.Errorf("square(%d) = %d, want %d (mis-routed?)", n, got, n*n)
 					return
 				}
 			}
@@ -440,7 +440,7 @@ func TestQUIC_MultipleConcurrentStreams(t *testing.T) {
 			defer wg.Done()
 			readC, _, err := cli.GetStream(context.Background(), "seq", value.Tuple(value.Long(base*per), value.Long(per)), 32)
 			if err != nil {
-				errc <- fmt.Errorf("stream %d: %w", base, err)
+				errc <- xerrors.Errorf("stream %d: %w", base, err)
 				return
 			}
 			want := base * per
@@ -449,13 +449,13 @@ func TestQUIC_MultipleConcurrentStreams(t *testing.T) {
 					continue
 				}
 				if got := v.(value.Number).Long(); got != want {
-					errc <- fmt.Errorf("stream %d: got %d want %d (cross-talk)", base, got, want)
+					errc <- xerrors.Errorf("stream %d: got %d want %d (cross-talk)", base, got, want)
 					return
 				}
 				want++
 			}
 			if want != base*per+per {
-				errc <- fmt.Errorf("stream %d incomplete: ended at %d", base, want)
+				errc <- xerrors.Errorf("stream %d incomplete: ended at %d", base, want)
 			}
 		}(int64(s))
 	}

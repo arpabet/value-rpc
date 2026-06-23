@@ -15,6 +15,7 @@ import (
 	"go.arpabet.com/value-rpc/valueclient"
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
+	"golang.org/x/xerrors"
 )
 
 // TestReverseUnaryCall: a server handler calls a function the client registered
@@ -130,7 +131,7 @@ func TestReverseUnaryConcurrent(t *testing.T) {
 				return
 			}
 			if got := res.(value.String).String(); got != "c:"+in {
-				errs <- fmt.Errorf("got %q, want c:%s", got, in)
+				errs <- xerrors.Errorf("got %q, want c:%s", got, in)
 			}
 		}(i)
 	}

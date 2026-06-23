@@ -7,12 +7,12 @@ package valueclient
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
+	"golang.org/x/xerrors"
 )
 
 // DefaultTimeout bounds each message write on the connection.
@@ -68,7 +68,7 @@ func newConn(ctx context.Context, dialer valuerpc.Dialer, clientId int64, sessio
 	_ = conn.SetReadDeadline(time.Time{}) // clear; the response loop reads without a deadline
 	if err != nil {
 		t.Close()
-		return nil, fmt.Errorf("handshake: %w", err)
+		return nil, xerrors.Errorf("handshake: %w", err)
 	}
 	t.respHandler(resp) // stores the session token; fires the connection handler
 

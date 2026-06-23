@@ -8,10 +8,11 @@
 package valuerpc
 
 import (
-	"errors"
 	"net"
+
+	"golang.org/x/xerrors"
 )
 
 func readPeerCred(*net.UnixConn) (PeerCred, error) {
-	return PeerCred{}, errors.New("peer credentials are not supported on this platform")
+	return PeerCred{}, xerrors.New("peer credentials are not supported on this platform")
 }

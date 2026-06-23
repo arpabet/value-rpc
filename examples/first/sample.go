@@ -8,14 +8,15 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/pkg/errors"
+	"os"
+	"sync"
+	"time"
+
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valueclient"
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
-	"os"
-	"sync"
-	"time"
+	"golang.org/x/xerrors"
 )
 
 var firstName = ""
@@ -144,7 +145,7 @@ func run() error {
 	))
 
 	if nothing != nil || err != nil {
-		return errors.Errorf("something wrong, %v", err)
+		return xerrors.Errorf("something wrong, %v", err)
 	}
 
 	/**
@@ -166,7 +167,7 @@ func run() error {
 
 	readC, requestId, err := cli.GetStream(context.Background(), "scanNames", nil, 100)
 	if err != nil {
-		return errors.Errorf("get stream failed, %v", err)
+		return xerrors.Errorf("get stream failed, %v", err)
 	}
 
 	wg.Add(1)
@@ -191,7 +192,7 @@ func run() error {
 	uploadCh := make(chan value.Value, 2)
 	err = cli.PutStream(context.Background(), "uploadNames", nil, uploadCh)
 	if err != nil {
-		return errors.Errorf("put stream failed, %v", err)
+		return xerrors.Errorf("put stream failed, %v", err)
 	}
 
 	fmt.Println("Upload client: <START>")
@@ -211,7 +212,7 @@ func run() error {
 	sendCh := make(chan value.Value, 10)
 	readC, requestId, err = cli.Chat(context.Background(), "echoChat", nil, 100, sendCh)
 	if err != nil {
-		return errors.Errorf("chat request failed, %v", err)
+		return xerrors.Errorf("chat request failed, %v", err)
 	}
 
 	wg.Add(1)

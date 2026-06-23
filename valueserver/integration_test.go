@@ -7,8 +7,6 @@ package valueserver_test
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -21,6 +19,7 @@ import (
 	"go.arpabet.com/value-rpc/valueserver"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
+	"golang.org/x/xerrors"
 )
 
 // newServer starts a server bound to an ephemeral port and returns its actual
@@ -74,7 +73,7 @@ func TestUnaryCall_ServerError(t *testing.T) {
 		// FINDINGS.md BUG-2), which would make this test pass for the wrong reason.
 		s.AddFunction("boom", valuerpc.Any, valuerpc.String,
 			func(_ context.Context, args value.Value) (value.Value, error) {
-				return nil, fmt.Errorf("kaboom")
+				return nil, xerrors.New("kaboom")
 			})
 	})
 	defer stop()
@@ -458,7 +457,7 @@ func TestClientContextDeadlineUnary(t *testing.T) {
 	// server's deadline response can arrive first (CodeDeadlineExceeded). Accept
 	// either — both confirm the deadline propagated and cancelled the call.
 	_, err := cli.CallFunction(ctx, "block", nil)
-	if !errors.Is(err, context.DeadlineExceeded) && valuerpc.CodeOf(err) != valuerpc.CodeDeadlineExceeded {
+	if !xerrors.Is(err, context.DeadlineExceeded) && valuerpc.CodeOf(err) != valuerpc.CodeDeadlineExceeded {
 		t.Fatalf("got %v, want a deadline error", err)
 	}
 }
@@ -1198,7 +1197,7 @@ func TestErrorCodes(t *testing.T) {
 			})
 		s.AddFunction("boom", valuerpc.Any, valuerpc.Any,
 			func(_ context.Context, _ value.Value) (value.Value, error) {
-				return nil, fmt.Errorf("kaboom") // plain error -> Internal
+				return nil, xerrors.New("kaboom") // plain error -> Internal
 			})
 	})
 	defer stop()
@@ -1216,7 +1215,7 @@ func TestErrorCodes(t *testing.T) {
 		t.Errorf("handler coded error: code = %v, want InvalidArgument", valuerpc.CodeOf(err))
 	}
 	var rpcErr *valuerpc.Error
-	if !errors.As(err, &rpcErr) || rpcErr.Code != valuerpc.CodeInvalidArgument {
+	if !xerrors.As(err, &rpcErr) || rpcErr.Code != valuerpc.CodeInvalidArgument {
 		t.Errorf("errors.As did not yield *valuerpc.Error{InvalidArgument}: %v", err)
 	}
 
@@ -1255,11 +1254,11 @@ func TestConcurrentUnaryCalls(t *testing.T) {
 				n := int64(base*callsPer + i)
 				res, err := cli.CallFunction(context.Background(), "square", value.Tuple(value.Long(n)))
 				if err != nil {
-					errCh <- fmt.Errorf("n=%d: %w", n, err)
+					errCh <- xerrors.Errorf("n=%d: %w", n, err)
 					return
 				}
 				if got := res.(value.Number).Long(); got != n*n {
-					errCh <- fmt.Errorf("square(%d) = %d, want %d (response routed to wrong caller?)", n, got, n*n)
+					errCh <- xerrors.Errorf("square(%d) = %d, want %d (response routed to wrong caller?)", n, got, n*n)
 					return
 				}
 			}
@@ -1328,11 +1327,11 @@ func TestSlowStreamConsumerDoesNotBlockOthers(t *testing.T) {
 		for i := int64(1); i <= 200; i++ {
 			res, err := cli.CallFunction(context.Background(), "square", value.Tuple(value.Long(i)))
 			if err != nil {
-				done <- fmt.Errorf("square(%d): %w", i, err)
+				done <- xerrors.Errorf("square(%d): %w", i, err)
 				return
 			}
 			if got := res.(value.Number).Long(); got != i*i {
-				done <- fmt.Errorf("square(%d) = %d, want %d", i, got, i*i)
+				done <- xerrors.Errorf("square(%d) = %d, want %d", i, got, i*i)
 				return
 			}
 		}
@@ -1611,7 +1610,7 @@ func TestMultipleConcurrentStreams(t *testing.T) {
 			defer wg.Done()
 			readC, _, err := cli.GetStream(context.Background(), "seq", value.Tuple(value.Long(base*per), value.Long(per)), 64)
 			if err != nil {
-				errc <- fmt.Errorf("stream %d: %w", base, err)
+				errc <- xerrors.Errorf("stream %d: %w", base, err)
 				return
 			}
 			want := base * per
@@ -1620,13 +1619,13 @@ func TestMultipleConcurrentStreams(t *testing.T) {
 					continue
 				}
 				if got := v.(value.Number).Long(); got != want {
-					errc <- fmt.Errorf("stream %d: got %d want %d (cross-talk?)", base, got, want)
+					errc <- xerrors.Errorf("stream %d: got %d want %d (cross-talk?)", base, got, want)
 					return
 				}
 				want++
 			}
 			if want != base*per+per {
-				errc <- fmt.Errorf("stream %d incomplete: ended at %d", base, want)
+				errc <- xerrors.Errorf("stream %d incomplete: ended at %d", base, want)
 			}
 		}(int64(s))
 	}

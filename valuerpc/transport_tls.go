@@ -9,9 +9,10 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"fmt"
 	"net"
 	"time"
+
+	"golang.org/x/xerrors"
 )
 
 // TLS transport: TCP wrapped in crypto/tls. It reuses the length-prefix framing
@@ -24,7 +25,7 @@ import (
 // maxFrameSize bounds inbound frames (<=0 uses MaxFrameSize).
 func NewTLSListener(addr string, config *tls.Config, keepAlive, writeTimeout time.Duration, maxFrameSize int) (Listener, error) {
 	if config == nil {
-		return nil, fmt.Errorf("tls listener requires a non-nil *tls.Config with a server certificate")
+		return nil, xerrors.New("tls listener requires a non-nil *tls.Config with a server certificate")
 	}
 	rawLis, err := net.Listen("tcp", addr)
 	if err != nil {

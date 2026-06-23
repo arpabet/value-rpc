@@ -18,6 +18,7 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
 	"go.uber.org/zap"
+	"golang.org/x/xerrors"
 )
 
 // TestSeam_NewServerWithListener_TCP exercises the explicit transport
@@ -190,7 +191,7 @@ func TestPeerCredOverUnix(t *testing.T) {
 	srv.SetConnectAuthorizer(func(conn valuerpc.MsgConn) error {
 		cred, ok := valuerpc.PeerCredOf(conn)
 		if !ok {
-			return fmt.Errorf("no peer credentials available")
+			return xerrors.New("no peer credentials available")
 		}
 		select {
 		case credCh <- cred:
@@ -236,7 +237,7 @@ func TestConnectAuthorizerRejects(t *testing.T) {
 	}
 	defer srv.Close()
 	srv.SetConnectAuthorizer(func(conn valuerpc.MsgConn) error {
-		return fmt.Errorf("denied")
+		return xerrors.New("denied")
 	})
 	srv.AddFunction("ping", valuerpc.Void, valuerpc.String,
 		func(_ context.Context, args value.Value) (value.Value, error) {

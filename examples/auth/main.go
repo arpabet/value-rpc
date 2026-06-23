@@ -20,6 +20,7 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
 	"go.uber.org/zap"
+	"golang.org/x/xerrors"
 )
 
 func main() {
@@ -36,11 +37,11 @@ func main() {
 
 	srv.SetAuthenticator(func(_ valuerpc.MsgConn, cred value.Value) (string, error) {
 		if cred == nil || cred.Kind() != value.STRING {
-			return "", fmt.Errorf("missing credential")
+			return "", xerrors.New("missing credential")
 		}
 		principal, ok := tokens[cred.(value.String).String()]
 		if !ok {
-			return "", fmt.Errorf("invalid token")
+			return "", xerrors.New("invalid token")
 		}
 		return principal, nil
 	})

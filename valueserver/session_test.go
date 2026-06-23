@@ -7,7 +7,6 @@ package valueserver_test
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"go.arpabet.com/value-rpc/valueclient"
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
+	"golang.org/x/xerrors"
 )
 
 // TestAuthenticatorGatesHandshake verifies the handshake Authenticator: a client
@@ -25,7 +25,7 @@ func TestAuthenticatorGatesHandshake(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.SetAuthenticator(func(conn valuerpc.MsgConn, cred value.Value) (string, error) {
 			if cred == nil || cred.Kind() != value.STRING || cred.(value.String).String() != secret {
-				return "", fmt.Errorf("bad credential")
+				return "", xerrors.New("bad credential")
 			}
 			return "user", nil
 		})
@@ -156,7 +156,7 @@ func TestResumptionBoundToPrincipal(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.SetAuthenticator(func(_ valuerpc.MsgConn, cred value.Value) (string, error) {
 			if cred == nil || cred.Kind() != value.STRING {
-				return "", fmt.Errorf("no credential")
+				return "", xerrors.New("no credential")
 			}
 			switch cred.(value.String).String() {
 			case "alice-key":
@@ -164,7 +164,7 @@ func TestResumptionBoundToPrincipal(t *testing.T) {
 			case "bob-key":
 				return "bob", nil
 			}
-			return "", fmt.Errorf("unknown credential")
+			return "", xerrors.New("unknown credential")
 		})
 		s.AddFunction("ping", valuerpc.Any, valuerpc.Any,
 			func(_ context.Context, _ value.Value) (value.Value, error) { return value.Utf8("pong"), nil })

@@ -12,10 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pkg/errors"
 	"go.arpabet.com/value"
 	vrpc "go.arpabet.com/value-rpc/valuerpc"
 	"go.uber.org/zap"
+	"golang.org/x/xerrors"
 )
 
 var OutgoingQueueCap = 4096
@@ -560,13 +560,13 @@ func (t *servingClient) processRequest(req value.Map) error {
 
 	mt, ok := vrpc.GetNumberField(req, vrpc.DefaultDialect.MessageTypeField)
 	if !ok {
-		return errors.Errorf("empty message type%s", reqDetail(req))
+		return xerrors.Errorf("empty message type%s", reqDetail(req))
 	}
 	msgType := vrpc.MessageType(mt.Long())
 
 	reqId, ok := vrpc.GetNumberField(req, vrpc.DefaultDialect.RequestIdField)
 	if !ok {
-		return errors.Errorf("request id not found%s", reqDetail(req))
+		return xerrors.Errorf("request id not found%s", reqDetail(req))
 	}
 
 	// Inbound frames for a server-initiated stream (reverse stream): the client
@@ -614,7 +614,7 @@ func (t *servingClient) serveNewRequest(msgType vrpc.MessageType, req value.Map)
 	case vrpc.ChatRequest:
 		ft = chat
 	default:
-		return errors.Errorf("unknown message type for new request%s", reqDetail(req))
+		return xerrors.Errorf("unknown message type for new request%s", reqDetail(req))
 	}
 
 	// Reserve a handler slot. Over the limit we reject this one request with an

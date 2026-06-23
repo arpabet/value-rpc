@@ -32,6 +32,7 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
 	"go.uber.org/zap"
+	"golang.org/x/xerrors"
 )
 
 func main() {
@@ -46,7 +47,7 @@ func main() {
 	// a real system verify a token/signature and derive the identity from it.
 	srv.SetAuthenticator(func(_ valuerpc.MsgConn, cred value.Value) (string, error) {
 		if cred == nil || cred.Kind() != value.STRING {
-			return "", fmt.Errorf("missing name credential")
+			return "", xerrors.New("missing name credential")
 		}
 		return cred.(value.String).String(), nil
 	})

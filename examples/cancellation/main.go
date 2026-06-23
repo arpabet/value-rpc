@@ -10,7 +10,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -20,13 +19,14 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
 	"go.uber.org/zap"
+	"golang.org/x/xerrors"
 )
 
 // The deadline is sent as the server SLA, so both ends expire together: the
 // client's local ctx.Done usually wins (a raw context error), but the server's
 // SLA response can arrive first (a coded *valuerpc.Error). Either is a deadline.
 func isDeadline(err error) bool {
-	return errors.Is(err, context.DeadlineExceeded) || valuerpc.CodeOf(err) == valuerpc.CodeDeadlineExceeded
+	return xerrors.Is(err, context.DeadlineExceeded) || valuerpc.CodeOf(err) == valuerpc.CodeDeadlineExceeded
 }
 
 func main() {

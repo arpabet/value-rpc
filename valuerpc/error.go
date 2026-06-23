@@ -6,8 +6,9 @@
 package valuerpc
 
 import (
-	"errors"
 	"fmt"
+
+	"golang.org/x/xerrors"
 )
 
 // Code is a machine-readable RPC status, carried on the wire so callers can
@@ -77,7 +78,7 @@ func CodeOf(err error) Code {
 		return CodeOK
 	}
 	var e *Error
-	if errors.As(err, &e) {
+	if xerrors.As(err, &e) {
 		return e.Code
 	}
 	return CodeUnknown

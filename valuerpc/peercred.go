@@ -6,8 +6,9 @@
 package valuerpc
 
 import (
-	"errors"
 	"net"
+
+	"golang.org/x/xerrors"
 )
 
 // PeerCred identifies the peer process of a Unix-domain-socket connection,
@@ -35,7 +36,7 @@ func PeerCredOf(conn MsgConn) (cred PeerCred, ok bool) {
 	return c, true
 }
 
-var errNotUnixConn = errors.New("not a unix-domain-socket connection")
+var errNotUnixConn = xerrors.New("not a unix-domain-socket connection")
 
 // peerCred reports the peer credentials when the underlying connection is a Unix
 // socket; readPeerCred is implemented per-platform.

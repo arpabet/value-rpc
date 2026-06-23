@@ -7,7 +7,6 @@ package valueclient_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,6 +20,7 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
 	"go.uber.org/zap"
+	"golang.org/x/xerrors"
 )
 
 var sockSeq int64
@@ -419,7 +419,7 @@ func TestCredentialAuth(t *testing.T) {
 	sock, stop := serve(t, func(s valueserver.Server) {
 		s.SetAuthenticator(func(_ valuerpc.MsgConn, cred value.Value) (string, error) {
 			if cred == nil || cred.(value.String).String() != "sekret" {
-				return "", errors.New("denied")
+				return "", xerrors.New("denied")
 			}
 			return "alice", nil
 		})

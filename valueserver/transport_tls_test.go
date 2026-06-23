@@ -13,7 +13,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"fmt"
 	"math/big"
 	"net"
 	"testing"
@@ -24,6 +23,7 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
 	"go.uber.org/zap"
+	"golang.org/x/xerrors"
 )
 
 // genCertPair builds a throwaway CA and issues a loopback server certificate and
@@ -136,7 +136,7 @@ func TestTLS_MutualAuth(t *testing.T) {
 	srv.SetConnectAuthorizer(func(conn valuerpc.MsgConn) error {
 		certs, ok := valuerpc.PeerCertificates(conn)
 		if !ok {
-			return fmt.Errorf("no client certificate")
+			return xerrors.New("no client certificate")
 		}
 		select {
 		case cnCh <- certs[0].Subject.CommonName:

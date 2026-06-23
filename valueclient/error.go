@@ -6,18 +6,17 @@
 package valueclient
 
 import (
-	"errors"
-
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
+	"golang.org/x/xerrors"
 )
 
-var ErrNoResponse = errors.New("no response")
-var ErrNoMessageType = errors.New("message type not found")
-var ErrIdFieldNotFound = errors.New("request id not found")
-var ErrTimeoutError = errors.New("timeout error")
-var ErrRequestNotFound = errors.New("request not found")
-var ErrUnsupportedMessageType = errors.New("message type not supported")
+var ErrNoResponse = xerrors.New("no response")
+var ErrNoMessageType = xerrors.New("message type not found")
+var ErrIdFieldNotFound = xerrors.New("request id not found")
+var ErrTimeoutError = xerrors.New("timeout error")
+var ErrRequestNotFound = xerrors.New("request not found")
+var ErrUnsupportedMessageType = xerrors.New("message type not supported")
 
 // ErrConnectionLost fails an in-flight request when the connection drops and is
 // re-established (the reconnect policy's fail-fast outcome). It carries

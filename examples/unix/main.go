@@ -22,6 +22,7 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
 	"go.uber.org/zap"
+	"golang.org/x/xerrors"
 )
 
 func main() {
@@ -39,11 +40,11 @@ func main() {
 	srv.SetConnectAuthorizer(func(conn valuerpc.MsgConn) error {
 		cred, ok := valuerpc.PeerCredOf(conn)
 		if !ok {
-			return fmt.Errorf("peer credentials unavailable")
+			return xerrors.New("peer credentials unavailable")
 		}
 		fmt.Printf("  server: connection from uid=%d gid=%d pid=%d\n", cred.UID, cred.GID, cred.PID)
 		if cred.UID != uint32(os.Getuid()) {
-			return fmt.Errorf("only the owning user may connect")
+			return xerrors.New("only the owning user may connect")
 		}
 		return nil
 	})

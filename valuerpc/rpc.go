@@ -8,19 +8,18 @@ package valuerpc
 import (
 	"bufio"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/pkg/errors"
 	"go.arpabet.com/value"
+	"golang.org/x/xerrors"
 )
 
 var (
-	ErrClientClosed = fmt.Errorf("client closed")
+	ErrClientClosed = xerrors.New("client closed")
 )
 
 // MaxFrameSize is the default bound on the size of a single inbound message
@@ -103,7 +102,7 @@ func (t *messageConnAdapter) ReadMessage() (value.Map, error) {
 	}
 	n := binary.BigEndian.Uint32(lenBuf[:])
 	if t.maxFrameSize > 0 && int64(n) > int64(t.maxFrameSize) {
-		return nil, errors.Errorf("frame too large: %d bytes (max %d)", n, t.maxFrameSize)
+		return nil, xerrors.Errorf("frame too large: %d bytes (max %d)", n, t.maxFrameSize)
 	}
 	payload := make([]byte, int(n))
 	if _, err := io.ReadFull(t.reader, payload); err != nil {
@@ -111,10 +110,10 @@ func (t *messageConnAdapter) ReadMessage() (value.Map, error) {
 	}
 	msg, err := value.Unpack(payload, true)
 	if err != nil {
-		return nil, errors.Errorf("msgpack unpack, %v", err)
+		return nil, xerrors.Errorf("msgpack unpack, %v", err)
 	}
 	if msg.Kind() != value.MAP {
-		return nil, errors.New("expected msgpack map")
+		return nil, xerrors.New("expected msgpack map")
 	}
 	return msg.(value.Map), nil
 }
@@ -125,7 +124,7 @@ func (t *messageConnAdapter) WriteMessage(msg value.Map) error {
 	}
 	payload, err := value.Pack(msg)
 	if err != nil {
-		return errors.Errorf("msgpack pack, %v", err)
+		return xerrors.Errorf("msgpack pack, %v", err)
 	}
 	return t.doWriteFrame(payload)
 }

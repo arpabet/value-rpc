@@ -8,13 +8,13 @@ package valuerpc
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"net"
 	"os"
 	"strings"
 	"time"
 
 	"golang.org/x/net/proxy"
+	"golang.org/x/xerrors"
 )
 
 // Listener accepts inbound connections and hands them back as MsgConns. It is
@@ -162,15 +162,15 @@ func NewListener(address string, keepAlive, writeTimeout time.Duration, maxFrame
 		host, path := splitWSPath(addr)
 		return NewWebSocketListener(host, path, writeTimeout, maxFrameSize, keepAlive)
 	case "wss":
-		return nil, fmt.Errorf("wss:// server needs TLS; mount valueserver.NewWebSocketHandler on your own TLS http.Server")
+		return nil, xerrors.New("wss:// server needs TLS; mount valueserver.NewWebSocketHandler on your own TLS http.Server")
 	case "tls":
-		return nil, fmt.Errorf("tls:// server needs a *tls.Config with a certificate; use valueserver.NewTLSServer")
+		return nil, xerrors.New("tls:// server needs a *tls.Config with a certificate; use valueserver.NewTLSServer")
 	case "quic":
-		return nil, fmt.Errorf("quic:// is provided by the separate module go.arpabet.com/value-rpc/quic (valuequic.NewServer)")
+		return nil, xerrors.New("quic:// is provided by the separate module go.arpabet.com/value-rpc/quic (valuequic.NewServer)")
 	case "mem":
 		return NewMemListener(addr)
 	default:
-		return nil, fmt.Errorf("unsupported listen network %q in address %q", network, address)
+		return nil, xerrors.Errorf("unsupported listen network %q in address %q", network, address)
 	}
 }
 
@@ -192,11 +192,11 @@ func NewDialer(address, socks5 string, keepAlive, writeTimeout time.Duration, ma
 		// client certificate (mTLS), or test options.
 		return NewTLSDialer(addr, nil, keepAlive, writeTimeout, maxFrameSize)
 	case "quic":
-		return errDialer{fmt.Errorf("quic:// is provided by the separate module go.arpabet.com/value-rpc/quic (valuequic.NewClient)")}
+		return errDialer{xerrors.New("quic:// is provided by the separate module go.arpabet.com/value-rpc/quic (valuequic.NewClient)")}
 	case "mem":
 		return NewMemDialer(addr)
 	default:
-		return errDialer{fmt.Errorf("unsupported dial network %q in address %q", network, address)}
+		return errDialer{xerrors.Errorf("unsupported dial network %q in address %q", network, address)}
 	}
 }
 
@@ -223,7 +223,7 @@ func removeStaleSocket(path string) error {
 		return err
 	}
 	if info.Mode()&os.ModeSocket == 0 {
-		return fmt.Errorf("refusing to remove non-socket file at %q", path)
+		return xerrors.Errorf("refusing to remove non-socket file at %q", path)
 	}
 	return os.Remove(path)
 }

@@ -7,6 +7,7 @@ require (
 	go.arpabet.com/value v1.2.0
 	go.arpabet.com/value-rpc v1.4.3
 	go.uber.org/zap v1.28.0
+	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da
 )
 
 require (

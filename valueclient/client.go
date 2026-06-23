@@ -8,7 +8,6 @@ package valueclient
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -17,6 +16,7 @@ import (
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.uber.org/zap"
+	"golang.org/x/xerrors"
 )
 
 type responseHandler func(resp value.Map)
@@ -554,7 +554,7 @@ var _ valuerpc.Peer = (*rpcClient)(nil)
 // accept any argument/result shape.
 func (t *rpcClient) AddFunction(name string, args, res valuerpc.TypeDef, fn valuerpc.Function) error {
 	if name == "" || fn == nil {
-		return fmt.Errorf("valueclient: AddFunction requires a name and a handler")
+		return xerrors.New("valueclient: AddFunction requires a name and a handler")
 	}
 	t.functionMap.Store(name, &clientFunction{ft: cfnUnary, args: args, res: res, fn: fn})
 	return nil

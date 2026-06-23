@@ -26,8 +26,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
-	"errors"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -41,6 +39,7 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
 	"go.uber.org/zap"
+	"golang.org/x/xerrors"
 )
 
 var (
@@ -110,7 +109,7 @@ func NewClient(addr string, config *tls.Config) valueclient.Client {
 // NewListener listens for QUIC connections, returning a valuerpc.Listener.
 func NewListener(addr string, config *tls.Config, writeTimeout time.Duration) (valuerpc.Listener, error) {
 	if config == nil {
-		return nil, fmt.Errorf("quic listener requires a non-nil *tls.Config with a server certificate")
+		return nil, xerrors.New("quic listener requires a non-nil *tls.Config with a server certificate")
 	}
 	ql, err := quic.ListenAddr(addr, serverTLS(config), quicConfig())
 	if err != nil {
@@ -271,7 +270,7 @@ func (t *quicMsgConn) WriteMessage(m value.Map) error {
 
 	rid, ok := ridOf(m)
 	if !ok {
-		return errors.New("quic: outgoing message has no request id")
+		return xerrors.New("quic: outgoing message has no request id")
 	}
 	mt := msgType(m)
 
@@ -368,7 +367,7 @@ func (t *quicMsgConn) streamForWrite(rid int64, mt valuerpc.MessageType) (*quicS
 	t.mu.Unlock()
 
 	if !t.isClient {
-		return nil, 0, fmt.Errorf("quic: no stream for response to request %d", rid)
+		return nil, 0, xerrors.Errorf("quic: no stream for response to request %d", rid)
 	}
 
 	s, err := t.conn.OpenStreamSync(context.Background())
@@ -443,7 +442,7 @@ func readFrame(r *bufio.Reader) (value.Map, error) {
 	}
 	n := binary.BigEndian.Uint32(lenBuf[:])
 	if valuerpc.MaxFrameSize > 0 && int64(n) > int64(valuerpc.MaxFrameSize) {
-		return nil, fmt.Errorf("frame too large: %d bytes (max %d)", n, valuerpc.MaxFrameSize)
+		return nil, xerrors.Errorf("frame too large: %d bytes (max %d)", n, valuerpc.MaxFrameSize)
 	}
 	payload := make([]byte, int(n))
 	if _, err := io.ReadFull(r, payload); err != nil {
@@ -451,10 +450,10 @@ func readFrame(r *bufio.Reader) (value.Map, error) {
 	}
 	m, err := value.Unpack(payload, true)
 	if err != nil {
-		return nil, fmt.Errorf("msgpack unpack, %v", err)
+		return nil, xerrors.Errorf("msgpack unpack, %v", err)
 	}
 	if m.Kind() != value.MAP {
-		return nil, errors.New("expected msgpack map")
+		return nil, xerrors.New("expected msgpack map")
 	}
 	return m.(value.Map), nil
 }
@@ -462,7 +461,7 @@ func readFrame(r *bufio.Reader) (value.Map, error) {
 func writeFrame(w io.Writer, m value.Map) error {
 	payload, err := value.Pack(m)
 	if err != nil {
-		return fmt.Errorf("msgpack pack, %v", err)
+		return xerrors.Errorf("msgpack pack, %v", err)
 	}
 	frame := make([]byte, 4+len(payload))
 	binary.BigEndian.PutUint32(frame[:4], uint32(len(payload)))

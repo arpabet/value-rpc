@@ -7,13 +7,13 @@ package valueclient_test
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valueclient"
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
+	"golang.org/x/xerrors"
 )
 
 // --- a typed domain over the schemaless wire ---------------------------------
@@ -40,7 +40,7 @@ var getUserReqCodec = valuerpc.Codec[GetUserReq]{
 	Decode: func(v value.Value) (GetUserReq, error) {
 		m, ok := v.(value.Map)
 		if !ok {
-			return GetUserReq{}, fmt.Errorf("expected a map")
+			return GetUserReq{}, xerrors.New("expected a map")
 		}
 		return GetUserReq{ID: m.GetNumber("id").Long()}, nil
 	},
@@ -56,7 +56,7 @@ var userCodec = valuerpc.Codec[User]{
 	Decode: func(v value.Value) (User, error) {
 		m, ok := v.(value.Map)
 		if !ok {
-			return User{}, fmt.Errorf("expected a map")
+			return User{}, xerrors.New("expected a map")
 		}
 		return User{
 			ID:    m.GetNumber("id").Long(),

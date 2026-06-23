@@ -18,9 +18,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pkg/errors"
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.uber.org/zap"
+	"golang.org/x/xerrors"
 )
 
 var DefaultTimeout = 10 * time.Second
@@ -337,17 +337,17 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 
 	mt, ok := valuerpc.GetNumberField(req, valuerpc.DefaultDialect.MessageTypeField)
 	if !ok {
-		return nil, errors.Errorf("on handshake, empty message type%s", reqDetail(req))
+		return nil, xerrors.Errorf("on handshake, empty message type%s", reqDetail(req))
 	}
 
 	msgType := valuerpc.MessageType(mt.Long())
 
 	if msgType != valuerpc.HandshakeRequest {
-		return nil, errors.Errorf("on handshake, wrong message type%s", reqDetail(req))
+		return nil, xerrors.Errorf("on handshake, wrong message type%s", reqDetail(req))
 	}
 
 	if !valuerpc.ValidMagicAndVersion(req) {
-		return nil, errors.Errorf("on handshake, unsupported client version%s", reqDetail(req))
+		return nil, xerrors.Errorf("on handshake, unsupported client version%s", reqDetail(req))
 	}
 
 	// Authenticate the client's credential before touching any session state, so
@@ -357,14 +357,14 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 	if authn := t.getAuthenticator(); authn != nil {
 		p, err := authn(conn, req.Get(valuerpc.DefaultDialect.AuthField))
 		if err != nil {
-			return nil, errors.Errorf("on handshake, authentication failed: %v", err)
+			return nil, xerrors.Errorf("on handshake, authentication failed: %v", err)
 		}
 		principal = p
 	}
 
 	cid, ok := valuerpc.GetNumberField(req, valuerpc.DefaultDialect.ClientIdField)
 	if !ok {
-		return nil, errors.Errorf("on handshake, no client id%s", reqDetail(req))
+		return nil, xerrors.Errorf("on handshake, no client id%s", reqDetail(req))
 	}
 	clientId := cid.Long()
 
@@ -385,7 +385,7 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 	resp := valuerpc.NewHandshakeResponse(cli.sessionToken)
 	err = conn.WriteMessage(resp)
 	if err != nil {
-		return nil, errors.Errorf("on handshake, %v", err)
+		return nil, xerrors.Errorf("on handshake, %v", err)
 	}
 
 	return cli, nil
@@ -408,7 +408,7 @@ func (t *rpcServer) handleConnection(conn valuerpc.MsgConn) error {
 			_ = conn.SetReadDeadline(time.Now().Add(t.cfg.handshakeTimeout))
 		}
 		if err := authz(conn); err != nil {
-			return errors.Errorf("connection rejected by authorizer: %v", err)
+			return xerrors.Errorf("connection rejected by authorizer: %v", err)
 		}
 	}
 
@@ -446,10 +446,10 @@ func (t *rpcServer) createOrUpdateServingClient(clientId int64, presentedToken, 
 
 	resume := func(existing *servingClient) (*servingClient, error) {
 		if !validToken(presentedToken, existing.sessionToken) {
-			return nil, errors.Errorf("handshake rejected: session token mismatch for client %d", clientId)
+			return nil, xerrors.Errorf("handshake rejected: session token mismatch for client %d", clientId)
 		}
 		if existing.principal != principal {
-			return nil, errors.Errorf("handshake rejected: principal mismatch for client %d", clientId)
+			return nil, xerrors.Errorf("handshake rejected: principal mismatch for client %d", clientId)
 		}
 		existing.replaceConn(conn)
 		return existing, nil
@@ -461,7 +461,7 @@ func (t *rpcServer) createOrUpdateServingClient(clientId int64, presentedToken, 
 
 	token, err := newSessionToken()
 	if err != nil {
-		return nil, errors.Errorf("on handshake, generate session token: %v", err)
+		return nil, xerrors.Errorf("on handshake, generate session token: %v", err)
 	}
 
 	client := NewServingClient(t.ctx, clientId, token, principal, conn, &t.functionMap, t.logger, &t.cfg)

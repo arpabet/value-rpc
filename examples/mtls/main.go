@@ -27,6 +27,7 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
 	"go.uber.org/zap"
+	"golang.org/x/xerrors"
 )
 
 func main() {
@@ -57,7 +58,7 @@ func main() {
 	srv.SetConnectAuthorizer(func(conn valuerpc.MsgConn) error {
 		certs, ok := valuerpc.PeerCertificates(conn)
 		if !ok || len(certs) == 0 {
-			return fmt.Errorf("no client certificate")
+			return xerrors.New("no client certificate")
 		}
 		fmt.Printf("  server: connection authorized for client CN=%q\n", certs[0].Subject.CommonName)
 		return nil

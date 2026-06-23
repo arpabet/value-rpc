@@ -7,7 +7,6 @@ package valuerpc
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"go.arpabet.com/value"
+	"golang.org/x/xerrors"
 )
 
 // In-memory transport: an in-process Listener/Dialer pair connected by Go
@@ -56,7 +56,7 @@ func NewMemListener(name string) (Listener, error) {
 	memRegistry.mu.Lock()
 	defer memRegistry.mu.Unlock()
 	if _, exists := memRegistry.m[name]; exists {
-		return nil, fmt.Errorf("mem listener %q already registered", name)
+		return nil, xerrors.Errorf("mem listener %q already registered", name)
 	}
 	memRegistry.m[name] = l
 	return l, nil
@@ -67,7 +67,7 @@ func (l *memListener) Accept() (MsgConn, error) {
 	case c := <-l.incoming:
 		return c, nil
 	case <-l.done:
-		return nil, fmt.Errorf("mem listener %q closed", l.name)
+		return nil, xerrors.Errorf("mem listener %q closed", l.name)
 	}
 }
 
@@ -95,14 +95,14 @@ func (d *memDialer) Dial(ctx context.Context) (MsgConn, error) {
 	l, ok := memRegistry.m[d.name]
 	memRegistry.mu.Unlock()
 	if !ok {
-		return nil, fmt.Errorf("no mem listener registered at %q", d.name)
+		return nil, xerrors.Errorf("no mem listener registered at %q", d.name)
 	}
 	client, server := newMemPipe(d.name)
 	select {
 	case l.incoming <- server:
 		return client, nil
 	case <-l.done:
-		return nil, fmt.Errorf("mem listener %q closed", d.name)
+		return nil, xerrors.Errorf("mem listener %q closed", d.name)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

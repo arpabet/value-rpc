@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pkg/errors"
 	"go.arpabet.com/value"
 	vrpc "go.arpabet.com/value-rpc/valuerpc"
+	"golang.org/x/xerrors"
 )
 
 var IncomingQueueCap = 4096
@@ -172,7 +172,7 @@ func (t *servingRequest) serveRunningRequest(msgType vrpc.MessageType, req value
 		return nil
 
 	default:
-		return errors.Errorf("unknown message type%s", reqDetail(req))
+		return xerrors.Errorf("unknown message type%s", reqDetail(req))
 
 	}
 
@@ -181,7 +181,7 @@ func (t *servingRequest) serveRunningRequest(msgType vrpc.MessageType, req value
 func (t *servingRequest) incomingStreamValue(req value.Map) error {
 
 	if t.inPump == nil {
-		return errors.Errorf("incoming value stream not found in serving request for %d", t.requestId)
+		return xerrors.Errorf("incoming value stream not found in serving request for %d", t.requestId)
 	}
 
 	if val := req.Get(vrpc.DefaultDialect.ValueField); val != value.Null {
@@ -194,7 +194,7 @@ func (t *servingRequest) incomingStreamValue(req value.Map) error {
 func (t *servingRequest) incomingStreamEnd(req value.Map, cli *servingClient) error {
 
 	if t.inPump == nil {
-		return errors.Errorf("incoming end stream not found in serving request for %d", t.requestId)
+		return xerrors.Errorf("incoming end stream not found in serving request for %d", t.requestId)
 	}
 
 	if val := req.Get(vrpc.DefaultDialect.ValueField); val != value.Null {

@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/pkg/errors"
 	"go.arpabet.com/value"
+	"golang.org/x/xerrors"
 )
 
 // WebSocket transport. Unlike the stream transports, WebSocket is
@@ -82,14 +82,14 @@ func (t *wsMsgConn) ReadMessage() (value.Map, error) {
 		return nil, err
 	}
 	if typ != websocket.MessageBinary {
-		return nil, errors.Errorf("expected a binary websocket message, got %v", typ)
+		return nil, xerrors.Errorf("expected a binary websocket message, got %v", typ)
 	}
 	msg, err := value.Unpack(data, true)
 	if err != nil {
-		return nil, errors.Errorf("msgpack unpack, %v", err)
+		return nil, xerrors.Errorf("msgpack unpack, %v", err)
 	}
 	if msg.Kind() != value.MAP {
-		return nil, errors.New("expected msgpack map")
+		return nil, xerrors.New("expected msgpack map")
 	}
 	return msg.(value.Map), nil
 }
@@ -97,7 +97,7 @@ func (t *wsMsgConn) ReadMessage() (value.Map, error) {
 func (t *wsMsgConn) WriteMessage(msg value.Map) error {
 	payload, err := value.Pack(msg)
 	if err != nil {
-		return errors.Errorf("msgpack pack, %v", err)
+		return xerrors.Errorf("msgpack pack, %v", err)
 	}
 	ctx := t.ctx
 	if t.writeTO > 0 {
@@ -237,7 +237,7 @@ func (l *wsListener) Accept() (MsgConn, error) {
 	case c := <-l.incoming:
 		return c, nil
 	case <-l.done:
-		return nil, errors.New("websocket listener closed")
+		return nil, xerrors.New("websocket listener closed")
 	}
 }
 

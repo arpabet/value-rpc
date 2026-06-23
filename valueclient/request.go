@@ -7,13 +7,13 @@ package valueclient
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
+	"golang.org/x/xerrors"
 )
 
 type streamKind int
@@ -187,9 +187,9 @@ func metricsCode(err error) valuerpc.Code {
 	switch {
 	case err == nil:
 		return valuerpc.CodeOK
-	case errors.Is(err, ErrTimeoutError), errors.Is(err, context.DeadlineExceeded):
+	case xerrors.Is(err, ErrTimeoutError), xerrors.Is(err, context.DeadlineExceeded):
 		return valuerpc.CodeDeadlineExceeded
-	case errors.Is(err, context.Canceled):
+	case xerrors.Is(err, context.Canceled):
 		return valuerpc.CodeCanceled
 	default:
 		return valuerpc.CodeOf(err)

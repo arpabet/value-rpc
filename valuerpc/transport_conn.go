@@ -7,11 +7,12 @@ package valuerpc
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"sync"
 	"time"
+
+	"golang.org/x/xerrors"
 )
 
 // "Bring your own connection" seam. These adapters turn an externally
@@ -38,10 +39,10 @@ import (
 // ErrConnConsumed is returned by a single-use Dialer once its connection has been
 // handed out: a reconnect cannot re-establish a connection that was supplied
 // directly. Use NewFuncDialer to (re)establish on demand.
-var ErrConnConsumed = fmt.Errorf("value-rpc: connection already consumed")
+var ErrConnConsumed = xerrors.New("value-rpc: connection already consumed")
 
 // ErrListenerClosed is returned by Accept on a closed bring-your-own Listener.
-var ErrListenerClosed = fmt.Errorf("value-rpc: listener closed")
+var ErrListenerClosed = xerrors.New("value-rpc: listener closed")
 
 // NewFuncDialer returns a Dialer that calls connect for every Dial — including
 // reconnects after a link drops — and frames the returned stream with the

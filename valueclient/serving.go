@@ -7,11 +7,11 @@ package valueclient
 
 import (
 	"context"
-	"fmt"
 	"sync/atomic"
 
 	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
+	"golang.org/x/xerrors"
 )
 
 // AddOutgoingStream registers a server-openable stream the client *produces*
@@ -19,7 +19,7 @@ import (
 // valueserver.AddOutgoingStream.
 func (t *rpcClient) AddOutgoingStream(name string, args valuerpc.TypeDef, fn valuerpc.OutgoingStream) error {
 	if name == "" || fn == nil {
-		return fmt.Errorf("valueclient: AddOutgoingStream requires a name and a handler")
+		return xerrors.New("valueclient: AddOutgoingStream requires a name and a handler")
 	}
 	t.functionMap.Store(name, &clientFunction{ft: cfnOut, args: args, outStream: fn})
 	return nil
@@ -29,7 +29,7 @@ func (t *rpcClient) AddOutgoingStream(name string, args valuerpc.TypeDef, fn val
 // values from (the server reaches it with PutStream).
 func (t *rpcClient) AddIncomingStream(name string, args valuerpc.TypeDef, fn valuerpc.IncomingStream) error {
 	if name == "" || fn == nil {
-		return fmt.Errorf("valueclient: AddIncomingStream requires a name and a handler")
+		return xerrors.New("valueclient: AddIncomingStream requires a name and a handler")
 	}
 	t.functionMap.Store(name, &clientFunction{ft: cfnIn, args: args, inStream: fn})
 	return nil
@@ -39,7 +39,7 @@ func (t *rpcClient) AddIncomingStream(name string, args valuerpc.TypeDef, fn val
 // it with Chat).
 func (t *rpcClient) AddChat(name string, args valuerpc.TypeDef, fn valuerpc.Chat) error {
 	if name == "" || fn == nil {
-		return fmt.Errorf("valueclient: AddChat requires a name and a handler")
+		return xerrors.New("valueclient: AddChat requires a name and a handler")
 	}
 	t.functionMap.Store(name, &clientFunction{ft: cfnChat, args: args, chat: fn})
 	return nil

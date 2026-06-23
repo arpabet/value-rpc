@@ -6,11 +6,11 @@
 package valueserver
 
 import (
-	"errors"
 	vrpc "go.arpabet.com/value-rpc/valuerpc"
+	"golang.org/x/xerrors"
 )
 
-var ErrFunctionAlreadyExist = errors.New("function already exist")
+var ErrFunctionAlreadyExist = xerrors.New("function already exist")
 
 type functionType int
 

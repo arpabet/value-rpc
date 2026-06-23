@@ -17,6 +17,7 @@ import (
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.arpabet.com/value-rpc/valueserver"
 	"go.uber.org/zap"
+	"golang.org/x/xerrors"
 )
 
 type GetUserReq struct{ ID int64 }
@@ -36,7 +37,7 @@ var getUserReqCodec = valuerpc.Codec[GetUserReq]{
 	Decode: func(v value.Value) (GetUserReq, error) {
 		m, ok := v.(value.Map)
 		if !ok {
-			return GetUserReq{}, fmt.Errorf("expected a map")
+			return GetUserReq{}, xerrors.New("expected a map")
 		}
 		return GetUserReq{ID: m.GetNumber("id").Long()}, nil
 	},
@@ -52,7 +53,7 @@ var userCodec = valuerpc.Codec[User]{
 	Decode: func(v value.Value) (User, error) {
 		m, ok := v.(value.Map)
 		if !ok {
-			return User{}, fmt.Errorf("expected a map")
+			return User{}, xerrors.New("expected a map")
 		}
 		return User{
 			ID:    m.GetNumber("id").Long(),
