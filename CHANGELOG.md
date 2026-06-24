@@ -18,6 +18,25 @@ All notable changes to this project are documented here. The format is based on
   depth atop the session-token anti-hijack). With no `Authenticator` set the
   principal is "" for all and behaviour is unchanged. Test:
   `valueserver.TestResumptionBoundToPrincipal`.
+- **Replay-resistant session resumption via a reverse hash chain (S/KEY style).**
+  The static, server-issued session token — replayable forever by anyone who
+  sniffs it on an untrusted (e.g. non-TLS) link — is replaced by a client-owned
+  reverse hash chain (`valuerpc.HashChain`, SHA-256). The client commits to the
+  chain by sending its anchor on first connect and reveals one fresh pre-image per
+  reconnect; the server resumes only if the presented link hashes forward to the
+  last one it accepted, then advances. Preimage resistance makes a sniffed link
+  useless on the next reconnect (the next link can't be predicted, an old one
+  can't be re-presented). The client **always** advances on a reconnect — even
+  when the handshake is dropped — and the server self-heals by hashing forward
+  within a bounded window (`valuerpc.DefaultResyncWindow`), so lost handshakes
+  don't desync the chain. Scope: this hardens resumption against *passive*
+  capture-and-replay; it is not a secure channel and does not stop an *active*
+  on-path attacker (resume is still gated by the authenticated principal). Run
+  over TLS/Noise for confidentiality. **Breaking (wire):** the `tok` handshake
+  field now carries client hash-chain links, not a server-issued token, and the
+  server no longer echoes a token in the handshake reply — new and old peers do
+  not interoperate for resumption. Tests: `valuerpc.TestHashChain*`,
+  `valueserver.TestSessionResumptionToleratesDroppedHandshakes`.
 
 ### Changed
 

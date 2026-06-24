@@ -40,7 +40,9 @@ type rpcClient struct {
 	reconnecting      atomic.Bool   // single-flights Reconnect against concurrent triggers
 	closed            chan struct{} // closed by Close(); wakes the reconnect backoff sleep
 	closeOnce         sync.Once
-	sessionToken      atomic.Pointer[string]                  // server-issued; resent to authorize reconnect
+	resumeMu          sync.Mutex                              // guards resumeChain across connect/reconnect
+	resumeChain       *valuerpc.HashChain                     // reverse hash chain proving session continuity on reconnect
+	established       atomic.Bool                             // set once the server acknowledges a handshake; flips anchor -> pre-image
 	credential        atomic.Pointer[value.Value]             // client-supplied; validated by the server Authenticator
 	maxPending        int                                     // per-stream receive pending bound
 	logger            *zap.Logger                             // structured diagnostics; no-op unless WithLogger set
@@ -56,11 +58,31 @@ type rpcClient struct {
 	baseCancel  context.CancelFunc // cancels baseCtx
 }
 
-func (t *rpcClient) loadSessionToken() string {
-	if p := t.sessionToken.Load(); p != nil {
-		return *p
+// handshakeToken returns the reverse-hash-chain link to present in the next
+// handshake: the chain anchor until the server first acknowledges the session,
+// then the next pre-image on each reconnect. It ALWAYS advances the chain on a
+// reconnect (even if the previous handshake was lost) and never reuses a link —
+// the server self-heals across dropped handshakes by hashing forward — so a
+// sniffed link cannot be replayed. Resending the anchor before the session is
+// established is idempotent and consumes no link.
+func (t *rpcClient) handshakeToken() (string, error) {
+	t.resumeMu.Lock()
+	defer t.resumeMu.Unlock()
+	if t.resumeChain == nil {
+		ch, err := valuerpc.NewHashChain(valuerpc.DefaultHashChainLen)
+		if err != nil {
+			return "", xerrors.Errorf("init resumption chain: %w", err)
+		}
+		t.resumeChain = ch
 	}
-	return ""
+	if !t.established.Load() {
+		return t.resumeChain.Anchor(), nil
+	}
+	tok := t.resumeChain.Next()
+	if tok == "" {
+		return "", xerrors.New("session resumption chain exhausted; close this client and reconnect as a new one")
+	}
+	return tok, nil
 }
 
 func (t *rpcClient) SetCredential(credential value.Value) {
@@ -295,7 +317,11 @@ func (t *rpcClient) ConnectContext(ctx context.Context) error {
 		ctx, cancel = context.WithTimeout(ctx, t.dialTimeout)
 		defer cancel()
 	}
-	return t.conn.connect(ctx, t.dialer, t.clientId, t.loadSessionToken(), t.loadCredential(), t.sendingCap, t.getResponseHandler(), t.getErrorHandler())
+	token, err := t.handshakeToken()
+	if err != nil {
+		return err
+	}
+	return t.conn.connect(ctx, t.dialer, t.clientId, token, t.loadCredential(), t.sendingCap, t.getResponseHandler(), t.getErrorHandler())
 }
 
 func (t *rpcClient) Reconnect() error {
@@ -476,12 +502,11 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 		msgType := valuerpc.MessageType(mt.Long())
 
 		if msgType == valuerpc.HandshakeResponse {
-			// Remember the server-issued session token so a later reconnect can
-			// prove this is the same client and resume its session.
-			if tok, ok := valuerpc.GetStringField(resp, valuerpc.DefaultDialect.SessionTokenField); ok {
-				s := tok.String()
-				t.sessionToken.Store(&s)
-			}
+			// The server acknowledged the handshake: mark the session established so
+			// the next reconnect reveals the next hash-chain pre-image instead of
+			// resending the anchor. The client owns the chain; the server issues no
+			// token to capture here.
+			t.established.Store(true)
 			t.getConnectionHandler()(resp)
 			return
 		}

@@ -6,8 +6,10 @@
 // Command auth demonstrates the handshake Authenticator: the server validates a
 // credential the client attaches with SetCredential and derives a principal
 // identity. The credential is re-sent on every reconnect, and session resumption
-// is bound to both the server-issued token and that principal (so a leaked token
-// alone cannot let a different principal take over the session).
+// is bound to both that principal and a per-session reverse hash chain: the client
+// commits to the chain on first connect and reveals a fresh one-time link on each
+// reconnect, so a resumption token sniffed off an untrusted link cannot be
+// replayed, and a leaked link still cannot let a different principal take over.
 package main
 
 import (

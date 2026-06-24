@@ -7,10 +7,7 @@ package valueserver
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
 	"crypto/tls"
-	"encoding/hex"
 	"io"
 	"net"
 	"net/http"
@@ -369,9 +366,10 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 	clientId := cid.Long()
 
 	// The client-asserted clientId alone must not let a peer resume (and thereby
-	// take over) another client's session: createOrUpdateServingClient requires
-	// the server-issued session token to match before reattaching to an existing
-	// servingClient. A first connect (no existing session) mints a fresh token.
+	// take over) another client's session: createOrUpdateServingClient requires the
+	// presented reverse-hash-chain link to hash forward to the last one accepted
+	// before reattaching to an existing servingClient. A first connect (no existing
+	// session) records the presented value as the chain anchor.
 	presentedToken := ""
 	if tok, ok := valuerpc.GetStringField(req, valuerpc.DefaultDialect.SessionTokenField); ok {
 		presentedToken = tok.String()
@@ -382,7 +380,9 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 		return nil, err
 	}
 
-	resp := valuerpc.NewHandshakeResponse(cli.sessionToken)
+	// The server owns no resumption secret (the client holds the chain); the reply
+	// only acknowledges that the handshake was accepted.
+	resp := valuerpc.NewHandshakeResponse("")
 	err = conn.WriteMessage(resp)
 	if err != nil {
 		return nil, xerrors.Errorf("on handshake, %v", err)
@@ -436,20 +436,24 @@ func (t *rpcServer) handleConnection(conn valuerpc.MsgConn) error {
 	}
 }
 
-// createOrUpdateServingClient reattaches conn to an existing session only when
-// presentedToken matches the token the server issued for that clientId AND the
-// reconnecting peer authenticated as the same principal; otherwise it mints a
-// brand-new session. The token stops a peer that guesses/replays another client's
-// clientId from hijacking the session; the principal binding additionally stops a
-// leaked token from letting a *different* authenticated principal take it over.
+// createOrUpdateServingClient reattaches conn to an existing session only when the
+// reconnecting peer authenticated as the same principal AND the presented
+// reverse-hash-chain link hashes forward to the last one accepted (advancing the
+// stored value); otherwise it starts a brand-new session, recording the presented
+// value as the chain anchor. The chain stops a peer that guesses/replays another
+// client's clientId from hijacking the session — a one-time link is useless on the
+// next reconnect — and the principal binding additionally stops a leaked link from
+// letting a *different* authenticated principal take it over.
 func (t *rpcServer) createOrUpdateServingClient(clientId int64, presentedToken, principal string, conn valuerpc.MsgConn) (*servingClient, error) {
 
 	resume := func(existing *servingClient) (*servingClient, error) {
-		if !validToken(presentedToken, existing.sessionToken) {
-			return nil, xerrors.Errorf("handshake rejected: session token mismatch for client %d", clientId)
-		}
+		// Check the immutable principal first so a wrong-principal probe cannot even
+		// reach (and advance) the legitimate client's chain.
 		if existing.principal != principal {
 			return nil, xerrors.Errorf("handshake rejected: principal mismatch for client %d", clientId)
+		}
+		if err := existing.authorizeResume(presentedToken); err != nil {
+			return nil, err
 		}
 		existing.replaceConn(conn)
 		return existing, nil
@@ -459,12 +463,10 @@ func (t *rpcServer) createOrUpdateServingClient(clientId int64, presentedToken, 
 		return resume(cli.(*servingClient))
 	}
 
-	token, err := newSessionToken()
-	if err != nil {
-		return nil, xerrors.Errorf("on handshake, generate session token: %v", err)
-	}
-
-	client := NewServingClient(t.ctx, clientId, token, principal, conn, &t.functionMap, t.logger, &t.cfg)
+	// First connect: the presented token is the client's hash-chain anchor; record
+	// it as this session's initial last-verified value. A client that opts out of
+	// resumption presents "" and simply cannot resume later.
+	client := NewServingClient(t.ctx, clientId, presentedToken, principal, conn, &t.functionMap, t.logger, &t.cfg)
 	// LoadOrStore guards a reconnect race for the same (new) clientId: if another
 	// connection won the slot, validate against the winner and discard ours
 	// (closing it stops the sender goroutine NewServingClient started).
@@ -474,23 +476,4 @@ func (t *rpcServer) createOrUpdateServingClient(clientId int64, presentedToken, 
 	}
 
 	return client, nil
-}
-
-// validToken reports whether the presented session token authorizes resuming a
-// session. A non-empty presented token must equal the stored one, compared in
-// constant time to avoid leaking it through timing.
-func validToken(presented, stored string) bool {
-	if presented == "" || stored == "" {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(presented), []byte(stored)) == 1
-}
-
-// newSessionToken mints an unguessable 128-bit session secret.
-func newSessionToken() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b[:]), nil
 }

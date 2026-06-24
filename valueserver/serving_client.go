@@ -37,12 +37,13 @@ var MaxConcurrentRequests int64 = 4096
 var MaxConcurrentStreams int64 = 0
 
 type servingClient struct {
-	clientId     int64
-	sessionToken string // server-issued secret; set once, gates reconnect resumption
-	principal    string // authenticated identity; set once, binds reconnect resumption
-	activeConn   atomic.Value
-	functionMap  *sync.Map
-	cfg          *serverConfig // per-server config (caps, queue sizes); never mutated
+	clientId    int64
+	resumeMu    sync.Mutex // serializes the verify-and-advance of resumeToken
+	resumeToken string     // last accepted reverse-hash-chain link; the next reconnect must hash forward to it (guarded by resumeMu)
+	principal   string     // authenticated identity; set once, binds reconnect resumption
+	activeConn  atomic.Value
+	functionMap *sync.Map
+	cfg         *serverConfig // per-server config (caps, queue sizes); never mutated
 
 	logger *zap.Logger
 
@@ -64,11 +65,11 @@ type servingClient struct {
 	closeOnce sync.Once
 }
 
-func NewServingClient(parent context.Context, clientId int64, sessionToken, principal string, conn vrpc.MsgConn, functionMap *sync.Map, logger *zap.Logger, cfg *serverConfig) *servingClient {
+func NewServingClient(parent context.Context, clientId int64, resumeToken, principal string, conn vrpc.MsgConn, functionMap *sync.Map, logger *zap.Logger, cfg *serverConfig) *servingClient {
 
 	client := &servingClient{
 		clientId:      clientId,
-		sessionToken:  sessionToken,
+		resumeToken:   resumeToken,
 		principal:     principal,
 		functionMap:   functionMap,
 		cfg:           cfg,
@@ -85,6 +86,27 @@ func NewServingClient(parent context.Context, clientId int64, sessionToken, prin
 	go client.sender()
 
 	return client
+}
+
+// authorizeResume verifies a presented reverse-hash-chain link against the last
+// one this session accepted and advances the stored value on success, tolerating
+// dropped reconnect handshakes (the server hashes the presented value forward up
+// to DefaultResyncWindow steps — see VerifyHashStep). A link equal to the last
+// accepted one is treated as an idempotent retry — a lost handshake *response*
+// makes the client re-present the same value — and is accepted without advancing.
+// Anything else (a bogus or replayed link) is rejected. Caller must already have
+// confirmed the principal matches; this only proves session continuity.
+func (t *servingClient) authorizeResume(presented string) error {
+	t.resumeMu.Lock()
+	defer t.resumeMu.Unlock()
+	if _, ok := vrpc.VerifyHashStep(presented, t.resumeToken, vrpc.DefaultResyncWindow); ok {
+		t.resumeToken = presented // advance the chain to the link just proven
+		return nil
+	}
+	if vrpc.SameToken(presented, t.resumeToken) {
+		return nil // idempotent retry of the current link; do not advance
+	}
+	return xerrors.Errorf("handshake rejected: resumption token mismatch for client %d", t.clientId)
 }
 
 func (t *servingClient) Close() {

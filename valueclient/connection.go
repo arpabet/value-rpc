@@ -32,7 +32,7 @@ type rpcConn struct {
 	closeOnce    sync.Once
 }
 
-func newConn(ctx context.Context, dialer valuerpc.Dialer, clientId int64, sessionToken string, credential value.Value, sendingCap int64, respHandler responseHandler, errorHandler ErrorHandler) (*rpcConn, error) {
+func newConn(ctx context.Context, dialer valuerpc.Dialer, clientId int64, resumeToken string, credential value.Value, sendingCap int64, respHandler responseHandler, errorHandler ErrorHandler) (*rpcConn, error) {
 
 	conn, err := dialer.Dial(ctx)
 	if err != nil {
@@ -47,7 +47,7 @@ func newConn(ctx context.Context, dialer valuerpc.Dialer, clientId int64, sessio
 		done:         make(chan struct{}),
 	}
 
-	hs := valuerpc.NewHandshakeRequest(clientId, sessionToken)
+	hs := valuerpc.NewHandshakeRequest(clientId, resumeToken)
 	if credential != nil {
 		hs = hs.Put(valuerpc.DefaultDialect.AuthField, credential)
 	}
@@ -56,9 +56,10 @@ func newConn(ctx context.Context, dialer valuerpc.Dialer, clientId int64, sessio
 	t.SendRequest(hs)
 
 	// Read the handshake response synchronously so the connection is "established"
-	// only once the handshake completes and the server-issued session token is
-	// captured. This avoids two hazards: a fast reconnect that fires before the
-	// token is stored (the server would reject the resumption), and a rejected
+	// only once the handshake completes and the session is marked established (which
+	// flips the resumption chain from anchor to pre-images). This avoids two
+	// hazards: a fast reconnect that fires before the session is established (it
+	// would resend the anchor instead of advancing the chain), and a rejected
 	// handshake surfacing as a BadConnection (which would trigger a reconnect
 	// storm) rather than a clean connect error. Bound the read by the dial ctx.
 	if dl, ok := ctx.Deadline(); ok {
@@ -70,7 +71,7 @@ func newConn(ctx context.Context, dialer valuerpc.Dialer, clientId int64, sessio
 		t.Close()
 		return nil, xerrors.Errorf("handshake: %w", err)
 	}
-	t.respHandler(resp) // stores the session token; fires the connection handler
+	t.respHandler(resp) // marks the session established; fires the connection handler
 
 	go t.responseLoop()
 

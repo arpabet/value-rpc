@@ -90,9 +90,13 @@ schema‑first, polyglot, ecosystem → gRPC.**
   hanging until timeout; opt in to replaying idempotent unary calls on the new
   connection, and to automatic re-establishment with exponential **backoff** (and
   jitter).
-- **Authenticated session resumption**: the server issues a per-session token at
-  handshake; reconnecting with the matching token resumes the session, so a peer
-  can't take it over by guessing the client id.
+- **Authenticated session resumption**: the client commits to a per-session
+  reverse hash chain at handshake and reveals one fresh one-time link per
+  reconnect (S/KEY style); the server resumes only if the link hashes forward to
+  the last one it accepted, so a peer can't take the session over by guessing the
+  client id, and — unlike a static token — a link sniffed off an untrusted link
+  can't be replayed on the next reconnect. Dropped handshakes self-heal (the
+  server hashes forward within a bounded window).
 - **SOCKS5** client support; **Unix peer authentication** (`SO_PEERCRED`) via a connect‑authorizer hook.
 - **Customizable wire dialect** (`valuerpc.Dialect` / `DefaultDialect`): the on‑the‑wire
   field names and magic can be changed process‑wide so a deployment’s protocol is

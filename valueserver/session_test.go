@@ -7,6 +7,7 @@ package valueserver_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,11 +82,11 @@ func rawHandshake(t *testing.T, addr string, clientId int64, token string) (valu
 }
 
 // TestSessionResumptionRequiresToken is the regression test for the cid
-// session-hijack fix. A first handshake (no token) is accepted and the server
-// issues a session token; resuming the same clientId is allowed only with that
-// exact token. A peer that reuses the clientId with a wrong token, or with no
-// token, is rejected — so it cannot take over (and close) another client's
-// session by guessing its id.
+// session-hijack fix, updated for reverse-hash-chain resumption. A first handshake
+// presents the chain anchor and is accepted; resuming the same clientId is allowed
+// only by revealing the next pre-image of that chain. A peer that reuses the
+// clientId with a bogus link, or with no link, is rejected — so it cannot take
+// over (and close) another client's session by guessing its id.
 func TestSessionResumptionRequiresToken(t *testing.T) {
 	addr, stop := newServer(t, func(s valueserver.Server) {
 		s.AddFunction("ping", valuerpc.Any, valuerpc.Any,
@@ -95,37 +96,94 @@ func TestSessionResumptionRequiresToken(t *testing.T) {
 
 	const cid = int64(0xABCDEF)
 
-	// First connect: no token yet -> accepted, server mints one.
-	c1, resp, err := rawHandshake(t, addr, cid, "")
+	chain, err := valuerpc.NewHashChain(100)
+	if err != nil {
+		t.Fatalf("new hash chain: %v", err)
+	}
+
+	// First connect: present the chain anchor -> accepted.
+	c1, resp, err := rawHandshake(t, addr, cid, chain.Anchor())
+	if err != nil {
+		t.Fatalf("first handshake (anchor) rejected: %v", err)
+	}
+	defer c1.Close()
+	if mt, ok := valuerpc.GetNumberField(resp, valuerpc.DefaultDialect.MessageTypeField); !ok || valuerpc.MessageType(mt.Long()) != valuerpc.HandshakeResponse {
+		t.Fatal("first handshake (anchor) was not acknowledged")
+	}
+
+	// Resume by revealing the next pre-image -> accepted (legitimate reconnect).
+	c2, resp2, err := rawHandshake(t, addr, cid, chain.Next())
+	if err != nil {
+		t.Fatalf("resume with the next pre-image was rejected: %v", err)
+	}
+	defer c2.Close()
+	if mt, ok := valuerpc.GetNumberField(resp2, valuerpc.DefaultDialect.MessageTypeField); !ok || valuerpc.MessageType(mt.Long()) != valuerpc.HandshakeResponse {
+		t.Fatal("resume with the correct pre-image did not get a handshake response")
+	}
+
+	// Hijack attempt: same cid, a well-formed but bogus link that hashes to nothing
+	// in the chain -> rejected (server closes the conn).
+	if c3, _, err := rawHandshake(t, addr, cid, strings.Repeat("ab", 32)); err == nil {
+		c3.Close()
+		t.Fatal("server accepted a handshake with a bogus resumption link (hijack)")
+	}
+
+	// Hijack attempt: same cid, no link -> rejected.
+	if c4, _, err := rawHandshake(t, addr, cid, ""); err == nil {
+		c4.Close()
+		t.Fatal("server accepted a handshake reusing an existing client id with no resumption link (hijack)")
+	}
+}
+
+// TestSessionResumptionToleratesDroppedHandshakes verifies the self-healing
+// property the design requires: the client advances its hash chain on every
+// reconnect attempt, even when a handshake is dropped, so the server can receive a
+// pre-image several links past the last one it accepted. The server must hash the
+// presented value forward to re-sync rather than demanding an exact one-step
+// match — and a now-stale earlier link must still be rejected.
+func TestSessionResumptionToleratesDroppedHandshakes(t *testing.T) {
+	addr, stop := newServer(t, func(s valueserver.Server) {
+		s.AddFunction("ping", valuerpc.Any, valuerpc.Any,
+			func(_ context.Context, _ value.Value) (value.Value, error) { return value.Utf8("pong"), nil })
+	})
+	defer stop()
+
+	const cid = int64(0xD0D0)
+
+	chain, err := valuerpc.NewHashChain(100)
+	if err != nil {
+		t.Fatalf("new hash chain: %v", err)
+	}
+
+	// First connect: anchor accepted; server's last-verified link is now h[100].
+	c1, _, err := rawHandshake(t, addr, cid, chain.Anchor())
 	if err != nil {
 		t.Fatalf("first handshake rejected: %v", err)
 	}
 	defer c1.Close()
-	tok, ok := valuerpc.GetStringField(resp, valuerpc.DefaultDialect.SessionTokenField)
-	if !ok || tok.String() == "" {
-		t.Fatal("server did not issue a session token on first handshake")
-	}
 
-	// Resume with the correct token -> accepted (legitimate reconnect).
-	c2, resp2, err := rawHandshake(t, addr, cid, tok.String())
+	// Three reconnect handshakes the network dropped: the client advanced its chain
+	// three times but the server saw none of them.
+	_ = chain.Next() // h[99] dropped
+	_ = chain.Next() // h[98] dropped
+	_ = chain.Next() // h[97] dropped
+
+	// The fourth reconnect reaches the server with h[96]; the server must hash it
+	// forward four times (-> h[97], h[98], h[99], h[100]) to match and accept.
+	c2, resp, err := rawHandshake(t, addr, cid, chain.Next())
 	if err != nil {
-		t.Fatalf("resume with correct token was rejected: %v", err)
+		t.Fatalf("resume after dropped handshakes was rejected (no self-heal): %v", err)
 	}
 	defer c2.Close()
-	if mt, ok := valuerpc.GetNumberField(resp2, valuerpc.DefaultDialect.MessageTypeField); !ok || valuerpc.MessageType(mt.Long()) != valuerpc.HandshakeResponse {
-		t.Fatal("resume with correct token did not get a handshake response")
+	if mt, ok := valuerpc.GetNumberField(resp, valuerpc.DefaultDialect.MessageTypeField); !ok || valuerpc.MessageType(mt.Long()) != valuerpc.HandshakeResponse {
+		t.Fatal("resume after dropped handshakes was not acknowledged")
 	}
 
-	// Hijack attempt: same cid, wrong token -> rejected (server closes the conn).
-	if c3, _, err := rawHandshake(t, addr, cid, "deadbeefdeadbeefdeadbeefdeadbeef"); err == nil {
+	// A stale earlier link (the anchor) must now be rejected: the chain has moved
+	// past it, so a sniffed-then-replayed link is useless.
+	if c3, _, err := rawHandshake(t, addr, cid, chain.Anchor()); err == nil {
 		c3.Close()
-		t.Fatal("server accepted a handshake with the wrong session token (hijack)")
-	}
-
-	// Hijack attempt: same cid, no token -> rejected.
-	if c4, _, err := rawHandshake(t, addr, cid, ""); err == nil {
-		c4.Close()
-		t.Fatal("server accepted a handshake reusing an existing client id with no token (hijack)")
+		t.Fatal("server accepted a stale earlier link after the chain advanced (replay)")
 	}
 }
 
@@ -173,29 +231,35 @@ func TestResumptionBoundToPrincipal(t *testing.T) {
 
 	const cid = int64(0x1234)
 
-	// Alice's first connect: server mints a token bound to principal "alice".
-	c1, resp, err := rawHandshakeAuth(t, addr, cid, "", value.Utf8("alice-key"))
+	chain, err := valuerpc.NewHashChain(100)
+	if err != nil {
+		t.Fatalf("new hash chain: %v", err)
+	}
+
+	// Alice's first connect: present the anchor bound to principal "alice".
+	c1, resp, err := rawHandshakeAuth(t, addr, cid, chain.Anchor(), value.Utf8("alice-key"))
 	if err != nil {
 		t.Fatalf("alice connect rejected: %v", err)
 	}
 	defer c1.Close()
-	tok, ok := valuerpc.GetStringField(resp, valuerpc.DefaultDialect.SessionTokenField)
-	if !ok || tok.String() == "" {
-		t.Fatal("server issued no session token")
+	if mt, ok := valuerpc.GetNumberField(resp, valuerpc.DefaultDialect.MessageTypeField); !ok || valuerpc.MessageType(mt.Long()) != valuerpc.HandshakeResponse {
+		t.Fatal("alice's first handshake was not acknowledged")
 	}
 
-	// Alice resumes with her token and credential -> accepted.
-	c2, _, err := rawHandshakeAuth(t, addr, cid, tok.String(), value.Utf8("alice-key"))
+	// Alice resumes with her next pre-image and credential -> accepted.
+	c2, _, err := rawHandshakeAuth(t, addr, cid, chain.Next(), value.Utf8("alice-key"))
 	if err != nil {
 		t.Fatalf("alice's own resume was rejected: %v", err)
 	}
 	c2.Close()
 
-	// Bob authenticates fine but is a different principal; with Alice's leaked
-	// token he must NOT be able to resume Alice's session.
-	if c3, _, err := rawHandshakeAuth(t, addr, cid, tok.String(), value.Utf8("bob-key")); err == nil {
+	// Bob authenticates fine but is a different principal; even with a *valid*
+	// leaked next pre-image of Alice's chain he must NOT be able to resume her
+	// session — the principal binding is checked before the chain is even advanced.
+	leaked := chain.Next()
+	if c3, _, err := rawHandshakeAuth(t, addr, cid, leaked, value.Utf8("bob-key")); err == nil {
 		c3.Close()
-		t.Fatal("a different principal resumed the session using a leaked token")
+		t.Fatal("a different principal resumed the session using a leaked pre-image")
 	}
 }
 

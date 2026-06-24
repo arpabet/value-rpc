@@ -72,7 +72,7 @@ type Dialect struct {
 	RequestIdField    string
 	TimeoutField      string
 	ClientIdField     string
-	SessionTokenField string // server-issued session secret; gates resumption
+	SessionTokenField string // client reverse-hash-chain link (anchor, then pre-images); gates resumption — see hashchain.go
 	AuthField         string // client-supplied credential, validated by the server Authenticator
 	FunctionNameField string
 	ArgumentsField    string // allow multiple args if List value in function call
@@ -118,9 +118,10 @@ func NewDialect() *Dialect {
 var DefaultDialect = NewDialect()
 
 // NewHandshakeRequest builds the client handshake using dialect d. token is the
-// session secret the server issued on the first handshake; it is empty on the
-// first connect and resent on reconnect so the server can authorize resuming this
-// clientId.
+// client's reverse-hash-chain link authorizing resumption of this clientId: the
+// chain anchor on first connect (and on a retried first connect), then the next
+// pre-image revealed on each reconnect (see HashChain). It is empty only for a
+// client that opts out of resumption.
 func (d *Dialect) NewHandshakeRequest(clientId int64, token string) value.Map {
 	req := value.EmptyMap(true).
 		Put(d.MagicField, value.Utf8(d.Magic)).
@@ -134,8 +135,10 @@ func (d *Dialect) NewHandshakeRequest(clientId int64, token string) value.Map {
 	return req
 }
 
-// NewHandshakeResponse builds the server handshake reply using dialect d, carrying
-// the session token the client must present to resume this session on a reconnect.
+// NewHandshakeResponse builds the server handshake reply using dialect d. With
+// reverse-hash-chain resumption the server issues no secret — the client owns the
+// chain — so token is normally empty; the reply's role is to acknowledge that the
+// handshake was accepted. token is retained for dialects that still echo a value.
 func (d *Dialect) NewHandshakeResponse(token string) value.Map {
 	resp := value.EmptyMap(true).
 		Put(d.MagicField, value.Utf8(d.Magic)).
