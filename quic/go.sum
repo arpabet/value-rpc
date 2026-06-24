@@ -14,8 +14,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 go.arpabet.com/value v1.3.0 h1:Wdwsg2fLwftPGThXjij3pV8jpCCXFLjSxjwENJaZhZI=
 go.arpabet.com/value v1.3.0/go.mod h1:y1KB3Att1HYyv5gXJKpaZkU7zjEY9Sb9pruP5GVuEe0=
-go.arpabet.com/value-rpc v1.5.0 h1:qrw6XcKCnz/NuOtVcroI69AS1mb0gEIUCfe9rkgLksQ=
-go.arpabet.com/value-rpc v1.5.0/go.mod h1:BwG+Y21D2oNDJNhoaUFcwn2bDKll6UfNZPO5fkykJcM=
+go.arpabet.com/value-rpc v1.5.1 h1:LTyGbeg8pgKmK2lf/sbLCXbttn1ChrhtEK/LV29QSFY=
+go.arpabet.com/value-rpc v1.5.1/go.mod h1:BwG+Y21D2oNDJNhoaUFcwn2bDKll6UfNZPO5fkykJcM=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
 go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
 go.uber.org/mock v0.5.2 h1:LbtPTcP8A5k9WPXj54PPPbjcI4Y6lhyOZXn+VS7wNko=
