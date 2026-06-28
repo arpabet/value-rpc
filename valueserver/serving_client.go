@@ -312,7 +312,13 @@ func (t *servingClient) CallFunction(ctx context.Context, name string, args valu
 	t.pendingCalls.Store(reqId, resCh)
 	defer t.pendingCalls.Delete(reqId)
 
-	if err := t.send(vrpc.NewFunctionRequest(reqId, name, args)); err != nil {
+	req := vrpc.NewFunctionRequest(reqId, name, args)
+	// Propagate request metadata (routing/account selector, trace context) from ctx
+	// on the reverse path — symmetric with the client's forward encode.
+	if md := vrpc.EncodeMetadata(vrpc.MetadataFromContext(ctx)); md != nil {
+		req = req.Put(vrpc.DefaultDialect.MetadataField, md)
+	}
+	if err := t.send(req); err != nil {
 		return nil, err
 	}
 

@@ -3,7 +3,7 @@ module go.arpabet.com/value-rpc/resilience
 go 1.25.0
 
 require (
-	go.arpabet.com/value v1.3.0
+	go.arpabet.com/value v1.3.1
 	go.arpabet.com/value-rpc v1.5.1
 	go.uber.org/zap v1.28.0
 )

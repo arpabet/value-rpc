@@ -618,6 +618,11 @@ func (t *rpcClient) serveInboundCall(req value.Map) {
 	go func() {
 		ctx, cancel := context.WithCancel(t.baseCtx)
 		defer cancel()
+		// Expose request metadata (account selector, trace context) carried on the
+		// reverse call — symmetric with the server's inbound decode.
+		if md := valuerpc.DecodeMetadata(req); md != nil {
+			ctx = valuerpc.ContextWithMetadata(ctx, md)
+		}
 		res, err := cf.fn(ctx, args)
 		if err != nil {
 			t.reply(valuerpc.NewHandlerError(reqId, "function "+name.String(), err))
