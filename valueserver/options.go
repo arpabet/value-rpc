@@ -32,6 +32,14 @@ type serverConfig struct {
 	keepAlive    time.Duration
 	writeTimeout time.Duration
 	maxFrameSize int
+
+	// WebSocket-only (used when a convenience constructor builds a WS listener)
+	wsCodecs      []valuerpc.WireCodec
+	wsOrigins     []string
+	wsCompression bool
+
+	// session lifecycle
+	sessionRetention time.Duration
 }
 
 func newServerConfig(opts []ServerOption) serverConfig {
@@ -47,6 +55,7 @@ func newServerConfig(opts []ServerOption) serverConfig {
 		keepAlive:             KeepAlivePeriod,
 		writeTimeout:          DefaultTimeout,
 		maxFrameSize:          valuerpc.MaxFrameSize,
+		sessionRetention:      SessionRetention,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -55,6 +64,22 @@ func newServerConfig(opts []ServerOption) serverConfig {
 		cfg.metrics = valuerpc.NopMetrics{}
 	}
 	return cfg
+}
+
+// wsOptions translates the WebSocket-specific server settings into the
+// valuerpc.WSOption list consumed by NewWebSocketListener / NewWebSocketHandler.
+func (c serverConfig) wsOptions() []valuerpc.WSOption {
+	var opts []valuerpc.WSOption
+	if len(c.wsCodecs) > 0 {
+		opts = append(opts, valuerpc.WithWSCodecs(c.wsCodecs...))
+	}
+	if len(c.wsOrigins) > 0 {
+		opts = append(opts, valuerpc.WithWSOriginPatterns(c.wsOrigins...))
+	}
+	if c.wsCompression {
+		opts = append(opts, valuerpc.WithWSCompression())
+	}
+	return opts
 }
 
 // ServerOption overrides a single per-server setting. Pass options to any server
@@ -138,4 +163,40 @@ func WithWriteTimeout(d time.Duration) ServerOption {
 // NewServerWithListener — set the limit when you build your own listener.
 func WithMaxFrameSize(n int) ServerOption {
 	return func(c *serverConfig) { c.maxFrameSize = n }
+}
+
+// WithWireCodecs restricts the WebSocket wire codecs the server negotiates, in
+// preference order (valuerpc.MsgpackWireCodec, valuerpc.JsonWireCodec). The
+// default (unset) enables both — msgpack for a client that offers no
+// subprotocol (every existing peer), JSON for one offering "vrpc.json". Pass a
+// single codec to force a JSON-only or msgpack-only endpoint. Only affects
+// WebSocket servers built by a convenience constructor.
+func WithWireCodecs(codecs ...valuerpc.WireCodec) ServerOption {
+	return func(c *serverConfig) { c.wsCodecs = codecs }
+}
+
+// WithWebSocketOrigins sets the browser Origins allowed to open a WebSocket
+// (CSRF policy). The default rejects cross-origin requests (Origin must match
+// Host); set patterns like "app.example.com" to allow an api-subdomain split,
+// or "*" to allow any origin. Only affects WebSocket servers built by a
+// convenience constructor.
+func WithWebSocketOrigins(patterns ...string) ServerOption {
+	return func(c *serverConfig) { c.wsOrigins = patterns }
+}
+
+// WithWebSocketCompression enables permessage-deflate, shrinking JSON frames to
+// roughly msgpack size for typical payloads. Off by default. Only affects
+// WebSocket servers built by a convenience constructor.
+func WithWebSocketCompression() ServerOption {
+	return func(c *serverConfig) { c.wsCompression = true }
+}
+
+// WithSessionRetention sets how long a disconnected client's session (its
+// serving state, so a reconnect can resume it) is retained before it is reaped.
+// 0 uses the SessionRetention default; a negative duration disables reaping
+// (the pre-reaping behavior — sessions live until server shutdown). Reaping
+// bounds the goroutines/memory a churn of short-lived clients (e.g. browser
+// tabs) can accumulate.
+func WithSessionRetention(d time.Duration) ServerOption {
+	return func(c *serverConfig) { c.sessionRetention = d }
 }

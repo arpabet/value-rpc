@@ -62,6 +62,10 @@ type servingClient struct {
 	pendingStreams    sync.Map     // server-initiated reqId -> *clientStream (server->client reverse streams)
 	lastServerRequest atomic.Int64 // allocator for server-initiated (negative) request ids
 
+	reapMu    sync.Mutex  // guards reapTimer + reaped
+	reapTimer *time.Timer // armed when the active connection drops; fires a reap after the retention window
+	reaped    bool        // set once the session has been (or is being) reaped
+
 	closeOnce sync.Once
 }
 
@@ -112,6 +116,15 @@ func (t *servingClient) authorizeResume(presented string) error {
 func (t *servingClient) Close() {
 
 	t.closeOnce.Do(func() {
+		// Stop any pending reap timer; this session is going away now.
+		t.reapMu.Lock()
+		t.reaped = true
+		if t.reapTimer != nil {
+			t.reapTimer.Stop()
+			t.reapTimer = nil
+		}
+		t.reapMu.Unlock()
+
 		// Cancel every in-flight handler's context, then signal the sender and
 		// any blocked producers to stop. We must NOT close(outgoingQueue):
 		// producers (handlers, streamers) may still send and would panic on a
@@ -140,16 +153,95 @@ func (t *servingClient) Close() {
 
 }
 
-func (t *servingClient) replaceConn(newConn vrpc.MsgConn) {
+// replaceConn attaches a reconnecting client's new connection, cancelling any
+// pending reap. It returns false when the session has already been reaped (lost
+// the race with its retention timer), in which case the caller must start a
+// fresh session rather than resume this dead one.
+func (t *servingClient) replaceConn(newConn vrpc.MsgConn) bool {
 
+	t.reapMu.Lock()
+	if t.reaped {
+		t.reapMu.Unlock()
+		return false
+	}
+	if t.reapTimer != nil {
+		t.reapTimer.Stop()
+		t.reapTimer = nil
+	}
 	oldConn := t.activeConn.Load()
+	t.activeConn.Store(newConn)
+	t.reapMu.Unlock()
+
 	if oldConn != nil {
 		oldConn.(vrpc.MsgConn).Close()
 	}
 
-	t.activeConn.Store(newConn)
+	// Server-initiated (reverse) requests that were in flight on the dropped
+	// connection can never complete on it: their frames were lost in the gap and
+	// their flow-control credit is now desynced. Fail them fast with
+	// CodeUnavailable instead of leaving a reverse unary blocked until its ctx
+	// deadline and a reverse stream silently truncated and then stalled forever.
+	// (Forward requests are the client's to dispose via its ReconnectPolicy.)
+	t.failReverseInFlight(vrpc.NewError(vrpc.CodeUnavailable, "connection replaced by reconnect; reverse request cannot complete"))
+
 	// The single sender (started in NewServingClient) picks up the new conn via
 	// activeConn; starting another sender here caused duplicates (BUG-8).
+	return true
+}
+
+// failReverseInFlight fails every in-flight server->client reverse request
+// (pending unary calls and open reverse streams) with err. Each is claimed with
+// LoadAndDelete so it is failed exactly once, even if a real reply/frame is
+// racing in on the read loop.
+func (t *servingClient) failReverseInFlight(err error) {
+	t.pendingCalls.Range(func(key, _ interface{}) bool {
+		if v, ok := t.pendingCalls.LoadAndDelete(key); ok {
+			v.(chan callResult) <- callResult{err: err} // buffered cap 1: never blocks
+		}
+		return true
+	})
+	t.pendingStreams.Range(func(key, _ interface{}) bool {
+		if v, ok := t.pendingStreams.LoadAndDelete(key); ok {
+			cs := v.(*clientStream)
+			cs.setError(err)
+			cs.Close()
+		}
+		return true
+	})
+}
+
+// scheduleReap arms the retention timer after the session's active connection
+// (conn) drops, so a disconnected client that never returns does not leak its
+// sender goroutine, send queue, and clientId slot forever. retention < 0
+// disables reaping (sessions live until server shutdown); 0 uses the default. A
+// reconnect (replaceConn) cancels the timer; the timer no-ops if a newer
+// connection has since attached. reap removes the session from the server
+// registry and closes it.
+func (t *servingClient) scheduleReap(conn vrpc.MsgConn, retention time.Duration, reap func()) {
+	if retention < 0 {
+		return
+	}
+	if retention == 0 {
+		retention = SessionRetention
+	}
+	t.reapMu.Lock()
+	defer t.reapMu.Unlock()
+	if t.reaped || t.activeConn.Load() != conn {
+		return // already closed, or a reconnect already superseded this conn
+	}
+	if t.reapTimer != nil {
+		t.reapTimer.Stop()
+	}
+	t.reapTimer = time.AfterFunc(retention, func() {
+		t.reapMu.Lock()
+		if t.reaped || t.activeConn.Load() != conn {
+			t.reapMu.Unlock()
+			return // superseded by a reconnect, or already closed
+		}
+		t.reaped = true
+		t.reapMu.Unlock()
+		reap()
+	})
 }
 
 func FunctionResult(requestId value.Number, result value.Value) value.Map {
@@ -324,6 +416,12 @@ func (t *servingClient) CallFunction(ctx context.Context, name string, args valu
 
 	select {
 	case <-ctx.Done():
+		// Propagate the cancellation to the client so its reverse handler's
+		// context is cancelled (R5), instead of letting the handler run to
+		// completion with its reply then silently discarded.
+		_ = t.send(value.EmptyMap(true).
+			Put(vrpc.DefaultDialect.MessageTypeField, vrpc.CancelRequest.Long()).
+			Put(vrpc.DefaultDialect.RequestIdField, value.Long(reqId)))
 		return nil, ctx.Err()
 	case <-t.done:
 		return nil, vrpc.ErrClientClosed
@@ -623,6 +721,15 @@ func (t *servingClient) processRequest(req value.Map) error {
 				c.(context.CancelFunc)()
 			}
 			return nil
+		}
+		// A new client-initiated request MUST use the positive id space: 0 is the
+		// handshake and negatives are the server-initiated (reverse) space. A
+		// non-positive id here would collide with the server's own reverse ids
+		// (pendingCalls/pendingStreams) and mis-route their frames — reject it
+		// (R4).
+		if reqId.Long() <= 0 {
+			t.send(FunctionError(reqId, vrpc.CodeInvalidArgument, "client-initiated request id must be positive"))
+			return xerrors.Errorf("client request id must be positive%s", reqDetail(req))
 		}
 		return t.serveNewRequest(msgType, req)
 	}

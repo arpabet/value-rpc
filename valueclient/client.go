@@ -56,6 +56,10 @@ type rpcClient struct {
 	servingMap  sync.Map           // server-initiated reqId -> *clientServingRequest (reverse streams)
 	baseCtx     context.Context    // parent for inbound-call handler contexts; cancelled on Close
 	baseCancel  context.CancelFunc // cancels baseCtx
+
+	reverseCancels       sync.Map     // in-flight reverse (server->client) unary reqId -> context.CancelFunc
+	reverseInFlight      atomic.Int64 // concurrent reverse-call handlers (maxConcurrentInbound)
+	maxConcurrentInbound int64        // cap on concurrent reverse calls; 0 = unlimited
 }
 
 // handshakeToken returns the reverse-hash-chain link to present in the next
@@ -112,9 +116,17 @@ func NewUnixClient(path string, opts ...ClientOption) Client {
 }
 
 // NewWebSocketClient creates a client that dials a WebSocket URL, e.g.
-// "ws://host:9000/rpc" or "wss://host/rpc".
+// "ws://host:9000/rpc" or "wss://host/rpc". By default it speaks msgpack (binary
+// frames); pass WithWireCodec(valuerpc.JsonWireCodec) to negotiate JSON (text
+// frames) via the "vrpc.json" subprotocol.
 func NewWebSocketClient(url string, opts ...ClientOption) Client {
 	cfg := newClientConfig(opts)
+	// A JSON (or otherwise non-default) codec needs the WS dialer that offers the
+	// matching subprotocol; msgpack keeps the generic scheme-based dialer.
+	if cfg.wireCodec != nil && cfg.wireCodec != valuerpc.MsgpackWireCodec {
+		dialer := valuerpc.NewWebSocketDialer(url, cfg.writeTimeout, cfg.maxFrameSize, cfg.keepAlive, cfg.wireCodec)
+		return NewClientWithDialer(dialer, opts...)
+	}
 	return NewClientWithDialer(valuerpc.NewDialer(url, "", cfg.keepAlive, cfg.writeTimeout, cfg.maxFrameSize), opts...)
 }
 
@@ -138,17 +150,18 @@ func NewClientWithDialer(dialer valuerpc.Dialer, opts ...ClientOption) Client {
 
 	cfg := newClientConfig(opts)
 	t := &rpcClient{
-		dialer:      dialer,
-		clientId:    rand.Int63(),
-		sendingCap:  cfg.sendingCap,
-		maxPending:  cfg.maxPending,
-		logger:      cfg.logger,
-		metrics:     cfg.metrics,
-		metadata:    cfg.metadata,
-		reconnect:   cfg.reconnect,
-		dialTimeout: cfg.dialTimeout,
-		conn:        NewSyncConn(),
-		closed:      make(chan struct{}),
+		dialer:               dialer,
+		clientId:             rand.Int63(),
+		sendingCap:           cfg.sendingCap,
+		maxPending:           cfg.maxPending,
+		logger:               cfg.logger,
+		metrics:              cfg.metrics,
+		metadata:             cfg.metadata,
+		reconnect:            cfg.reconnect,
+		dialTimeout:          cfg.dialTimeout,
+		maxConcurrentInbound: cfg.maxConcurrentInbound,
+		conn:                 NewSyncConn(),
+		closed:               make(chan struct{}),
 	}
 	t.baseCtx, t.baseCancel = context.WithCancel(context.Background())
 
@@ -186,6 +199,17 @@ func (t *rpcClient) Close() error {
 	if t.baseCancel != nil {
 		t.baseCancel() // cancel in-flight inbound-call handlers
 	}
+	// Mark the connection provider closed so getConn returns nil (unblocking a
+	// streamOut waiting on it) instead of parking on the cond forever (R7).
+	t.conn.close()
+	// Fail every in-flight request this client initiated so a caller blocked on
+	// a unary call or draining a stream channel unblocks with ErrClientClosed
+	// instead of hanging (unary) or never seeing the channel close (stream) —
+	// R7. failRequest records the error, closes the request, and drops it.
+	t.requestCtxMap.Range(func(_, v interface{}) bool {
+		t.failRequest(v.(*rpcRequestCtx), ErrClientClosed)
+		return true
+	})
 	// Tear down streams this client is serving for the peer (reverse streams) so
 	// their streamer/consumer goroutines unblock.
 	t.servingMap.Range(func(_, v interface{}) bool {
@@ -341,6 +365,18 @@ func (t *rpcClient) Reconnect() error {
 	t.metrics.Reconnect()
 	t.conn.reset()
 
+	// Reverse streams this client was serving for the peer (server-initiated)
+	// were bound to the dropped connection: their outbound frames now go
+	// nowhere and their flow-control credit is desynced. Tear them down so a
+	// responder goroutine cannot linger or stall; the server fails its half
+	// symmetrically (servingClient.failReverseInFlight) and re-opens on the new
+	// connection if it still wants the stream.
+	t.servingMap.Range(func(key, v any) bool {
+		t.servingMap.Delete(key)
+		v.(*clientServingRequest).Close()
+		return true
+	})
+
 	// Reconnect policy: requests in flight on the dropped connection can never
 	// complete on it. Fail them fast by default; collect idempotent unary calls
 	// for replay on the new connection. Only requests issued before the drop are
@@ -462,6 +498,12 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 		}
 
 	case valuerpc.CancelRequest:
+		// The peer cancelled this request. Record it so the terminal state is
+		// honest (CodeCanceled) rather than indistinguishable from a clean end
+		// of stream (R8) — surfaced via requestCtx.Error and the metrics code.
+		requestCtx.cancelOnce.Do(func() {
+			requestCtx.SetError(valuerpc.NewError(valuerpc.CodeCanceled, "request %d canceled by peer", requestCtx.requestId))
+		})
 		requestCtx.Close()
 		t.requestCtxMap.Delete(requestCtx.requestId)
 
@@ -540,6 +582,16 @@ func (t *rpcClient) getResponseHandler() responseHandler {
 			return
 		}
 
+		// CancelRequest for an in-flight reverse (server->client) unary call:
+		// cancel the handler's context so a cancelled/timed-out server-side call
+		// propagates to the client handler (R5).
+		if msgType == valuerpc.CancelRequest {
+			if c, ok := t.reverseCancels.Load(id.Long()); ok {
+				c.(context.CancelFunc)()
+				return
+			}
+		}
+
 		if entry, ok := t.requestCtxMap.Load(id.Long()); ok {
 			requestCtx := entry.(*rpcRequestCtx)
 			t.processResponse(msgType, resp, requestCtx)
@@ -594,6 +646,14 @@ func (t *rpcClient) serveInboundCall(req value.Map) {
 		t.getErrorHandler().ProtocolError(req, ErrIdFieldNotFound)
 		return
 	}
+	// A server-initiated request MUST use a negative request id (the disjoint,
+	// sign-keyed reverse id space). A non-negative id would shadow one of the
+	// client's own outstanding requests in requestCtxMap; reject it rather than
+	// let a buggy/hostile peer hijack that id (BUG: unvalidated reverse rid).
+	if reqId.Long() >= 0 {
+		t.getErrorHandler().ProtocolError(req, ErrReverseIdNotNegative)
+		return
+	}
 	name, ok := valuerpc.GetStringField(req, valuerpc.DefaultDialect.FunctionNameField)
 	if !ok {
 		t.reply(valuerpc.NewFunctionError(reqId, valuerpc.CodeInvalidArgument, "function name field not found"))
@@ -614,10 +674,29 @@ func (t *rpcClient) serveInboundCall(req value.Map) {
 		t.reply(valuerpc.NewFunctionError(reqId, valuerpc.CodeInvalidArgument, "function '%s' invalid args", name.String()))
 		return
 	}
-	// TODO(reverse-rpc): bound inbound-call concurrency (cf. server MaxConcurrentRequests).
+	// Bound concurrent reverse-call handlers so a peer cannot make this client
+	// spawn unbounded goroutines (the client is often the weaker device). Over
+	// the limit, reject explicitly instead of blocking the response loop.
+	if max := t.maxConcurrentInbound; max > 0 {
+		if t.reverseInFlight.Add(1) > max {
+			t.reverseInFlight.Add(-1)
+			t.reply(valuerpc.NewFunctionError(reqId, valuerpc.CodeResourceExhausted, "client busy: too many concurrent reverse calls (max %d)", max))
+			return
+		}
+	} else {
+		t.reverseInFlight.Add(1)
+	}
+
+	// Register the handler's cancel so a CancelRequest for this reverse call
+	// (server-side ctx cancellation, R5) actually cancels the handler.
+	ctx, cancel := context.WithCancel(t.baseCtx)
+	t.reverseCancels.Store(reqId.Long(), cancel)
 	go func() {
-		ctx, cancel := context.WithCancel(t.baseCtx)
-		defer cancel()
+		defer func() {
+			cancel()
+			t.reverseCancels.Delete(reqId.Long())
+			t.reverseInFlight.Add(-1)
+		}()
 		// Expose request metadata (account selector, trace context) carried on the
 		// reverse call — symmetric with the server's inbound decode.
 		if md := valuerpc.DecodeMetadata(req); md != nil {
@@ -690,7 +769,12 @@ func (t *rpcClient) sendSystemRequest(requestId int64, mt valuerpc.MessageType) 
 		Put(valuerpc.DefaultDialect.MessageTypeField, mt.Long()).
 		Put(valuerpc.DefaultDialect.RequestIdField, value.Long(requestId))
 
-	t.conn.getConn().SendRequest(req)
+	// getConn returns nil once the client is closed (see syncConn.getConn); a
+	// context-cancel racing Close (watchContext -> CancelRequest) lands here, so
+	// drop the fire-and-forget message instead of panicking.
+	if c := t.conn.getConn(); c != nil {
+		c.SendRequest(req)
+	}
 }
 
 func (t *rpcClient) CancelRequest(requestId int64) {
@@ -785,14 +869,24 @@ func (t *rpcClient) GetStream(ctx context.Context, name string, args value.Value
 	return requestCtx.MultiResp(), requestCtx.requestId, err
 }
 
+// PutStream opens a client->server stream and sends every value from putCh; see
+// valuerpc.Peer.PutStream. The caller feeds and closes putCh AFTER PutStream
+// returns; the send loop runs in the background bound to ctx.
 func (t *rpcClient) PutStream(ctx context.Context, name string, args value.Value, putCh <-chan value.Value) error {
+	_, err := t.PutStreamWait(ctx, name, args, putCh)
+	return err
+}
+
+// PutStreamWait is PutStream plus a completion channel (see
+// valuerpc.Peer.PutStreamWait).
+func (t *rpcClient) PutStreamWait(ctx context.Context, name string, args value.Value, putCh <-chan value.Value) (<-chan error, error) {
 
 	timeout := t.effectiveTimeout(ctx)
 	req := t.constructRequest(ctx, valuerpc.PutStreamRequest, name, args, timeout)
 
 	requestCtx, err := t.sendRequest(ctx, putStreamKind, req, 1)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	_, err = requestCtx.SingleResp(ctx, t.timeoutMls.Load(), func() {
@@ -801,13 +895,14 @@ func (t *rpcClient) PutStream(ctx context.Context, name string, args value.Value
 	if err != nil {
 		requestCtx.SetError(err) // record the outcome for RequestEnd metrics
 		requestCtx.Close()
-		return err
+		return nil, err
 	}
 
 	t.watchContext(ctx, requestCtx)
-	go t.streamOut(requestCtx, putCh)
+	done := make(chan error, 1)
+	go t.streamOut(requestCtx, putCh, done)
 
-	return nil
+	return done, nil
 }
 
 func (t *rpcClient) Chat(ctx context.Context, name string, args value.Value, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error) {
@@ -831,13 +926,14 @@ func (t *rpcClient) Chat(ctx context.Context, name string, args value.Value, rec
 
 	requestCtx.sendInitialCredit() // grant the server its initial send window (chat output)
 	t.watchContext(ctx, requestCtx)
-	go t.streamOut(requestCtx, putCh)
+	go t.streamOut(requestCtx, putCh, nil)
 
 	return requestCtx.MultiResp(), requestCtx.requestId, nil
 }
 
-func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Value) {
+func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Value, done chan error) {
 
+	var termErr error
 	for requestCtx.IsPutOpen() {
 
 		val, ok := <-putCh
@@ -845,7 +941,13 @@ func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Valu
 			endReq := value.EmptyMap(true).
 				Put(valuerpc.DefaultDialect.MessageTypeField, valuerpc.StreamEnd.Long()).
 				Put(valuerpc.DefaultDialect.RequestIdField, value.Long(requestCtx.requestId))
-			t.conn.getConn().SendRequest(endReq)
+			// getConn returns nil once the client is closed (R7); skip the send
+			// rather than block forever on a connection that will never return.
+			if c := t.conn.getConn(); c != nil {
+				c.SendRequest(endReq)
+			} else {
+				termErr = ErrClientClosed
+			}
 			break
 		}
 
@@ -853,21 +955,32 @@ func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Valu
 		// before sending. Only this goroutine blocks. A closed gate (teardown)
 		// ends the stream.
 		if requestCtx.sendCredit != nil && !requestCtx.sendCredit.Acquire() {
+			// The gate closed: the stream was torn down before draining putCh.
+			termErr = requestCtx.Error(ErrConnectionLost)
 			break
 		}
 
+		c := t.conn.getConn()
+		if c == nil { // client closed mid-stream
+			termErr = ErrClientClosed
+			break
+		}
 		nextReq := value.EmptyMap(true).
 			Put(valuerpc.DefaultDialect.MessageTypeField, valuerpc.StreamValue.Long()).
 			Put(valuerpc.DefaultDialect.RequestIdField, value.Long(requestCtx.requestId)).
 			Put(valuerpc.DefaultDialect.ValueField, val)
 
-		t.conn.getConn().SendRequest(nextReq)
+		c.SendRequest(nextReq)
 		t.metrics.StreamValue(requestCtx.Name())
 
 	}
 
 	if requestCtx.TryPutClose() {
 		t.requestCtxMap.Delete(requestCtx.requestId)
+	}
+
+	if done != nil {
+		done <- termErr
 	}
 
 }

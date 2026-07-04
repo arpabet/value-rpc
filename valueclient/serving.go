@@ -70,6 +70,12 @@ func (t *rpcClient) serveInboundStream(msgType valuerpc.MessageType, req value.M
 		t.getErrorHandler().ProtocolError(req, ErrIdFieldNotFound)
 		return
 	}
+	// Server-initiated stream opens must use the negative reverse id space; a
+	// non-negative id would shadow the client's own requests (R4).
+	if reqId.Long() >= 0 {
+		t.getErrorHandler().ProtocolError(req, ErrReverseIdNotNegative)
+		return
+	}
 	name, ok := valuerpc.GetStringField(req, valuerpc.DefaultDialect.FunctionNameField)
 	if !ok {
 		t.reply(valuerpc.NewFunctionError(reqId, valuerpc.CodeInvalidArgument, "function name field not found"))

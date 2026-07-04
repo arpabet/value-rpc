@@ -87,7 +87,12 @@ type breaker struct {
 	state    breakerState
 	consec   int
 	openedAt time.Time
-	probes   int
+	// half-open bookkeeping: admitted caps how many probes may run at once
+	// (concurrency); succeeded counts how many have passed. These must be
+	// SEPARATE — folding them into one counter closes the breaker after a single
+	// success (the admit++ / success-- race), defeating WithHalfOpenProbes(n>1).
+	admitted  int
+	succeeded int
 }
 
 // allow reports whether a call may proceed, advancing open→half-open after the
@@ -99,13 +104,14 @@ func (b *breaker) allow() bool {
 	case stateOpen:
 		if time.Since(b.openedAt) >= b.cfg.cooldown {
 			b.state = stateHalfOpen
-			b.probes = 1
+			b.admitted = 1
+			b.succeeded = 0
 			return true
 		}
 		return false
 	case stateHalfOpen:
-		if b.probes < b.cfg.maxProbes {
-			b.probes++
+		if b.admitted < b.cfg.maxProbes {
+			b.admitted++
 			return true
 		}
 		return false
@@ -129,8 +135,8 @@ func (b *breaker) record(failed bool) {
 		}
 	case stateHalfOpen:
 		if failed {
-			b.trip()
-		} else if b.probes--; b.probes <= 0 {
+			b.trip() // any probe failure re-opens immediately
+		} else if b.succeeded++; b.succeeded >= b.cfg.maxProbes {
 			b.state = stateClosed
 			b.consec = 0
 		}
@@ -140,7 +146,8 @@ func (b *breaker) record(failed bool) {
 func (b *breaker) trip() {
 	b.state = stateOpen
 	b.openedAt = time.Now()
-	b.probes = 0
+	b.admitted = 0
+	b.succeeded = 0
 }
 
 // CircuitBreaker returns an interceptor that trips a per-method breaker after

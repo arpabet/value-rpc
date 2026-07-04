@@ -25,6 +25,13 @@ func contextWithPeer(ctx context.Context, p vrpc.Peer) context.Context {
 // authenticated principal — to reach this client later from a different request
 // (the pattern for routing a call from client A through the server to client B).
 // Returns false when the served connection has no peer handle.
+//
+// Context lifetime: the ctx passed to the handler is the REQUEST context and is
+// cancelled the moment the handler returns. A reverse GetStream/PutStream/Chat
+// opened with that ctx is torn down on return. For a reverse stream that must
+// outlive the handler (a fire-and-forget push, or a cached peer used from a
+// later goroutine), pass context.WithoutCancel(ctx) or context.Background(), and
+// use Peer.PutStreamWait to await a reverse push's completion.
 func PeerFromContext(ctx context.Context) (vrpc.Peer, bool) {
 	p, ok := ctx.Value(peerCtxKey{}).(vrpc.Peer)
 	return p, ok

@@ -31,3 +31,20 @@ func valDetail(v value.Value) string {
 	}
 	return ""
 }
+
+// SessionCount reports how many client sessions the server currently retains
+// (connected plus disconnected-but-within-retention). It is a diagnostics hook:
+// use it to observe session accumulation/reaping and to alert on unexpected
+// growth. Returns 0 for a server not created by this package.
+func SessionCount(s Server) int {
+	t, ok := s.(*rpcServer)
+	if !ok {
+		return 0
+	}
+	n := 0
+	t.clientMap.Range(func(_, _ interface{}) bool {
+		n++
+		return true
+	})
+	return n
+}

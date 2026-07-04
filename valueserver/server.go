@@ -38,6 +38,16 @@ var KeepAlivePeriod = 15 * time.Second
 // (default) for no limit.
 var MaxConnections int64 = 0
 
+// SessionRetention is how long a disconnected client's session state is kept so
+// a reconnect can resume it, before the session is reaped (its sender goroutine
+// stopped and its buffers/reverse-call state freed). Without reaping, every
+// client that ever connects — including every browser tab — would permanently
+// cost a goroutine and a send queue, and its clientId slot could never be
+// reused (BUG: unbounded session accumulation / cid squatting). 2 minutes
+// comfortably covers a browser tab sleeping or a flaky network reconnect. Set
+// via WithSessionRetention; a negative value disables reaping.
+var SessionRetention = 2 * time.Minute
+
 type rpcServer struct {
 	listener valuerpc.Listener
 	shutdown chan struct{}
@@ -126,7 +136,7 @@ func NewUnixServer(path string, logger *zap.Logger, opts ...ServerOption) (Serve
 // a port with other HTTP routes, use NewWebSocketHandler instead.
 func NewWebSocketServer(addr, path string, logger *zap.Logger, opts ...ServerOption) (Server, error) {
 	cfg := newServerConfig(opts)
-	lis, err := valuerpc.NewWebSocketListener(addr, path, cfg.writeTimeout, cfg.maxFrameSize, cfg.keepAlive)
+	lis, err := valuerpc.NewWebSocketListener(addr, path, cfg.writeTimeout, cfg.maxFrameSize, cfg.keepAlive, cfg.wsOptions()...)
 	if err != nil {
 		logger.Error("bind the websocket server",
 			zap.String("addr", addr),
@@ -174,7 +184,7 @@ func NewMemServer(name string, logger *zap.Logger, opts ...ServerOption) (Server
 // port with REST/health/metrics routes.
 func NewWebSocketHandler(logger *zap.Logger, opts ...ServerOption) (Server, http.Handler, error) {
 	cfg := newServerConfig(opts)
-	lis, h := valuerpc.NewWebSocketHandler(cfg.writeTimeout, cfg.maxFrameSize, cfg.keepAlive)
+	lis, h := valuerpc.NewWebSocketHandler(cfg.writeTimeout, cfg.maxFrameSize, cfg.keepAlive, cfg.wsOptions()...)
 	srv, err := NewServerWithListener(lis, logger, opts...)
 	if err != nil {
 		return nil, nil, err
@@ -418,6 +428,13 @@ func (t *rpcServer) handleConnection(conn valuerpc.MsgConn) error {
 		return err
 	}
 
+	// When this connection's read loop exits (a drop, or being superseded by a
+	// reconnect), arm the session's retention timer so an abandoned session is
+	// eventually reaped instead of leaking its sender goroutine and clientId
+	// slot forever. No-op if a reconnect has already re-attached, or on server
+	// shutdown (Close reaps every session directly).
+	defer t.scheduleSessionReap(cli, conn)
+
 	for {
 		req, err := conn.ReadMessage()
 		if err != nil {
@@ -444,6 +461,24 @@ func (t *rpcServer) handleConnection(conn valuerpc.MsgConn) error {
 // client's clientId from hijacking the session — a one-time link is useless on the
 // next reconnect — and the principal binding additionally stops a leaked link from
 // letting a *different* authenticated principal take it over.
+// scheduleSessionReap arms the retention timer for the session cli was serving
+// on conn, so a client that disconnects and never returns is reclaimed. The
+// reaper removes the session from the registry (only if it is still this exact
+// session) and closes it, stopping its sender goroutine and freeing its buffers
+// and reverse-call state.
+func (t *rpcServer) scheduleSessionReap(cli *servingClient, conn valuerpc.MsgConn) {
+	select {
+	case <-t.shutdown:
+		return // Close() already tears down every session
+	default:
+	}
+	cli.scheduleReap(conn, t.cfg.sessionRetention, func() {
+		t.clientMap.CompareAndDelete(cli.clientId, cli)
+		cli.Close()
+		t.logger.Debug("reaped idle session", zap.Int64("clientId", cli.clientId))
+	})
+}
+
 func (t *rpcServer) createOrUpdateServingClient(clientId int64, presentedToken, principal string, conn valuerpc.MsgConn) (*servingClient, error) {
 
 	resume := func(existing *servingClient) (*servingClient, error) {
@@ -455,7 +490,12 @@ func (t *rpcServer) createOrUpdateServingClient(clientId int64, presentedToken, 
 		if err := existing.authorizeResume(presentedToken); err != nil {
 			return nil, err
 		}
-		existing.replaceConn(conn)
+		if !existing.replaceConn(conn) {
+			// Lost the race with the retention timer: this session was just
+			// reaped. Reject so the client reconnects into a fresh session (by
+			// then the reaper has removed the dead entry).
+			return nil, xerrors.Errorf("handshake rejected: session for client %d was reaped; reconnect", clientId)
+		}
 		return existing, nil
 	}
 

@@ -16,37 +16,47 @@ import (
 // clientConfig is the resolved per-client configuration, seeded from the
 // package-level defaults and overridden by ClientOptions at construction.
 type clientConfig struct {
-	sendingCap   int64
-	timeoutMls   int64
-	maxPending   int
-	logger       *zap.Logger
-	metrics      valuerpc.Metrics
-	metadata     func(context.Context) valuerpc.Metadata
-	reconnect    ReconnectPolicy
-	interceptors []valuerpc.ClientInterceptor
+	sendingCap           int64
+	timeoutMls           int64
+	maxPending           int
+	logger               *zap.Logger
+	metrics              valuerpc.Metrics
+	metadata             func(context.Context) valuerpc.Metadata
+	reconnect            ReconnectPolicy
+	interceptors         []valuerpc.ClientInterceptor
+	maxConcurrentInbound int64
 
 	// transport-level (used when a convenience constructor builds the dialer)
 	keepAlive    time.Duration
 	writeTimeout time.Duration
 	maxFrameSize int
 	dialTimeout  time.Duration
+	wireCodec    valuerpc.WireCodec // WebSocket wire codec; nil = msgpack
 }
 
 // DefaultDialTimeout bounds a connection dial when the connect context carries no
 // deadline, so Connect cannot block indefinitely on an unreachable peer.
 var DefaultDialTimeout = 30 * time.Second
 
+// DefaultMaxConcurrentInbound bounds how many server->client reverse calls this
+// client will handle concurrently. It caps the goroutines a peer can make the
+// client spawn (the client is often the weaker device — e.g. a browser tab), so
+// a flood of reverse calls cannot exhaust it. Over the limit a reverse call is
+// rejected with CodeResourceExhausted. 0 disables the bound.
+var DefaultMaxConcurrentInbound int64 = 1024
+
 func newClientConfig(opts []ClientOption) clientConfig {
 	cfg := clientConfig{
-		sendingCap:   DefaultSendingCap,
-		timeoutMls:   DefaultTimeoutMls,
-		maxPending:   valuerpc.DefaultMaxPending,
-		logger:       zap.NewNop(),
-		metrics:      valuerpc.NopMetrics{},
-		keepAlive:    KeepAlivePeriod,
-		writeTimeout: DefaultTimeout,
-		maxFrameSize: valuerpc.MaxFrameSize,
-		dialTimeout:  DefaultDialTimeout,
+		sendingCap:           DefaultSendingCap,
+		timeoutMls:           DefaultTimeoutMls,
+		maxPending:           valuerpc.DefaultMaxPending,
+		logger:               zap.NewNop(),
+		metrics:              valuerpc.NopMetrics{},
+		keepAlive:            KeepAlivePeriod,
+		writeTimeout:         DefaultTimeout,
+		maxFrameSize:         valuerpc.MaxFrameSize,
+		dialTimeout:          DefaultDialTimeout,
+		maxConcurrentInbound: DefaultMaxConcurrentInbound,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -173,6 +183,23 @@ func WithInterceptors(interceptors ...valuerpc.ClientInterceptor) ClientOption {
 //	})
 func WithMetadata(inject func(ctx context.Context) valuerpc.Metadata) ClientOption {
 	return func(c *clientConfig) { c.metadata = inject }
+}
+
+// WithMaxConcurrentInbound caps how many server->client reverse calls this
+// client handles concurrently (0 = unlimited); over the limit a reverse call is
+// rejected with CodeResourceExhausted. Mirrors the server's
+// WithMaxConcurrentRequests for the reverse direction.
+func WithMaxConcurrentInbound(n int64) ClientOption {
+	return func(c *clientConfig) { c.maxConcurrentInbound = n }
+}
+
+// WithWireCodec selects the WebSocket wire codec (valuerpc.MsgpackWireCodec, the
+// default, or valuerpc.JsonWireCodec). JSON offers the "vrpc.json" subprotocol
+// and requires a server that negotiates it; against a pre-negotiation server the
+// connect fails with a clear error rather than sending text frames it would
+// reject. Only affects a WebSocket client built by NewWebSocketClient.
+func WithWireCodec(codec valuerpc.WireCodec) ClientOption {
+	return func(c *clientConfig) { c.wireCodec = codec }
 }
 
 // WithLogger sets the structured logger the client uses for connection,

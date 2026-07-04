@@ -324,15 +324,25 @@ func (t *servingClient) GetStream(ctx context.Context, name string, args value.V
 }
 
 // PutStream opens a server->client stream the server *sends* values on: the
-// client serves it with AddIncomingStream.
+// client serves it with AddIncomingStream. See valuerpc.Peer.PutStream for the
+// ctx-lifetime caveat (the push is bound to ctx; pass context.WithoutCancel to
+// outlive a handler).
 func (t *servingClient) PutStream(ctx context.Context, name string, args value.Value, putCh <-chan value.Value) error {
+	_, err := t.PutStreamWait(ctx, name, args, putCh)
+	return err
+}
+
+// PutStreamWait is PutStream plus a completion channel (see
+// valuerpc.Peer.PutStreamWait).
+func (t *servingClient) PutStreamWait(ctx context.Context, name string, args value.Value, putCh <-chan value.Value) (<-chan error, error) {
 	cs, err := t.openStream(ctx, vrpc.PutStreamRequest, putStreamKind, name, args, 1)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	t.watchStream(ctx, cs)
-	go t.streamOut(cs, putCh)
-	return nil
+	done := make(chan error, 1)
+	go t.streamOut(cs, putCh, done)
+	return done, nil
 }
 
 // Chat opens a bidirectional server->client stream: the client serves it with
@@ -344,13 +354,17 @@ func (t *servingClient) Chat(ctx context.Context, name string, args value.Value,
 	}
 	cs.sendInitialCredit()
 	t.watchStream(ctx, cs)
-	go t.streamOut(cs, putCh)
+	go t.streamOut(cs, putCh, nil)
 	return cs.resultCh, cs.requestId, nil
 }
 
 // streamOut drains the caller's putCh to the client (put/chat), gated by the
-// client's credit, and sends StreamEnd when the channel closes.
-func (t *servingClient) streamOut(cs *clientStream, putCh <-chan value.Value) {
+// client's credit, and sends StreamEnd when the channel closes. When done is
+// non-nil it receives the terminal outcome once: nil on a clean drain, a coded
+// error if the stream was torn down (ctx cancel, reconnect) before putCh
+// finished.
+func (t *servingClient) streamOut(cs *clientStream, putCh <-chan value.Value, done chan error) {
+	var termErr error
 	for cs.IsPutOpen() {
 		val, ok := <-putCh
 		if !ok {
@@ -358,11 +372,16 @@ func (t *servingClient) streamOut(cs *clientStream, putCh <-chan value.Value) {
 			break
 		}
 		if cs.sendCredit != nil && !cs.sendCredit.Acquire() {
+			// The credit gate closed: the stream was torn down before draining.
+			termErr = cs.err(vrpc.NewError(vrpc.CodeUnavailable, "reverse put-stream %d torn down before drain", cs.requestId))
 			break
 		}
 		_ = t.send(vrpc.NewStreamValue(value.Long(cs.requestId), val))
 	}
 	if cs.tryPutClose() {
 		t.deletePendingStream(cs.requestId)
+	}
+	if done != nil {
+		done <- termErr
 	}
 }

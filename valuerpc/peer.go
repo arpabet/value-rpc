@@ -42,7 +42,35 @@ type Caller interface {
 type Peer interface {
 	Caller
 	GetStream(ctx context.Context, name string, args value.Value, receiveCap int) (<-chan value.Value, int64, error)
+
+	// PutStream opens a stream toward the peer and sends every value from putCh
+	// to it, closing the stream when putCh is closed. It returns once the stream
+	// is established (the peer acked it); the send loop then runs in the
+	// background, so the CALLER must feed and close putCh AFTER PutStream returns.
+	//
+	// Lifetime: the background send is bound to ctx. Cancelling ctx tears the
+	// stream down. This is the sharp edge for a server handler that opens a
+	// reverse stream with its request context: the handler returning cancels
+	// that context and truncates the push. To push a stream that must OUTLIVE
+	// the handler, pass context.WithoutCancel(ctx) (or context.Background), and
+	// use PutStreamWait when you need to observe completion.
 	PutStream(ctx context.Context, name string, args value.Value, putCh <-chan value.Value) error
+
+	// PutStreamWait is PutStream plus a completion signal. The returned channel
+	// (buffered, receives exactly once) delivers the stream's terminal error —
+	// nil on a clean drain, a coded error if the stream was torn down before
+	// putCh finished — when the background send loop ends. Await it to keep a
+	// request context alive until a reverse push completes:
+	//
+	//	done, err := peer.PutStreamWait(ctx, "sink", args, putCh)
+	//	if err != nil { return err }
+	//	if err := <-done; err != nil { return err } // push fully drained
+	//
+	// The returned channel may be ignored (it is buffered, so an unread
+	// completion never blocks the sender) — then PutStreamWait behaves like
+	// PutStream.
+	PutStreamWait(ctx context.Context, name string, args value.Value, putCh <-chan value.Value) (<-chan error, error)
+
 	Chat(ctx context.Context, name string, args value.Value, receiveCap int, putCh <-chan value.Value) (<-chan value.Value, int64, error)
 }
 

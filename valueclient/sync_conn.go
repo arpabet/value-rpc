@@ -18,6 +18,7 @@ type syncConn struct {
 	connecting sync.Mutex
 	active     *sync.Cond
 	conn       atomic.Value
+	closed     atomic.Bool // set by close(); makes getConn return nil instead of blocking forever
 }
 
 type connHolder struct {
@@ -70,8 +71,23 @@ func (t *syncConn) getConn() *rpcConn {
 		if conn.value != nil {
 			return conn.value
 		}
+		// Once the client is closed there will never be a connection again;
+		// return nil so a blocked sender (e.g. streamOut) unblocks instead of
+		// waiting on the cond forever (R7). Callers must nil-check.
+		if t.closed.Load() {
+			return nil
+		}
 		t.active.Wait()
 	}
+}
+
+// close permanently marks the connection provider shut down and wakes any
+// getConn waiter, which then returns nil. Idempotent.
+func (t *syncConn) close() {
+	t.connecting.Lock()
+	t.closed.Store(true)
+	t.active.Broadcast()
+	t.connecting.Unlock()
 }
 
 func (t *syncConn) reset() {

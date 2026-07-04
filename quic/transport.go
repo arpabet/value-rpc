@@ -126,14 +126,15 @@ func NewDialer(addr string, config *tls.Config, writeTimeout time.Duration) valu
 // --- per-stream state ---
 
 type quicStreamState struct {
-	s           *quic.Stream
-	br          *bufio.Reader
-	rid         int64
-	reqType     valuerpc.MessageType
-	registered  bool
-	writeClosed bool // our write half has been FIN'd
-	localDone   bool // == writeClosed; kept for the both-done check
-	remoteDone  bool // peer FIN'd / reset (reader hit EOF)
+	s              *quic.Stream
+	br             *bufio.Reader
+	rid            int64
+	reqType        valuerpc.MessageType
+	registered     bool
+	originatedHere bool // we opened this stream (we are the request initiator)
+	writeClosed    bool // our write half has been FIN'd
+	localDone      bool // == writeClosed; kept for the both-done check
+	remoteDone     bool // peer FIN'd / reset (reader hit EOF)
 }
 
 type quicMsgConn struct {
@@ -160,8 +161,13 @@ func newQUICMsgConn(conn *quic.Conn, isClient bool, writeTimeout time.Duration) 
 		done:     make(chan struct{}),
 		streams:  make(map[int64]*quicStreamState),
 	}
-	if !isClient {
-		t.wg.Add(1)
+	// Both sides accept peer-opened streams: the server for the client's
+	// requests, the client for the server's reverse (server-initiated) requests
+	// — vRPC is peer-symmetric, so either end can open a stream toward the other.
+	t.wg.Add(1)
+	if isClient {
+		go t.clientAcceptLoop()
+	} else {
 		go t.serverAcceptLoop()
 	}
 	return t
@@ -200,6 +206,22 @@ func (t *quicMsgConn) serverAcceptLoop() {
 	}
 }
 
+// clientAcceptLoop accepts streams the server opens for server-initiated
+// (reverse) requests. Unlike the server loop it has no handshake-first special
+// case: the client opens the handshake stream itself.
+func (t *quicMsgConn) clientAcceptLoop() {
+	defer t.wg.Done()
+	for {
+		s, err := t.conn.AcceptStream(context.Background())
+		if err != nil {
+			return
+		}
+		st := &quicStreamState{s: s, br: bufio.NewReader(s)}
+		t.wg.Add(1)
+		go t.streamReader(st)
+	}
+}
+
 func (t *quicMsgConn) streamReader(st *quicStreamState) {
 	defer t.wg.Done()
 	for {
@@ -212,10 +234,13 @@ func (t *quicMsgConn) streamReader(st *quicStreamState) {
 		if !t.funnel(m) {
 			return
 		}
-		// The client has nothing more to send on a unary/get/handshake request
-		// once the server's terminal response arrives; FIN the write half then
-		// (not after sending the request — throttle/cancel may follow it).
-		if t.isClient && finOnRead(msgType(m), st.reqType) {
+		// FIN our write half once reading this frame means we will send nothing
+		// more on the stream: the request initiator after the terminal response
+		// (unary/get/handshake), or the put-stream consumer after the producer's
+		// StreamEnd (it keeps sending StreamCredit until then). Based on who
+		// opened the stream, so it holds for reverse (server-initiated) streams
+		// too.
+		if finOnRead(msgType(m), st.reqType, st.originatedHere) {
 			t.finWrite(st)
 		}
 	}
@@ -293,8 +318,8 @@ func (t *quicMsgConn) WriteMessage(m value.Map) error {
 		_ = st.s.SetWriteDeadline(time.Now().Add(t.writeTO))
 	}
 	if err := writeFrame(st.s, m); err != nil {
-		// If the stream was FIN'd concurrently (by the reader on the server's
-		// terminal), the failure is not fatal; otherwise the connection is bad.
+		// If the stream was FIN'd concurrently (by the reader on the terminal
+		// response), the failure is not fatal; otherwise the connection is bad.
 		t.mu.Lock()
 		raced := st.writeClosed
 		t.mu.Unlock()
@@ -304,38 +329,56 @@ func (t *quicMsgConn) WriteMessage(m value.Map) error {
 		return err
 	}
 
-	if t.finOnWrite(mt, reqType) {
+	if finOnWrite(st.originatedHere, mt, reqType) {
 		t.finWrite(st)
 	}
 	return nil
 }
 
-// finOnWrite reports whether mt is the last message this side will *send* on the
-// stream (so its write half can be FIN'd). The client's request is NOT terminal
-// (throttle/cancel may follow); see finOnRead.
-func (t *quicMsgConn) finOnWrite(mt, reqType valuerpc.MessageType) bool {
-	if t.isClient {
+// finOnWrite reports whether mt is the last message the sender will *send* on the
+// stream (so its write half can be FIN'd), keyed by whether the sender initiated
+// the request (originatedHere) rather than by client/server role — so it holds
+// for reverse (server-initiated) streams too.
+//
+// The initiator's request is NOT terminal: a get-stream initiator still sends
+// StreamCredit and may send CancelRequest, so it FINs only on its own StreamEnd
+// (put/chat) or CancelRequest — otherwise it FINs on reading the terminal
+// response (finOnRead). The responder FINs after its terminal response; note a
+// put-stream consumer (responder) keeps sending StreamCredit after StreamReady,
+// so it does NOT FIN on StreamReady — it FINs on reading the producer's
+// StreamEnd (finOnRead), matching the initiator's get-stream behavior.
+func finOnWrite(originatedHere bool, mt, reqType valuerpc.MessageType) bool {
+	if originatedHere {
 		return mt == valuerpc.StreamEnd || mt == valuerpc.CancelRequest
 	}
 	switch mt {
 	case valuerpc.HandshakeResponse, valuerpc.FunctionResponse, valuerpc.ErrorResponse, valuerpc.StreamEnd:
 		return true
-	case valuerpc.StreamReady:
-		return reqType == valuerpc.PutStreamRequest // put-stream server sends nothing after StreamReady
 	}
 	return false
 }
 
-// finOnRead reports whether receiving mt means the client will send no more on
-// this (request-only) stream, so the client can FIN its write half.
-func finOnRead(mt, reqType valuerpc.MessageType) bool {
-	switch reqType {
-	case valuerpc.FunctionRequest:
-		return mt == valuerpc.FunctionResponse || mt == valuerpc.ErrorResponse
-	case valuerpc.GetStreamRequest:
-		return mt == valuerpc.StreamEnd || mt == valuerpc.ErrorResponse
-	case valuerpc.HandshakeRequest:
-		return mt == valuerpc.HandshakeResponse
+// finOnRead reports whether receiving mt means the reader will send no more on
+// the stream, so it can FIN its write half. The request initiator
+// (originatedHere) FINs after the terminal response of a unary/get/handshake
+// request; the put-stream consumer (responder) FINs after the producer's
+// StreamEnd (it kept sending StreamCredit until then).
+func finOnRead(mt, reqType valuerpc.MessageType, originatedHere bool) bool {
+	if originatedHere {
+		switch reqType {
+		case valuerpc.FunctionRequest:
+			return mt == valuerpc.FunctionResponse || mt == valuerpc.ErrorResponse
+		case valuerpc.GetStreamRequest:
+			return mt == valuerpc.StreamEnd || mt == valuerpc.ErrorResponse
+		case valuerpc.HandshakeRequest:
+			return mt == valuerpc.HandshakeResponse
+		}
+		return false
+	}
+	// Responder: only the put-stream consumer keeps sending (StreamCredit) after
+	// StreamReady, so it FINs its write half when the producer ends the stream.
+	if reqType == valuerpc.PutStreamRequest {
+		return mt == valuerpc.StreamEnd || mt == valuerpc.ErrorResponse || mt == valuerpc.CancelRequest
 	}
 	return false
 }
@@ -366,15 +409,21 @@ func (t *quicMsgConn) streamForWrite(rid int64, mt valuerpc.MessageType) (*quicS
 	}
 	t.mu.Unlock()
 
-	if !t.isClient {
-		return nil, 0, xerrors.Errorf("quic: no stream for response to request %d", rid)
+	// No stream yet: open one only if we originate this request id. The client
+	// owns the handshake (0) and its positive request ids; the server owns the
+	// negative (server-initiated / reverse) ids. A frame for an unknown id we do
+	// NOT own is a late frame for an already-freed stream — surface it rather
+	// than open a spurious stream.
+	originator := (t.isClient && rid >= 0) || (!t.isClient && rid < 0)
+	if !originator {
+		return nil, 0, xerrors.Errorf("quic: no stream for message on request %d", rid)
 	}
 
 	s, err := t.conn.OpenStreamSync(context.Background())
 	if err != nil {
 		return nil, 0, err
 	}
-	st := &quicStreamState{s: s, br: bufio.NewReader(s), rid: rid, reqType: mt, registered: true}
+	st := &quicStreamState{s: s, br: bufio.NewReader(s), rid: rid, reqType: mt, registered: true, originatedHere: true}
 	t.mu.Lock()
 	t.streams[rid] = st
 	t.mu.Unlock()
