@@ -179,8 +179,8 @@ func (t *rpcClient) ClientId() int64 {
 func (t *rpcClient) Stats() map[string]int64 {
 
 	sendingLen, sendingCap := 0, 0
-	if t.conn.hasConn() {
-		sendingLen, sendingCap = t.conn.getConn().Stats()
+	if c := t.conn.peekConn(); c != nil {
+		sendingLen, sendingCap = c.Stats()
 	}
 
 	return map[string]int64{
@@ -336,11 +336,26 @@ func (t *rpcClient) ConnectContext(ctx context.Context) error {
 	if t.conn.hasConn() {
 		return nil
 	}
+	if t.shuttingDown.Load() {
+		return ErrClientClosed
+	}
 	if _, ok := ctx.Deadline(); !ok && t.dialTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, t.dialTimeout)
 		defer cancel()
 	}
+	// Abort an in-flight dial the moment the client is closed, so Close() is not
+	// stuck behind a slow dial and the dial cannot land a connection afterwards
+	// (syncConn.connect double-checks closed before storing it).
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel() // also releases the watcher goroutine below
+	go func() {
+		select {
+		case <-t.closed:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	token, err := t.handshakeToken()
 	if err != nil {
 		return err
@@ -406,11 +421,16 @@ func (t *rpcClient) Reconnect() error {
 
 	// Re-send idempotent unary requests on the new connection. The request stays
 	// continuously in flight (one RequestBegin/RequestEnd pair) and keeps its
-	// original deadline budget (the SingleResp timer keeps running).
+	// original deadline budget (the SingleResp timer keeps running). getConn can
+	// still be nil here when a Close raced the reconnect — fail the replays then.
 	for _, rc := range replay {
-		t.logger.Debug("replaying idempotent unary across reconnect",
-			zap.Int64("requestId", rc.requestId), zap.String("method", rc.Name()))
-		t.conn.getConn().SendRequest(rc.req)
+		if c := t.conn.peekConn(); c != nil {
+			t.logger.Debug("replaying idempotent unary across reconnect",
+				zap.Int64("requestId", rc.requestId), zap.String("method", rc.Name()))
+			c.SendRequest(rc.req)
+		} else {
+			t.failRequest(rc, ErrClientClosed)
+		}
 	}
 	return nil
 }
@@ -464,9 +484,20 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 		t.requestCtxMap.Delete(requestCtx.requestId)
 
 	case valuerpc.StreamReady:
-		requestCtx.notifyResult(nil)
+		// Exactly one ready ack wakes the establisher; a duplicate (buggy or
+		// hostile peer) must not inject a phantom nil into the consumer's stream
+		// channel.
+		if requestCtx.ready.CompareAndSwap(false, true) {
+			requestCtx.notifyResult(nil)
+		}
 
 	case valuerpc.StreamValue:
+		// Only get-stream/chat requests (the ones with a pump) legitimately
+		// receive stream values; for unary/put kinds the frame is a protocol
+		// violation and delivering it would pollute the single-response buffer.
+		if requestCtx.resultPump == nil {
+			break
+		}
 		// BUG-4 fix: an absent value field decodes as value.Null, not Go nil;
 		// only deliver a real payload.
 		if streamValue := resp.Get(valuerpc.DefaultDialect.ValueField); streamValue != nil && streamValue.Kind() != value.NULL {
@@ -520,14 +551,21 @@ func (t *rpcClient) processResponse(mt valuerpc.MessageType, resp value.Map, req
 
 }
 
+// trySend queues msg on the current connection, best-effort: dropped when there
+// is no connection right now (mid-reconnect) or the client is closed. peekConn
+// never blocks, so callers on the response loop or a pump goroutine cannot
+// stall, and never panics on a closed client (getConn returns nil then).
+func (t *rpcClient) trySend(msg value.Map) {
+	if c := t.conn.peekConn(); c != nil {
+		c.SendRequest(msg)
+	}
+}
+
 // sendStreamCredit grants the server credit additional server->client stream
 // values for requestId (credit-based flow control). Best-effort: it never blocks
 // and is dropped if there is no connection.
 func (t *rpcClient) sendStreamCredit(requestId int64, credit int64) {
-	if !t.conn.hasConn() {
-		return
-	}
-	t.conn.getConn().SendRequest(valuerpc.NewStreamCredit(value.Long(requestId), credit))
+	t.trySend(valuerpc.NewStreamCredit(value.Long(requestId), credit))
 }
 
 func (t *rpcClient) getResponseHandler() responseHandler {
@@ -717,9 +755,7 @@ func (t *rpcClient) serveInboundCall(req value.Map) {
 
 // reply best-effort sends a response to the peer over the current connection.
 func (t *rpcClient) reply(resp value.Map) {
-	if t.conn.hasConn() {
-		t.conn.getConn().SendRequest(resp)
-	}
+	t.trySend(resp)
 }
 
 func (t *rpcClient) newRequestCtx(requestId int64, kind streamKind, req value.Map, receiveCap int) *rpcRequestCtx {
@@ -740,19 +776,30 @@ func (t *rpcClient) ensureConnection(ctx context.Context) error {
 	return nil
 }
 
-func (t *rpcClient) sendRequest(ctx context.Context, kind streamKind, req value.Map, receiveCap int) (*rpcRequestCtx, error) {
+// sendRequest assigns the request id, seals the envelope from the entries
+// constructRequest collected (one allocation, no per-field map copies),
+// registers the request, and queues it on the connection.
+func (t *rpcClient) sendRequest(ctx context.Context, kind streamKind, entries []value.MapEntry, receiveCap int) (*rpcRequestCtx, error) {
 
 	err := t.ensureConnection(ctx)
 	if err != nil {
 		return nil, err
 	}
 
+	// getConn blocks through a reconnect and returns nil only once the client is
+	// closed; surface that as an error instead of a nil dereference.
+	conn := t.conn.getConn()
+	if conn == nil {
+		return nil, ErrClientClosed
+	}
+
 	requestId := t.lastRequest.Add(1)
-	req = req.Put(valuerpc.DefaultDialect.RequestIdField, value.Long(requestId))
+	entries = append(entries, value.ImmutableEntry(valuerpc.DefaultDialect.RequestIdField, value.Long(requestId)))
+	req := value.SortedMap(entries, false)
 
 	requestCtx := t.newRequestCtx(requestId, kind, req, receiveCap)
 
-	t.conn.getConn().SendRequest(req)
+	conn.SendRequest(req)
 	return requestCtx, nil
 
 }
@@ -765,9 +812,10 @@ func (t *rpcClient) sendSystemRequest(requestId int64, mt valuerpc.MessageType) 
 		return
 	}
 
-	req := value.EmptyMap(true).
-		Put(valuerpc.DefaultDialect.MessageTypeField, mt.Long()).
-		Put(valuerpc.DefaultDialect.RequestIdField, value.Long(requestId))
+	req := value.SortedMap([]value.MapEntry{
+		value.ImmutableEntry(valuerpc.DefaultDialect.MessageTypeField, mt.Long()),
+		value.ImmutableEntry(valuerpc.DefaultDialect.RequestIdField, value.Long(requestId)),
+	}, false)
 
 	// getConn returns nil once the client is closed (see syncConn.getConn); a
 	// context-cancel racing Close (watchContext -> CancelRequest) lands here, so
@@ -779,6 +827,20 @@ func (t *rpcClient) sendSystemRequest(requestId int64, mt valuerpc.MessageType) 
 
 func (t *rpcClient) CancelRequest(requestId int64) {
 	t.sendSystemRequest(requestId, valuerpc.CancelRequest)
+	// The server does not acknowledge a stream cancel, so the local request must
+	// be retired here or its map entry (and open stream channel) leaks until the
+	// next reconnect: record a Canceled outcome unless a more precise error was
+	// already set, close (which closes the stream channel and fires RequestEnd),
+	// and drop it from the request map. LoadAndDelete makes this single-shot; no
+	// sync.Once here because callers (e.g. the credit-overrun path) may already
+	// be inside cancelOnce and Once.Do is not re-entrant.
+	if entry, ok := t.requestCtxMap.LoadAndDelete(requestId); ok {
+		rc := entry.(*rpcRequestCtx)
+		if rc.Error(nil) == nil {
+			rc.SetError(valuerpc.NewError(valuerpc.CodeCanceled, "request %d canceled", requestId))
+		}
+		rc.Close()
+	}
 }
 
 // effectiveTimeout is the timeout (ms) used for this call: the configured
@@ -809,8 +871,10 @@ func (t *rpcClient) watchContext(ctx context.Context, requestCtx *rpcRequestCtx)
 	go func() {
 		select {
 		case <-ctx.Done():
+			// Record the precise reason (Canceled vs DeadlineExceeded) before
+			// CancelRequest closes the request and retires it from the map.
+			requestCtx.SetError(ctx.Err())
 			t.CancelRequest(requestCtx.requestId)
-			requestCtx.Close()
 		case <-requestCtx.done:
 		}
 	}()
@@ -938,9 +1002,7 @@ func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Valu
 
 		val, ok := <-putCh
 		if !ok {
-			endReq := value.EmptyMap(true).
-				Put(valuerpc.DefaultDialect.MessageTypeField, valuerpc.StreamEnd.Long()).
-				Put(valuerpc.DefaultDialect.RequestIdField, value.Long(requestCtx.requestId))
+			endReq := valuerpc.NewStreamEnd(value.Long(requestCtx.requestId), nil)
 			// getConn returns nil once the client is closed (R7); skip the send
 			// rather than block forever on a connection that will never return.
 			if c := t.conn.getConn(); c != nil {
@@ -965,12 +1027,7 @@ func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Valu
 			termErr = ErrClientClosed
 			break
 		}
-		nextReq := value.EmptyMap(true).
-			Put(valuerpc.DefaultDialect.MessageTypeField, valuerpc.StreamValue.Long()).
-			Put(valuerpc.DefaultDialect.RequestIdField, value.Long(requestCtx.requestId)).
-			Put(valuerpc.DefaultDialect.ValueField, val)
-
-		c.SendRequest(nextReq)
+		c.SendRequest(valuerpc.NewStreamValue(value.Long(requestCtx.requestId), val))
 		t.metrics.StreamValue(requestCtx.Name())
 
 	}
@@ -985,23 +1042,29 @@ func (t *rpcClient) streamOut(requestCtx *rpcRequestCtx, putCh <-chan value.Valu
 
 }
 
-func (t *rpcClient) constructRequest(ctx context.Context, mt valuerpc.MessageType, name string, args value.Value, timeout int64) value.Map {
+// constructRequest collects the request envelope's entries; sendRequest appends
+// the request id and seals them into a map in a single allocation.
+func (t *rpcClient) constructRequest(ctx context.Context, mt valuerpc.MessageType, name string, args value.Value, timeout int64) []value.MapEntry {
 
-	req := value.EmptyMap(true).
-		Put(valuerpc.DefaultDialect.MessageTypeField, mt.Long()).
-		Put(valuerpc.DefaultDialect.FunctionNameField, value.Utf8(name)).
-		Put(valuerpc.DefaultDialect.ArgumentsField, args)
+	if args == nil {
+		args = value.Null
+	}
+	entries := make([]value.MapEntry, 0, 6)
+	entries = append(entries,
+		value.ImmutableEntry(valuerpc.DefaultDialect.MessageTypeField, mt.Long()),
+		value.ImmutableEntry(valuerpc.DefaultDialect.FunctionNameField, value.Utf8(name)),
+		value.ImmutableEntry(valuerpc.DefaultDialect.ArgumentsField, args))
 
 	if timeout > 0 {
-		req = req.Put(valuerpc.DefaultDialect.TimeoutField, value.Long(timeout))
+		entries = append(entries, value.ImmutableEntry(valuerpc.DefaultDialect.TimeoutField, value.Long(timeout)))
 	}
 
 	// Inject request metadata (trace context, baggage) from the call's context.
 	if t.metadata != nil {
 		if md := valuerpc.EncodeMetadata(t.metadata(ctx)); md != nil {
-			req = req.Put(valuerpc.DefaultDialect.MetadataField, md)
+			entries = append(entries, value.ImmutableEntry(valuerpc.DefaultDialect.MetadataField, md))
 		}
 	}
 
-	return req
+	return entries
 }

@@ -41,10 +41,19 @@ func (t *syncConn) connect(ctx context.Context, dialer valuerpc.Dialer, clientId
 	if t.hasConn() {
 		return nil
 	}
+	// A reconnect racing Close must not resurrect a connection on a closed
+	// client (leaking its loops and socket until process exit).
+	if t.closed.Load() {
+		return ErrClientClosed
+	}
 
 	conn, err := newConn(ctx, dialer, clientId, resumeToken, credential, sendingCap, respHandler, errorHandler)
 	if err != nil {
 		return err
+	}
+	if t.closed.Load() { // closed while dialing
+		conn.Close()
+		return ErrClientClosed
 	}
 
 	t.conn.Store(connHolder{conn})
@@ -55,6 +64,13 @@ func (t *syncConn) connect(ctx context.Context, dialer valuerpc.Dialer, clientId
 
 func (t *syncConn) hasConn() bool {
 	return t.conn.Load().(connHolder).value != nil
+}
+
+// peekConn returns the current connection or nil, never blocking. Use it for
+// best-effort sends that must not stall on an in-progress reconnect (getConn
+// blocks until a connection exists or the client is closed).
+func (t *syncConn) peekConn() *rpcConn {
+	return t.conn.Load().(connHolder).value
 }
 
 func (t *syncConn) getConn() *rpcConn {

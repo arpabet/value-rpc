@@ -15,13 +15,13 @@ test: vet
 	go test -race -cover ./...
 
 build: test
-	go build -v -o sample ./examples/first/
+	go build -v ./...
+
+bench:
+	go test ./valueserver -run '^$$' -bench . -benchmem
 
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 update:
 	go get -u ./...
-
-run: build
-	./sample

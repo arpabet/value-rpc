@@ -37,11 +37,16 @@ func TestAuthenticatorGatesHandshake(t *testing.T) {
 	})
 	defer stop()
 
-	// No credential -> the handshake is rejected, so calls fail.
+	// No credential -> the handshake is rejected with a coded error a caller can
+	// branch on (stop retrying), not an opaque EOF.
 	bad := valueclient.NewClient(addr, "")
 	bad.SetTimeout(500)
 	defer bad.Close()
-	_ = bad.Connect()
+	if err := bad.Connect(); err == nil {
+		t.Fatal("connect without the required credential should fail")
+	} else if code := valuerpc.CodeOf(err); code != valuerpc.CodeUnauthenticated {
+		t.Fatalf("connect error code = %v (%v), want Unauthenticated", code, err)
+	}
 	if _, err := bad.CallFunction(context.Background(), "ping", nil); err == nil {
 		t.Fatal("call without the required credential should fail")
 	}
@@ -63,8 +68,9 @@ func TestAuthenticatorGatesHandshake(t *testing.T) {
 }
 
 // rawHandshake dials a bare connection, sends a handshake for clientId carrying
-// token, and returns the server's reply (or an error if the server rejected and
-// closed the connection). It lets a test impersonate a peer at the wire level.
+// token, and returns the server's reply (or an error if the server rejected it —
+// as a coded ErrorResponse on the handshake id, or by closing the connection).
+// It lets a test impersonate a peer at the wire level.
 func rawHandshake(t *testing.T, addr string, clientId int64, token string) (valuerpc.MsgConn, value.Map, error) {
 	t.Helper()
 	dialer := valuerpc.NewDialer(addr, "", valueclient.KeepAlivePeriod, valueclient.DefaultTimeout, valuerpc.MaxFrameSize)
@@ -76,9 +82,27 @@ func rawHandshake(t *testing.T, addr string, clientId int64, token string) (valu
 		conn.Close()
 		t.Fatalf("write handshake: %v", err)
 	}
+	resp, err := readHandshakeReply(conn)
+	return conn, resp, err
+}
+
+// readHandshakeReply reads the server's handshake reply and converts a coded
+// rejection (an ErrorResponse on the handshake id) into an error, so tests keep
+// treating "rejected" uniformly whether the server refuses with a coded reply
+// (auth/resume failures) or with a silent close (pre-validation failures).
+func readHandshakeReply(conn valuerpc.MsgConn) (value.Map, error) {
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	resp, err := conn.ReadMessage()
-	return conn, resp, err
+	if err == nil {
+		if mt, ok := valuerpc.GetNumberField(resp, valuerpc.DefaultDialect.MessageTypeField); ok && valuerpc.MessageType(mt.Long()) == valuerpc.ErrorResponse {
+			code := valuerpc.CodeUnknown
+			if c, ok := valuerpc.GetNumberField(resp, valuerpc.DefaultDialect.CodeField); ok {
+				code = valuerpc.Code(c.Long())
+			}
+			return resp, &valuerpc.Error{Code: code, Message: resp.GetString(valuerpc.DefaultDialect.ErrorField).String()}
+		}
+	}
+	return resp, err
 }
 
 // TestSessionResumptionRequiresToken is the regression test for the cid
@@ -201,8 +225,7 @@ func rawHandshakeAuth(t *testing.T, addr string, clientId int64, token string, c
 		conn.Close()
 		t.Fatalf("write handshake: %v", err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	resp, err := conn.ReadMessage()
+	resp, err := readHandshakeReply(conn)
 	return conn, resp, err
 }
 

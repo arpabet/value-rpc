@@ -50,9 +50,20 @@ func GetStreamTyped[Req, Resp any](
 				if errp != nil {
 					*errp = derr
 				}
+				// Tell the server to stop and retire the request locally (which
+				// closes raw), then drain so the pump goroutine is released.
+				cli.CancelRequest(id)
+				for range raw {
+				}
 				return
 			}
-			out <- decoded
+			select {
+			case out <- decoded:
+			case <-ctx.Done():
+				// The stream is torn down with ctx (watchContext); do not stay
+				// blocked on a consumer that stopped reading.
+				return
+			}
 		}
 	}()
 	return out, id, nil
@@ -60,17 +71,35 @@ func GetStreamTyped[Req, Resp any](
 
 // PutStreamTyped is a typed wrapper over Client.PutStream: it encodes each typed
 // value from in onto the client stream. It returns once the stream is established
-// (the encode+send pump runs until in is closed).
+// (the encode+send pump runs until in is closed or ctx is cancelled — the same
+// ctx also bounds the underlying stream, so cancelling it tears both down).
 func PutStreamTyped[Req, Val any](
 	ctx context.Context, cli Client, name string,
 	req Req, reqCodec valuerpc.Codec[Req], valCodec valuerpc.Codec[Val], in <-chan Val,
 ) error {
 	raw := make(chan value.Value)
+	// Establish first: if PutStream fails nobody would ever read raw and the
+	// encoder goroutine would block forever on its first send.
+	if err := cli.PutStream(ctx, name, reqCodec.Encode(req), raw); err != nil {
+		return err
+	}
 	go func() {
 		defer close(raw)
-		for v := range in {
-			raw <- valCodec.Encode(v)
+		for {
+			select {
+			case v, ok := <-in:
+				if !ok {
+					return
+				}
+				select {
+				case raw <- valCodec.Encode(v):
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
-	return cli.PutStream(ctx, name, reqCodec.Encode(req), raw)
+	return nil
 }

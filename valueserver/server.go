@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.arpabet.com/value"
 	"go.arpabet.com/value-rpc/valuerpc"
 	"go.uber.org/zap"
 	"golang.org/x/xerrors"
@@ -324,6 +325,23 @@ func (t *rpcServer) Run() error {
 
 }
 
+// rejectHandshake tells the peer why its handshake was refused before the
+// connection is closed: a coded ErrorResponse on the handshake request id. The
+// wire message carries only the generic publicMsg (never internal detail), so a
+// client can distinguish "credentials rejected — stop retrying" from "network
+// broke — retry" instead of seeing a bare EOF. Best-effort: the returned error
+// (with full detail) is what gets logged server-side.
+//
+// Only call this AFTER the peer has proven it speaks our dialect (magic/version
+// validated). A pre-validation failure — garbage, a scanner, a different
+// dialect — must be answered with silence (just the close), or an active probe
+// could fingerprint the service by eliciting a structured error reply.
+func (t *rpcServer) rejectHandshake(conn valuerpc.MsgConn, code valuerpc.Code, publicMsg string, err error) error {
+	_ = conn.WriteMessage(valuerpc.NewFunctionError(
+		value.Long(valuerpc.DefaultDialect.HandshakeRequestId), code, "%s", publicMsg))
+	return err
+}
+
 func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 
 	// Bound the time to receive a valid handshake (BUG-10), then clear the
@@ -342,6 +360,9 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 		_ = conn.SetReadDeadline(time.Time{})
 	}
 
+	// Pre-validation failures get no reply (silent close): the peer has not yet
+	// proven it speaks this dialect, and answering a probe with a structured
+	// error would fingerprint the service (see rejectHandshake).
 	mt, ok := valuerpc.GetNumberField(req, valuerpc.DefaultDialect.MessageTypeField)
 	if !ok {
 		return nil, xerrors.Errorf("on handshake, empty message type%s", reqDetail(req))
@@ -364,14 +385,16 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 	if authn := t.getAuthenticator(); authn != nil {
 		p, err := authn(conn, req.Get(valuerpc.DefaultDialect.AuthField))
 		if err != nil {
-			return nil, xerrors.Errorf("on handshake, authentication failed: %v", err)
+			return nil, t.rejectHandshake(conn, valuerpc.CodeUnauthenticated, "authentication failed",
+				xerrors.Errorf("on handshake, authentication failed: %v", err))
 		}
 		principal = p
 	}
 
 	cid, ok := valuerpc.GetNumberField(req, valuerpc.DefaultDialect.ClientIdField)
 	if !ok {
-		return nil, xerrors.Errorf("on handshake, no client id%s", reqDetail(req))
+		return nil, t.rejectHandshake(conn, valuerpc.CodeInvalidArgument, "malformed handshake",
+			xerrors.Errorf("on handshake, no client id%s", reqDetail(req)))
 	}
 	clientId := cid.Long()
 
@@ -387,7 +410,7 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 
 	cli, err := t.createOrUpdateServingClient(clientId, presentedToken, principal, conn)
 	if err != nil {
-		return nil, err
+		return nil, t.rejectHandshake(conn, valuerpc.CodeUnauthenticated, "session resume rejected", err)
 	}
 
 	// The server owns no resumption secret (the client holds the chain); the reply

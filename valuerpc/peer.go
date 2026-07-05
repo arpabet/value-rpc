@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"go.arpabet.com/value"
+	"golang.org/x/xerrors"
 )
 
 // Function is a unary handler: it receives the call arguments and returns a
@@ -86,19 +87,29 @@ type Registrar interface {
 	AddChat(name string, args TypeDef, fn Chat) error
 }
 
+// newEnvelope builds a wire envelope from entries in one allocation. Entry
+// order is free — SortedMap sorts once — which replaces the chained immutable
+// Puts that copied the whole map per field (the hottest allocation site on the
+// wire path). Envelopes are treated as immutable by convention: framework code
+// never mutates a message after it is built or received.
+func newEnvelope(entries []value.MapEntry) value.Map {
+	return value.SortedMap(entries, false)
+}
+
 // NewFunctionRequest builds a FunctionRequest envelope using dialect d. The
 // caller assigns the request id; for a server->client call it must come from the
 // server-initiated (negative) id space so it cannot collide with a client's own
 // request ids on the same connection.
 func (d *Dialect) NewFunctionRequest(requestId int64, name string, args value.Value) value.Map {
-	req := value.EmptyMap(true).
-		Put(d.MessageTypeField, FunctionRequest.Long()).
-		Put(d.RequestIdField, value.Long(requestId)).
-		Put(d.FunctionNameField, value.Utf8(name))
+	entries := make([]value.MapEntry, 0, 4)
+	entries = append(entries,
+		value.ImmutableEntry(d.MessageTypeField, FunctionRequest.Long()),
+		value.ImmutableEntry(d.RequestIdField, value.Long(requestId)),
+		value.ImmutableEntry(d.FunctionNameField, value.Utf8(name)))
 	if args != nil {
-		req = req.Put(d.ArgumentsField, args)
+		entries = append(entries, value.ImmutableEntry(d.ArgumentsField, args))
 	}
-	return req
+	return newEnvelope(entries)
 }
 
 // NewFunctionRequest builds a FunctionRequest on the active DefaultDialect.
@@ -109,13 +120,14 @@ func NewFunctionRequest(requestId int64, name string, args value.Value) value.Ma
 // NewFunctionResult builds a FunctionResponse carrying result (omitted when nil,
 // so a void result decodes as absent rather than a Null sentinel).
 func NewFunctionResult(requestId value.Number, result value.Value) value.Map {
-	resp := value.EmptyMap(true).
-		Put(DefaultDialect.MessageTypeField, FunctionResponse.Long()).
-		Put(DefaultDialect.RequestIdField, requestId)
+	entries := make([]value.MapEntry, 0, 3)
+	entries = append(entries,
+		value.ImmutableEntry(DefaultDialect.MessageTypeField, FunctionResponse.Long()),
+		value.ImmutableEntry(DefaultDialect.RequestIdField, requestId))
 	if result != nil {
-		resp = resp.Put(DefaultDialect.ResultField, result)
+		entries = append(entries, value.ImmutableEntry(DefaultDialect.ResultField, result))
 	}
-	return resp
+	return newEnvelope(entries)
 }
 
 // NewFunctionError builds an ErrorResponse carrying a machine-readable Code and
@@ -125,65 +137,81 @@ func NewFunctionError(requestId value.Number, code Code, format string, args ...
 	if len(args) > 0 {
 		msg = fmt.Sprintf(format, args...)
 	}
-	return value.EmptyMap(true).
-		Put(DefaultDialect.MessageTypeField, ErrorResponse.Long()).
-		Put(DefaultDialect.RequestIdField, requestId).
-		Put(DefaultDialect.CodeField, value.Long(int64(code))).
-		Put(DefaultDialect.ErrorField, value.Utf8(msg))
+	return newEnvelope([]value.MapEntry{
+		value.ImmutableEntry(DefaultDialect.MessageTypeField, ErrorResponse.Long()),
+		value.ImmutableEntry(DefaultDialect.RequestIdField, requestId),
+		value.ImmutableEntry(DefaultDialect.CodeField, value.Long(int64(code))),
+		value.ImmutableEntry(DefaultDialect.ErrorField, value.Utf8(msg)),
+	})
 }
 
 // NewStreamRequest builds a stream-opening request (GetStreamRequest /
 // PutStreamRequest / ChatRequest) using dialect-default fields. The caller
 // assigns the request id (server-initiated streams use the negative id space).
 func NewStreamRequest(mt MessageType, requestId int64, name string, args value.Value) value.Map {
-	req := value.EmptyMap(true).
-		Put(DefaultDialect.MessageTypeField, mt.Long()).
-		Put(DefaultDialect.RequestIdField, value.Long(requestId)).
-		Put(DefaultDialect.FunctionNameField, value.Utf8(name))
+	entries := make([]value.MapEntry, 0, 4)
+	entries = append(entries,
+		value.ImmutableEntry(DefaultDialect.MessageTypeField, mt.Long()),
+		value.ImmutableEntry(DefaultDialect.RequestIdField, value.Long(requestId)),
+		value.ImmutableEntry(DefaultDialect.FunctionNameField, value.Utf8(name)))
 	if args != nil {
-		req = req.Put(DefaultDialect.ArgumentsField, args)
+		entries = append(entries, value.ImmutableEntry(DefaultDialect.ArgumentsField, args))
 	}
-	return req
+	return newEnvelope(entries)
 }
 
 // NewStreamReady builds the StreamReady ack a stream responder sends once its
 // handler is established (before it acquires any send credit).
 func NewStreamReady(requestId value.Number) value.Map {
-	return value.EmptyMap(true).
-		Put(DefaultDialect.MessageTypeField, StreamReady.Long()).
-		Put(DefaultDialect.RequestIdField, requestId)
+	return newEnvelope([]value.MapEntry{
+		value.ImmutableEntry(DefaultDialect.MessageTypeField, StreamReady.Long()),
+		value.ImmutableEntry(DefaultDialect.RequestIdField, requestId),
+	})
 }
 
 // NewStreamValue builds a StreamValue frame carrying one streamed value.
 func NewStreamValue(requestId value.Number, val value.Value) value.Map {
-	return value.EmptyMap(true).
-		Put(DefaultDialect.MessageTypeField, StreamValue.Long()).
-		Put(DefaultDialect.RequestIdField, requestId).
-		Put(DefaultDialect.ValueField, val)
+	if val == nil {
+		val = value.Null
+	}
+	return newEnvelope([]value.MapEntry{
+		value.ImmutableEntry(DefaultDialect.MessageTypeField, StreamValue.Long()),
+		value.ImmutableEntry(DefaultDialect.RequestIdField, requestId),
+		value.ImmutableEntry(DefaultDialect.ValueField, val),
+	})
 }
 
 // NewStreamEnd builds a StreamEnd frame, optionally carrying a final value.
 func NewStreamEnd(requestId value.Number, val value.Value) value.Map {
-	resp := value.EmptyMap(true).
-		Put(DefaultDialect.MessageTypeField, StreamEnd.Long()).
-		Put(DefaultDialect.RequestIdField, requestId)
+	entries := make([]value.MapEntry, 0, 3)
+	entries = append(entries,
+		value.ImmutableEntry(DefaultDialect.MessageTypeField, StreamEnd.Long()),
+		value.ImmutableEntry(DefaultDialect.RequestIdField, requestId))
 	if val != nil {
-		resp = resp.Put(DefaultDialect.ValueField, val)
+		entries = append(entries, value.ImmutableEntry(DefaultDialect.ValueField, val))
 	}
-	return resp
+	return newEnvelope(entries)
+}
+
+// NewCancelRequest builds a CancelRequest frame for requestId.
+func NewCancelRequest(requestId value.Number) value.Map {
+	return newEnvelope([]value.MapEntry{
+		value.ImmutableEntry(DefaultDialect.MessageTypeField, CancelRequest.Long()),
+		value.ImmutableEntry(DefaultDialect.RequestIdField, requestId),
+	})
 }
 
 // HandlerErrorCode maps a user-handler error to a Code: the code of a
 // *valuerpc.Error, the matching code for a context deadline/cancellation (which
-// a handler typically returns as ctx.Err()), else Internal.
+// a handler typically returns as ctx.Err(), possibly wrapped), else Internal.
 func HandlerErrorCode(err error) Code {
 	if code := CodeOf(err); code != CodeUnknown {
 		return code
 	}
-	switch err {
-	case context.DeadlineExceeded:
+	switch {
+	case xerrors.Is(err, context.DeadlineExceeded):
 		return CodeDeadlineExceeded
-	case context.Canceled:
+	case xerrors.Is(err, context.Canceled):
 		return CodeCanceled
 	default:
 		return CodeInternal

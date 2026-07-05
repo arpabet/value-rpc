@@ -48,6 +48,7 @@ type rpcRequestCtx struct {
 
 	getClosed atomic.Bool // no more server->client values will be delivered
 	putClosed atomic.Bool // client->server side (streamOut) has finished
+	ready     atomic.Bool // StreamReady already consumed; duplicates are ignored
 
 	resultErr atomic.Pointer[error] // stdlib has no atomic.Error
 
@@ -143,9 +144,12 @@ func (t *rpcRequestCtx) Elapsed() int64 {
 
 // notifyResult delivers a server->client value. For streaming kinds it hands the
 // value to the pump (non-blocking, so the response loop never stalls on a slow
-// consumer — BUG-6); for unary/put it does a guarded send into the cap>=1
-// buffer. It returns false when the value could not be queued (request finished
-// or the consumer fell too far behind).
+// consumer — BUG-6); for unary/put it does a non-blocking send into the cap>=1
+// buffer — non-blocking because this runs on the shared response loop, and a
+// peer sending frames a unary/put request never legitimately receives must not
+// be able to wedge the whole connection on a full buffer. It returns false when
+// the value could not be queued (request finished, consumer too far behind, or
+// an illegitimate extra frame).
 func (t *rpcRequestCtx) notifyResult(res value.Value) bool {
 	if t.resultPump != nil {
 		return t.resultPump.Push(res)
@@ -155,6 +159,8 @@ func (t *rpcRequestCtx) notifyResult(res value.Value) bool {
 	case t.resultCh <- res:
 		return true
 	case <-t.done:
+		return false
+	default:
 		return false
 	}
 }
@@ -255,14 +261,21 @@ func (t *rpcRequestCtx) Error(defaultError error) error {
 
 // SingleResp waits for the first response, the timeout, or ctx cancellation,
 // whichever comes first. onTimeout runs on either timeout or cancellation (it
-// sends CancelRequest to the server). A ctx with no Done channel
-// (context.Background) simply never selects that case.
+// sends CancelRequest to the server, which also retires this request locally).
+// A ctx with no Done channel (context.Background) simply never selects that
+// case; a timeout <= 0 disables the client-side timer entirely (the call is
+// then bounded only by ctx).
 func (t *rpcRequestCtx) SingleResp(ctx context.Context, timeoutMls int64, onTimeout func()) (value.Value, error) {
 	// time.NewTimer + Stop instead of time.After: time.After cannot be cancelled
 	// and its timer lives until it fires, leaking a timer per call on the unary
-	// hot path when the response arrives first.
-	timer := time.NewTimer(time.Duration(timeoutMls) * time.Millisecond)
-	defer timer.Stop()
+	// hot path when the response arrives first. A nil channel never fires, so a
+	// non-positive timeout does not make every call fail instantly.
+	var timerC <-chan time.Time
+	if timeoutMls > 0 {
+		timer := time.NewTimer(time.Duration(timeoutMls) * time.Millisecond)
+		defer timer.Stop()
+		timerC = timer.C
+	}
 	select {
 	case result, ok := <-t.resultCh:
 		if !ok {
@@ -270,17 +283,23 @@ func (t *rpcRequestCtx) SingleResp(ctx context.Context, timeoutMls int64, onTime
 		}
 		return result, nil
 	case <-ctx.Done():
+		// Record the outcome before onTimeout retires the request (RequestEnd
+		// metrics read it), then propagate it to the caller.
+		t.SetError(ctx.Err())
 		onTimeout()
 		return nil, ctx.Err()
-	case <-timer.C:
-		onTimeout()
-		// The timer is set to the context's remaining deadline when that is the
-		// shorter bound, so prefer the context error (DeadlineExceeded) for a
-		// clear, idiomatic result; fall back to the plain timeout otherwise.
-		if err := ctx.Err(); err != nil {
-			return nil, err
+	case <-timerC:
+		// Prefer the context error (DeadlineExceeded) when the context expired
+		// in the same instant; fall back to the plain timeout otherwise. An
+		// earlier recorded failure (e.g. connection lost) wins over both.
+		err := ctx.Err()
+		if err == nil {
+			err = ErrTimeoutError
 		}
-		return nil, t.Error(ErrTimeoutError)
+		err = t.Error(err)
+		t.SetError(err)
+		onTimeout()
+		return nil, err
 	}
 }
 

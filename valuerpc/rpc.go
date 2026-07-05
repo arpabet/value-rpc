@@ -85,14 +85,89 @@ type (
 // (not retained) so a single huge message cannot pin memory on an idle conn.
 const reusableWriteBufCap = 64 * 1024
 
+// BatchMsgConn is an optional MsgConn capability: WriteMessages writes a burst
+// of messages in one transport operation — a single syscall on stream
+// transports — with the same per-message semantics as WriteMessage. The client
+// and server senders probe for it (see WriteBatch) to coalesce messages that
+// are already queued; message-oriented transports (WebSocket, in-memory) simply
+// don't implement it.
+type BatchMsgConn interface {
+	WriteMessages(msgs []value.Map) error
+}
+
+// MaxCoalesce caps how many already-queued messages a sender folds into one
+// batched write. It bounds the reused encode buffer and keeps a single flush
+// from monopolizing the connection.
+const MaxCoalesce = 64
+
+// WriteBatch writes msgs to conn in one transport write when conn supports
+// batching, else sequentially. A batch is only ever what was already waiting in
+// the sender's queue, so coalescing adds no latency — it only removes syscalls.
+func WriteBatch(conn MsgConn, msgs []value.Map) error {
+	if len(msgs) == 1 {
+		return conn.WriteMessage(msgs[0])
+	}
+	if bc, ok := conn.(BatchMsgConn); ok {
+		return bc.WriteMessages(msgs)
+	}
+	for _, m := range msgs {
+		if err := conn.WriteMessage(m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type messageConnAdapter struct {
 	conn         io.ReadWriteCloser
 	reader       *bufio.Reader
 	timeout      time.Duration
 	maxFrameSize int // captured at construction; never reads the global at runtime
 	writeLock    sync.Mutex
-	writeBuf     []byte // reused under writeLock to avoid a per-message frame allocation
+	frame        frameBuffer // reused under writeLock; messages encode straight into it
 	shutdown     atomic.Bool
+}
+
+// frameBuffer accumulates one or more length-prefixed frames. It implements
+// io.Writer so a value.MessagePacker encodes the MessagePack payload directly
+// into the frame in place — no intermediate per-message payload allocation and
+// copy. Only ever used under the owning connection's writeLock.
+type frameBuffer struct {
+	b []byte
+}
+
+func (f *frameBuffer) Write(p []byte) (int, error) {
+	f.b = append(f.b, p...)
+	return len(p), nil
+}
+
+// appendFrame encodes msg as [4-byte length][payload] at the end of the buffer.
+// On a pack error the buffer is rolled back, so nothing partial is ever flushed.
+func (f *frameBuffer) appendFrame(msg value.Map) error {
+	off := len(f.b)
+	f.b = append(f.b, 0, 0, 0, 0) // length placeholder, patched below
+	p := value.MessagePacker(f)
+	if msg != nil {
+		msg.Pack(p)
+	} else {
+		p.PackNil()
+	}
+	if err := p.Error(); err != nil {
+		f.b = f.b[:off]
+		return xerrors.Errorf("msgpack pack, %v", err)
+	}
+	binary.BigEndian.PutUint32(f.b[off:off+4], uint32(len(f.b)-off-4))
+	return nil
+}
+
+func (f *frameBuffer) reset() { f.b = f.b[:0] }
+
+// shrink drops a buffer that ballooned past the retention cap so one huge
+// message cannot pin memory on an idle connection.
+func (f *frameBuffer) shrink() {
+	if cap(f.b) > reusableWriteBufCap {
+		f.b = nil
+	}
 }
 
 func (t *messageConnAdapter) ReadMessage() (value.Map, error) {
@@ -122,16 +197,41 @@ func (t *messageConnAdapter) WriteMessage(msg value.Map) error {
 	if t.shutdown.Load() {
 		return ErrClientClosed
 	}
-	payload, err := value.Pack(msg)
-	if err != nil {
-		return xerrors.Errorf("msgpack pack, %v", err)
-	}
-	return t.doWriteFrame(payload)
-}
-
-func (t *messageConnAdapter) doWriteFrame(payload []byte) error {
 	t.writeLock.Lock()
 	defer t.writeLock.Unlock()
+	t.frame.reset()
+	if err := t.frame.appendFrame(msg); err != nil {
+		return err
+	}
+	return t.flushLocked()
+}
+
+// WriteMessages implements BatchMsgConn: every message is encoded into one
+// buffer and written with a single Write (one syscall), preserving order. A
+// pack error aborts the whole batch before anything reaches the wire, so the
+// stream is never corrupted by a half-written frame.
+func (t *messageConnAdapter) WriteMessages(msgs []value.Map) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	if t.shutdown.Load() {
+		return ErrClientClosed
+	}
+	t.writeLock.Lock()
+	defer t.writeLock.Unlock()
+	t.frame.reset()
+	for _, m := range msgs {
+		if err := t.frame.appendFrame(m); err != nil {
+			return err
+		}
+	}
+	return t.flushLocked()
+}
+
+// flushLocked writes the accumulated frames in a single Write so frames cannot
+// be torn apart by a concurrent writer (writeLock already serializes callers).
+// Callers hold writeLock.
+func (t *messageConnAdapter) flushLocked() error {
 	if t.timeout > 0 {
 		if wd, ok := t.conn.(writeDeadlineConn); ok {
 			if err := wd.SetWriteDeadline(time.Now().Add(t.timeout)); err != nil {
@@ -139,23 +239,8 @@ func (t *messageConnAdapter) doWriteFrame(payload []byte) error {
 			}
 		}
 	}
-	// Single buffer + single Write so the length prefix and payload cannot be
-	// torn apart by a concurrent writer (writeLock already serializes callers).
-	// The buffer is reused across messages to avoid a per-message allocation;
-	// oversized messages use a one-off buffer that is not retained.
-	need := 4 + len(payload)
-	var frame []byte
-	if need <= reusableWriteBufCap {
-		if cap(t.writeBuf) < need {
-			t.writeBuf = make([]byte, need, reusableWriteBufCap)
-		}
-		frame = t.writeBuf[:need]
-	} else {
-		frame = make([]byte, need)
-	}
-	binary.BigEndian.PutUint32(frame[:4], uint32(len(payload)))
-	copy(frame[4:], payload)
-	_, err := t.conn.Write(frame)
+	_, err := t.conn.Write(t.frame.b)
+	t.frame.shrink()
 	return err
 }
 

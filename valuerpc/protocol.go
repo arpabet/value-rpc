@@ -123,16 +123,17 @@ var DefaultDialect = NewDialect()
 // pre-image revealed on each reconnect (see HashChain). It is empty only for a
 // client that opts out of resumption.
 func (d *Dialect) NewHandshakeRequest(clientId int64, token string) value.Map {
-	req := value.EmptyMap(true).
-		Put(d.MagicField, value.Utf8(d.Magic)).
-		Put(d.VersionField, value.Double(d.Version)).
-		Put(d.MessageTypeField, HandshakeRequest.Long()).
-		Put(d.RequestIdField, value.Long(d.HandshakeRequestId)).
-		Put(d.ClientIdField, value.Long(clientId))
+	entries := make([]value.MapEntry, 0, 6)
+	entries = append(entries,
+		value.ImmutableEntry(d.MagicField, value.Utf8(d.Magic)),
+		value.ImmutableEntry(d.VersionField, value.Double(d.Version)),
+		value.ImmutableEntry(d.MessageTypeField, HandshakeRequest.Long()),
+		value.ImmutableEntry(d.RequestIdField, value.Long(d.HandshakeRequestId)),
+		value.ImmutableEntry(d.ClientIdField, value.Long(clientId)))
 	if token != "" {
-		req = req.Put(d.SessionTokenField, value.Utf8(token))
+		entries = append(entries, value.ImmutableEntry(d.SessionTokenField, value.Utf8(token)))
 	}
-	return req
+	return newEnvelope(entries)
 }
 
 // NewHandshakeResponse builds the server handshake reply using dialect d. With
@@ -140,24 +141,26 @@ func (d *Dialect) NewHandshakeRequest(clientId int64, token string) value.Map {
 // chain — so token is normally empty; the reply's role is to acknowledge that the
 // handshake was accepted. token is retained for dialects that still echo a value.
 func (d *Dialect) NewHandshakeResponse(token string) value.Map {
-	resp := value.EmptyMap(true).
-		Put(d.MagicField, value.Utf8(d.Magic)).
-		Put(d.VersionField, value.Double(d.Version)).
-		Put(d.MessageTypeField, HandshakeResponse.Long()).
-		Put(d.RequestIdField, value.Long(d.HandshakeRequestId))
+	entries := make([]value.MapEntry, 0, 5)
+	entries = append(entries,
+		value.ImmutableEntry(d.MagicField, value.Utf8(d.Magic)),
+		value.ImmutableEntry(d.VersionField, value.Double(d.Version)),
+		value.ImmutableEntry(d.MessageTypeField, HandshakeResponse.Long()),
+		value.ImmutableEntry(d.RequestIdField, value.Long(d.HandshakeRequestId)))
 	if token != "" {
-		resp = resp.Put(d.SessionTokenField, value.Utf8(token))
+		entries = append(entries, value.ImmutableEntry(d.SessionTokenField, value.Utf8(token)))
 	}
-	return resp
+	return newEnvelope(entries)
 }
 
 // NewStreamCredit builds a StreamCredit message (dialect d) granting the data
 // sender credit additional stream values for the given request.
 func (d *Dialect) NewStreamCredit(requestId value.Number, credit int64) value.Map {
-	return value.EmptyMap(true).
-		Put(d.MessageTypeField, StreamCredit.Long()).
-		Put(d.RequestIdField, requestId).
-		Put(d.CreditField, value.Long(credit))
+	return newEnvelope([]value.MapEntry{
+		value.ImmutableEntry(d.MessageTypeField, StreamCredit.Long()),
+		value.ImmutableEntry(d.RequestIdField, requestId),
+		value.ImmutableEntry(d.CreditField, value.Long(credit)),
+	})
 }
 
 // ValidMagicAndVersion reports whether req carries dialect d's magic and a

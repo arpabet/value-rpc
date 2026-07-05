@@ -57,7 +57,14 @@ func AddOutgoingStreamTyped[Req, Resp any](
 			go func() {
 				defer close(out)
 				for v := range typed {
-					out <- respCodec.Encode(v)
+					select {
+					case out <- respCodec.Encode(v):
+					case <-ctx.Done():
+						// The stream was torn down (cancel, disconnect): the
+						// streamer stopped reading out, so a plain send would
+						// strand this goroutine forever.
+						return
+					}
 				}
 			}()
 			return out, nil

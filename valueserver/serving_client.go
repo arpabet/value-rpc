@@ -7,7 +7,6 @@ package valueserver
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -245,69 +244,32 @@ func (t *servingClient) scheduleReap(conn vrpc.MsgConn, retention time.Duration,
 }
 
 func FunctionResult(requestId value.Number, result value.Value) value.Map {
-	resp := value.EmptyMap(true).
-		Put(vrpc.DefaultDialect.MessageTypeField, vrpc.FunctionResponse.Long()).
-		Put(vrpc.DefaultDialect.RequestIdField, requestId)
-	if result != nil {
-		return resp.Put(vrpc.DefaultDialect.ResultField, result)
-	} else {
-		return resp
-	}
+	return vrpc.NewFunctionResult(requestId, result)
 }
 
 func StreamReady(requestId value.Number) value.Map {
-	return value.EmptyMap(true).
-		Put(vrpc.DefaultDialect.MessageTypeField, vrpc.StreamReady.Long()).
-		Put(vrpc.DefaultDialect.RequestIdField, requestId)
+	return vrpc.NewStreamReady(requestId)
 }
 
 func StreamValue(requestId value.Number, val value.Value) value.Map {
-	return value.EmptyMap(true).
-		Put(vrpc.DefaultDialect.MessageTypeField, vrpc.StreamValue.Long()).
-		Put(vrpc.DefaultDialect.RequestIdField, requestId).
-		Put(vrpc.DefaultDialect.ValueField, val)
+	return vrpc.NewStreamValue(requestId, val)
 }
 
 func StreamEnd(requestId value.Number, val value.Value) value.Map {
-	resp := value.EmptyMap(true).
-		Put(vrpc.DefaultDialect.MessageTypeField, vrpc.StreamEnd.Long()).
-		Put(vrpc.DefaultDialect.RequestIdField, requestId)
-	if val != nil {
-		return resp.Put(vrpc.DefaultDialect.ValueField, val)
-	} else {
-		return resp
-	}
+	return vrpc.NewStreamEnd(requestId, val)
 }
 
 // FunctionError builds an ErrorResponse carrying a machine-readable code and a
 // formatted message.
 func FunctionError(requestId value.Number, code vrpc.Code, format string, args ...interface{}) value.Map {
-	msg := format
-	if len(args) > 0 {
-		msg = fmt.Sprintf(format, args...)
-	}
-	return value.EmptyMap(true).
-		Put(vrpc.DefaultDialect.MessageTypeField, vrpc.ErrorResponse.Long()).
-		Put(vrpc.DefaultDialect.RequestIdField, requestId).
-		Put(vrpc.DefaultDialect.CodeField, value.Long(int64(code))).
-		Put(vrpc.DefaultDialect.ErrorField, value.Utf8(msg))
+	return vrpc.NewFunctionError(requestId, code, format, args...)
 }
 
 // handlerErrCode maps a user-handler error to a Code: the code of a
 // *valuerpc.Error, the matching code for a context deadline/cancellation (which
-// a handler typically returns as ctx.Err()), else Internal.
+// a handler typically returns as ctx.Err(), possibly wrapped), else Internal.
 func handlerErrCode(err error) vrpc.Code {
-	if code := vrpc.CodeOf(err); code != vrpc.CodeUnknown {
-		return code
-	}
-	switch err {
-	case context.DeadlineExceeded:
-		return vrpc.CodeDeadlineExceeded
-	case context.Canceled:
-		return vrpc.CodeCanceled
-	default:
-		return vrpc.CodeInternal
-	}
+	return vrpc.HandlerErrorCode(err)
 }
 
 // handlerError builds an ErrorResponse from an error returned by a user handler,
@@ -340,6 +302,12 @@ func responseCode(resp value.Map) vrpc.Code {
 
 func (t *servingClient) sender() {
 
+	// Demote repeated write failures: when a connection drops with a full
+	// outgoing queue, every queued message fails in a burst — log the first
+	// failure loudly and the rest quietly, resetting once a write succeeds.
+	writeFailed := false
+	var batch []value.Map
+
 	for {
 
 		select {
@@ -351,17 +319,36 @@ func (t *servingClient) sender() {
 				return
 			}
 
+			// Coalesce whatever is already queued — never waiting for more — so
+			// a burst (e.g. stream values) costs one syscall, not one each.
+			batch = append(batch[:0], resp)
+			for drain := true; drain && len(batch) < vrpc.MaxCoalesce; {
+				select {
+				case more := <-t.outgoingQueue:
+					batch = append(batch, more)
+				default:
+					drain = false
+				}
+			}
+
 			conn := t.activeConn.Load()
 			if conn == nil {
 				t.logger.Error("sender no active connection")
 				continue
 			}
 
-			if err := conn.(vrpc.MsgConn).WriteMessage(resp); err != nil {
+			if err := vrpc.WriteBatch(conn.(vrpc.MsgConn), batch); err != nil {
 				// BUG-9 fix: do not re-enqueue (a full queue would deadlock) and
 				// do not stop the only sender; the connection is replaced on
 				// reconnect, after which sends resume.
-				t.logger.Error("sender write message", zap.Error(err))
+				if writeFailed {
+					t.logger.Debug("sender write message", zap.Error(err))
+				} else {
+					writeFailed = true
+					t.logger.Error("sender write message", zap.Error(err))
+				}
+			} else {
+				writeFailed = false
 			}
 		}
 
@@ -419,9 +406,7 @@ func (t *servingClient) CallFunction(ctx context.Context, name string, args valu
 		// Propagate the cancellation to the client so its reverse handler's
 		// context is cancelled (R5), instead of letting the handler run to
 		// completion with its reply then silently discarded.
-		_ = t.send(value.EmptyMap(true).
-			Put(vrpc.DefaultDialect.MessageTypeField, vrpc.CancelRequest.Long()).
-			Put(vrpc.DefaultDialect.RequestIdField, value.Long(reqId)))
+		_ = t.send(vrpc.NewCancelRequest(value.Long(reqId)))
 		return nil, ctx.Err()
 	case <-t.done:
 		return nil, vrpc.ErrClientClosed

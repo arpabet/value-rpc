@@ -58,6 +58,7 @@ type clientStream struct {
 
 	getClosed atomic.Bool
 	putClosed atomic.Bool
+	ready     atomic.Bool // StreamReady already consumed; duplicates are ignored
 	resultErr atomic.Pointer[error]
 
 	creditWindow  int64
@@ -112,7 +113,9 @@ func (t *clientStream) grantRecv() {
 }
 
 // notifyResult delivers a client->server value (or the StreamReady nil) to the
-// caller without blocking the connection read loop.
+// caller without blocking the connection read loop. The pump-less (put-stream)
+// path sends non-blocking: a peer sending frames this stream never legitimately
+// receives must not be able to wedge the whole connection on a full buffer.
 func (t *clientStream) notifyResult(res value.Value) bool {
 	if t.resultPump != nil {
 		return t.resultPump.Push(res)
@@ -122,6 +125,8 @@ func (t *clientStream) notifyResult(res value.Value) bool {
 	case t.resultCh <- res:
 		return true
 	case <-t.done:
+		return false
+	default:
 		return false
 	}
 }
@@ -188,10 +193,20 @@ func (t *clientStream) handleInbound(msgType vrpc.MessageType, req value.Map, cl
 	switch msgType {
 
 	case vrpc.StreamReady:
-		t.notifyResult(nil) // wake the establisher
+		// Exactly one ready ack wakes the establisher; duplicates must not
+		// inject phantom nils into the caller's stream channel.
+		if t.ready.CompareAndSwap(false, true) {
+			t.notifyResult(nil)
+		}
 		return nil
 
 	case vrpc.StreamValue:
+		// Only get/chat streams (the ones with a pump) legitimately receive
+		// values from the client; for a put-stream the frame is a protocol
+		// violation and would pollute the single-slot establish buffer.
+		if t.resultPump == nil {
+			return nil
+		}
 		if v := req.Get(vrpc.DefaultDialect.ValueField); v != nil && v.Kind() != value.NULL {
 			if !t.notifyResult(v) && t.resultPump != nil && t.resultPump.Overflowed() {
 				// The client overran our buffer; surface it and tear down.
@@ -270,9 +285,7 @@ func (t *servingClient) awaitReady(ctx context.Context, cs *clientStream) error 
 // cancelClientStream tells the client to cancel the stream and tears down local
 // state.
 func (t *servingClient) cancelClientStream(cs *clientStream) {
-	_ = t.send(value.EmptyMap(true).
-		Put(vrpc.DefaultDialect.MessageTypeField, vrpc.CancelRequest.Long()).
-		Put(vrpc.DefaultDialect.RequestIdField, value.Long(cs.requestId)))
+	_ = t.send(vrpc.NewCancelRequest(value.Long(cs.requestId)))
 	t.deletePendingStream(cs.requestId)
 	cs.Close()
 }
@@ -368,7 +381,11 @@ func (t *servingClient) streamOut(cs *clientStream, putCh <-chan value.Value, do
 	for cs.IsPutOpen() {
 		val, ok := <-putCh
 		if !ok {
-			_ = t.send(vrpc.NewStreamEnd(value.Long(cs.requestId), nil))
+			// A failed end-of-stream send means the peer never learned the stream
+			// completed — report that instead of claiming a clean drain.
+			if err := t.send(vrpc.NewStreamEnd(value.Long(cs.requestId), nil)); err != nil {
+				termErr = cs.err(err)
+			}
 			break
 		}
 		if cs.sendCredit != nil && !cs.sendCredit.Acquire() {
@@ -376,7 +393,10 @@ func (t *servingClient) streamOut(cs *clientStream, putCh <-chan value.Value, do
 			termErr = cs.err(vrpc.NewError(vrpc.CodeUnavailable, "reverse put-stream %d torn down before drain", cs.requestId))
 			break
 		}
-		_ = t.send(vrpc.NewStreamValue(value.Long(cs.requestId), val))
+		if err := t.send(vrpc.NewStreamValue(value.Long(cs.requestId), val)); err != nil {
+			termErr = cs.err(err)
+			break
+		}
 	}
 	if cs.tryPutClose() {
 		t.deletePendingStream(cs.requestId)

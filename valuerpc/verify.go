@@ -84,15 +84,18 @@ func VerifyParams(args value.Value, paramsDef ParamsDef) bool {
 }
 
 func VerifyArg(arg value.Value, def ArgDef) bool {
-	if arg == nil {
+	// An optional argument may be omitted (nil) or sent as an explicit Null —
+	// a List cannot have holes, so Null is the only way to skip a positional
+	// argument that precedes a supplied one.
+	if arg == nil || arg.Kind() == value.NULL {
 		return !def.Required
 	}
 	return arg.Kind() == def.Kind
 }
 
-func VerifyParam(value value.Value, def ParamDef) bool {
-	if value == nil {
+func VerifyParam(v value.Value, def ParamDef) bool {
+	if v == nil || v.Kind() == value.NULL {
 		return !def.Required
 	}
-	return value.Kind() == def.Kind
+	return v.Kind() == def.Kind
 }

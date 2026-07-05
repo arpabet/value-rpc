@@ -45,6 +45,10 @@ type Client interface {
 
 	SetErrorHandler(ErrorHandler)
 
+	// SetTimeout sets the default per-call timeout in milliseconds: it bounds
+	// each call client-side and is sent to the server as the request SLA. A
+	// value <= 0 disables the client-side timer and omits the SLA — calls are
+	// then bounded only by their context.
 	SetTimeout(timeoutMls int64)
 
 	// SetCredential sets the credential sent in the handshake (and re-sent on
