@@ -70,3 +70,38 @@ func TestRequestCtx_UnaryCloseIsIdempotent(t *testing.T) {
 	ctx.Close() // must not panic (closeOnce)
 	assertClosed(t, ctx)
 }
+
+// TestRequestCtx_UnaryNotifyVsCloseRace pins the send-vs-close data race: the shared
+// response loop delivering a unary result (notifyResult's direct send into resultCh)
+// used to race a concurrent Close/failRequest closing the same channel — a timeout,
+// cancel, or client shutdown crossing an in-flight response. The old code papered the
+// panic over with recover(), but the unsynchronized send/close pair is a data race
+// (flaky -race failures, e.g. depecher's SWIM Destroy vs an in-flight mesh ping).
+// notifyResult and closeResult now serialize on sendMu. Run with -race.
+func TestRequestCtx_UnaryNotifyVsCloseRace(t *testing.T) {
+	for i := 0; i < 2000; i++ {
+		ctx := NewRequestCtx(int64(i), unaryKind, value.EmptyMap(true), 1, 0, nil)
+		start := make(chan struct{})
+		done := make(chan struct{}, 2)
+		go func() {
+			<-start
+			ctx.notifyResult(value.Long(42)) // the response loop's delivery
+			done <- struct{}{}
+		}()
+		go func() {
+			<-start
+			ctx.Close() // timeout / cancel / client shutdown retiring the request
+			done <- struct{}{}
+		}()
+		close(start)
+		<-done
+		<-done
+		// Whatever the interleaving, the channel ends closed and drains at most one value.
+		if v, ok := <-ctx.resultCh; ok {
+			if v == nil || v.(value.Number).Long() != 42 {
+				t.Fatalf("iteration %d: unexpected value %v", i, v)
+			}
+			assertClosed(t, ctx)
+		}
+	}
+}

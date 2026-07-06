@@ -46,6 +46,14 @@ type rpcRequestCtx struct {
 	closeOnce  sync.Once
 	cancelOnce sync.Once // bounds a slow-consumer cancel to one per request
 
+	// sendMu serializes the unary/put direct send into resultCh against its close, so a
+	// response landing on the shared loop can never race a concurrent Close/failRequest
+	// (timeout, cancel, client shutdown) closing the channel — an unsynchronized
+	// send-vs-close is a data race (and a recovered panic at best). The streaming kinds
+	// don't need it: only the pump goroutine sends on and closes resultCh there.
+	sendMu   sync.Mutex
+	chClosed bool // resultCh has been closed (guarded by sendMu)
+
 	getClosed atomic.Bool // no more server->client values will be delivered
 	putClosed atomic.Bool // client->server side (streamOut) has finished
 	ready     atomic.Bool // StreamReady already consumed; duplicates are ignored
@@ -154,12 +162,17 @@ func (t *rpcRequestCtx) notifyResult(res value.Value) bool {
 	if t.resultPump != nil {
 		return t.resultPump.Push(res)
 	}
-	defer func() { _ = recover() }() // resultCh may close concurrently
+	// Serialize against closeResult: the old recover()-guarded bare send raced a
+	// concurrent close(resultCh) (send-vs-close is a data race, flagged by -race
+	// whenever a response crossed a timeout/cancel/shutdown retiring the request).
+	t.sendMu.Lock()
+	defer t.sendMu.Unlock()
+	if t.chClosed {
+		return false
+	}
 	select {
 	case t.resultCh <- res:
 		return true
-	case <-t.done:
-		return false
 	default:
 		return false
 	}
@@ -174,9 +187,14 @@ func (t *rpcRequestCtx) closeResult() {
 			t.sendCredit.Close() // unblock streamOut waiting for credit
 		}
 		if t.resultPump != nil {
-			t.resultPump.Close() // drain, then close resultCh
+			t.resultPump.Close() // drain, then close resultCh (pump goroutine is the sole sender/closer)
 		} else {
+			// Mark closed under sendMu BEFORE closing, so a concurrent notifyResult
+			// either completes its send first or observes chClosed — never send-vs-close.
+			t.sendMu.Lock()
+			t.chClosed = true
 			close(t.resultCh)
+			t.sendMu.Unlock()
 		}
 		// Single end-of-request point: drives the request/error counters,
 		// in-flight gauge, and latency (paired with RequestBegin at creation).
