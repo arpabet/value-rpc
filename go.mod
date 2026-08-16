@@ -2,6 +2,8 @@ module go.arpabet.com/value-rpc
 
 go 1.25.0
 
+toolchain go1.25.13
+
 require (
 	github.com/coder/websocket v1.8.15
 	go.arpabet.com/value v1.4.0

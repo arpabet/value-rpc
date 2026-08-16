@@ -2,6 +2,8 @@ module go.arpabet.com/value-rpc/quic
 
 go 1.25.0
 
+toolchain go1.25.13
+
 require (
 	github.com/quic-go/quic-go v0.60.0
 	go.arpabet.com/value v1.4.0

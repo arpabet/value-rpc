@@ -9,6 +9,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Security
 
+- CI now requests the latest patch of every tested Go minor release instead of
+  accepting a stale runner-cached patch. All modules declare Go 1.25.13 as the
+  minimum suggested toolchain, addressing the standard-library vulnerabilities
+  reported against Go 1.25.12 (GO-2026-6218, GO-2026-6090, GO-2026-6089,
+  GO-2026-5972, and GO-2026-5026).
 - **Session resumption is now bound to the authenticated principal.** The
   `valueserver.Authenticator` hook returns a `principal` identity
   (`func(conn, credential) (principal string, err error)` — **breaking**: it

@@ -30,12 +30,13 @@ jobs:
       matrix:
         go-version: [ '1.25.x', '1.26.x' ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
+          check-latest: true
 
       - name: Build
         run: go build ./...
@@ -54,12 +55,13 @@ jobs:
       matrix:
         go-version: [ '1.25.x', '1.26.x' ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
+          check-latest: true
 
       - name: Build
         working-directory: quic
@@ -81,12 +83,13 @@ jobs:
       matrix:
         go-version: [ '1.25.x', '1.26.x' ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
+          check-latest: true
 
       - name: Build
         working-directory: resilience
@@ -103,12 +106,13 @@ jobs:
   bench:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: '1.25.x'
+          check-latest: true
 
       # Smoke-run every benchmark a few iterations so they keep compiling and
       # running; this is a correctness gate, not a measurement.
@@ -122,12 +126,16 @@ jobs:
   govulncheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: '1.25.x'
+          check-latest: true
+
+      - name: Report Go toolchain
+        run: go version
 
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
@@ -145,12 +153,13 @@ jobs:
   gofmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: '1.25.x'
+          check-latest: true
 
       - name: gofmt
         run: |
@@ -171,12 +180,13 @@ jobs:
     env:
       FUZZTIME: ${{ inputs.fuzztime || '30s' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: '1.25.x'
+          check-latest: true
 
       - name: Fuzz ReadMessage (smoke)
         run: go test ./valuerpc/ -run='^$' -fuzz='^FuzzReadMessage$' -fuzztime="$FUZZTIME"
