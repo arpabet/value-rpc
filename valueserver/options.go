@@ -18,6 +18,10 @@ import (
 // construction means two servers in one process can be tuned independently and
 // the values are never read from a mutable global at runtime.
 type serverConfig struct {
+	// name labels this server's connection log lines ("webmail-ws",
+	// "vrpc-server") — a process running several servers is unreadable when
+	// every line just says "new connection". Empty = the listener address.
+	name                  string
 	maxConnections        int64
 	maxConcurrentRequests int64
 	maxConcurrentStreams  int64
@@ -180,6 +184,13 @@ func WithWireCodecs(codecs ...valuerpc.WireCodec) ServerOption {
 // Host); set patterns like "app.example.com" to allow an api-subdomain split,
 // or "*" to allow any origin. Only affects WebSocket servers built by a
 // convenience constructor.
+// ServerName labels this server's connection log lines ("webmail-ws",
+// "vrpc-server"), so a process running several servers says WHICH listener a
+// connection belongs to. Unset, the listener's address is used.
+func ServerName(name string) ServerOption {
+	return func(cfg *serverConfig) { cfg.name = name }
+}
+
 func WithWebSocketOrigins(patterns ...string) ServerOption {
 	return func(c *serverConfig) { c.wsOrigins = patterns }
 }

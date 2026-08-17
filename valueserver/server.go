@@ -8,9 +8,11 @@ package valueserver
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -282,6 +284,7 @@ func (t *rpcServer) Run() error {
 		// new connection immediately and keep serving existing ones.
 		if max := t.cfg.maxConnections; max > 0 && t.liveConns.Load() >= max {
 			t.logger.Warn("connection rejected: max connections reached",
+				zap.String("server", t.serverName()),
 				zap.Int64("max", max), zap.String("from", msgConn.RemoteAddr()))
 			msgConn.Close()
 			continue
@@ -307,14 +310,33 @@ func (t *rpcServer) Run() error {
 			defer t.wg.Done()
 			defer t.liveConns.Add(-1)
 			defer t.connMap.Delete(msgConn)
-			t.logger.Info("new connection", zap.String("from", msgConn.RemoteAddr()))
-			if err := t.handleConnection(msgConn); err != nil {
+			server := t.serverName()
+			t.logger.Info("connection open",
+				zap.String("server", server), zap.String("from", msgConn.RemoteAddr()))
+			err := t.handleConnection(msgConn)
+			switch {
+			case err == nil:
+				t.logger.Info("connection closed",
+					zap.String("server", server), zap.String("from", msgConn.RemoteAddr()))
+			default:
 				select {
 				case <-t.shutdown:
 					// expected: the read loop was unblocked by graceful shutdown
 					t.logger.Debug("connection closed on shutdown", zap.Error(err))
 				default:
-					t.logger.Error("handle connection",
+					if isClientClose(err) {
+						// The CLIENT hung up — a browser tab navigating away
+						// (WebSocket StatusGoingAway), a dropped link, a reset.
+						// Ordinary life, not an error: say closed, keep the
+						// detail as a field for the curious.
+						t.logger.Info("connection closed",
+							zap.String("server", server),
+							zap.String("from", msgConn.RemoteAddr()),
+							zap.String("reason", err.Error()))
+						return
+					}
+					t.logger.Error("connection failed",
+						zap.String("server", server),
 						zap.String("from", msgConn.RemoteAddr()),
 						zap.Error(err),
 					)
@@ -422,6 +444,50 @@ func (t *rpcServer) handshake(conn valuerpc.MsgConn) (*servingClient, error) {
 	}
 
 	return cli, nil
+}
+
+// serverName labels log lines: the configured ServerName, else the listener
+// address — a process running several servers must say WHICH one a connection
+// belongs to.
+func (t *rpcServer) serverName() string {
+	if t.cfg.name != "" {
+		return t.cfg.name
+	}
+	if t.listener != nil {
+		if a := t.listener.Addr(); a != nil {
+			return a.String()
+		}
+	}
+	return "server"
+}
+
+/*
+isClientClose classifies read-loop errors that mean THE PEER HUNG UP — a
+WebSocket close frame (a browser tab navigating away arrives as
+StatusGoingAway), a reset, a broken pipe, a socket closed under the reader.
+These are the ordinary ends of ordinary connections and log as "connection
+closed", never as errors; everything unrecognized stays an error, so a real
+protocol failure cannot hide behind this list.
+*/
+func isClientClose(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	msg := err.Error()
+	for _, s := range []string{
+		"received close frame",
+		"connection reset by peer",
+		"broken pipe",
+		"use of closed network connection",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *rpcServer) handleConnection(conn valuerpc.MsgConn) error {
