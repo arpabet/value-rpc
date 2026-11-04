@@ -6,7 +6,7 @@ toolchain go1.25.13
 
 require (
 	github.com/coder/websocket v1.8.15
-	go.arpabet.com/value v1.4.0
+	go.arpabet.com/value v1.5.0
 	go.uber.org/zap v1.28.0
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.46.0

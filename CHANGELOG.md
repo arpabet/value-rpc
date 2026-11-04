@@ -7,6 +7,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **value v1.5.0 wire changes pass through unchanged.** value v1.5.0 adds the
+  `TIMESTAMP` kind (MessagePack's timestamp extension, type -1; `time.Time`
+  fields marshal to it) and moves `BigInt` and `Decimal` to portable payloads
+  (two's complement; scale plus unscaled integer). value-rpc moves values as
+  `value.Value` trees, so a build that selects value v1.5.0 carries all three
+  kinds over every transport and codec with no change here. The next tag pins
+  value v1.5.0 in the core module and both submodules. Handlers that verify
+  argument kinds with `ArgDef`/`ParamDef` can use `value.TIMESTAMP` once they
+  build against it.
+- `ParseJson` (the JSON wire codec's decode half) documents that a timestamp,
+  like a big integer or a decimal, renders as a string and reads back as a
+  string: a string is never re-typed by its content.
+
 ### Security
 
 - CI now requests the latest patch of every tested Go minor release instead of

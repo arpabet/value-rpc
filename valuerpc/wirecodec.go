@@ -144,9 +144,11 @@ func (jsonCodec) Decode(data []byte) (value.Map, error) {
 // bounds the total input at the transport.
 //
 // Asymmetry (documented, matches value's encode side): BIGINT and DECIMAL encode
-// as "0x…" strings and do NOT round-trip back — they decode as UTF8 strings.
-// Model big/precise numbers as strings at the app level for JSON APIs, or use
-// the msgpack codec where they round-trip natively.
+// as "0x…" strings and TIMESTAMP (value v1.5.0) as an RFC 3339 string, and none
+// of them round-trips back — they decode as UTF8 strings, because a string is
+// never re-typed by its content. Model big/precise numbers and instants as
+// strings at the app level for JSON APIs, or use the msgpack codec where they
+// round-trip natively.
 func ParseJson(data []byte) (value.Value, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
