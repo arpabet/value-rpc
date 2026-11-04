@@ -22,6 +22,7 @@ on:
 # directly from source and not cached by proxy.golang.org / sum.golang.org.
 env:
   GOPRIVATE: go.arpabet.com/*
+  GOSUMDB: off
 
 jobs:
   build:
