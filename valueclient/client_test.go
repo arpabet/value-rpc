@@ -235,6 +235,16 @@ type metricsRec struct {
 	mu                       sync.Mutex
 	begin, end, errs, stream int
 	reconnects               int
+
+	// RequestEnd fires on the response loop when a request is retired, which
+	// can be after the caller already has its result. A test that wants to see
+	// a certain number of ends waits for ended rather than racing the loop.
+	wantEnd int
+	ended   chan struct{} // closed once end reaches wantEnd
+}
+
+func newMetricsRec(wantEnd int) *metricsRec {
+	return &metricsRec{wantEnd: wantEnd, ended: make(chan struct{})}
 }
 
 func (m *metricsRec) RequestBegin(string) { m.mu.Lock(); m.begin++; m.mu.Unlock() }
@@ -243,6 +253,9 @@ func (m *metricsRec) RequestEnd(_ string, code valuerpc.Code, _ time.Duration) {
 	m.end++
 	if code != valuerpc.CodeOK {
 		m.errs++
+	}
+	if m.end == m.wantEnd {
+		close(m.ended)
 	}
 	m.mu.Unlock()
 }
@@ -256,7 +269,7 @@ func TestMetricsRecorded(t *testing.T) {
 	})
 	defer stop()
 
-	rec := &metricsRec{}
+	rec := newMetricsRec(3)
 	cli := dial(t, sock, valueclient.WithMetrics(rec))
 	defer cli.Close()
 
@@ -265,10 +278,17 @@ func TestMetricsRecorded(t *testing.T) {
 			t.Fatalf("echo: %v", err)
 		}
 	}
+	// The third RequestEnd is recorded when the response loop retires the
+	// request, not necessarily before CallFunction returned.
+	select {
+	case <-rec.ended:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RequestEnd was not recorded for every call")
+	}
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	if rec.begin != 3 || rec.end != 3 {
-		t.Errorf("begin=%d end=%d, want 3/3", rec.begin, rec.end)
+	if rec.begin != 3 || rec.end != 3 || rec.errs != 0 {
+		t.Errorf("begin=%d end=%d errs=%d, want 3/3/0", rec.begin, rec.end, rec.errs)
 	}
 }
 
