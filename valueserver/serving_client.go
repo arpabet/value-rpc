@@ -50,7 +50,8 @@ type servingClient struct {
 	cancel context.CancelFunc // cancels all in-flight handlers when the session ends
 
 	outgoingQueue chan value.Map
-	done          chan struct{} // closed by Close(); never close outgoingQueue (BUG-3)
+	done          chan struct{}      // closed by Close(); never close outgoingQueue (BUG-3)
+	flushC        chan chan struct{} // asks the sender to write what is queued, and to close the channel when it has (flush)
 
 	requestMap     sync.Map
 	requestCancels sync.Map     // reqId(int64) -> context.CancelFunc for in-flight unary calls
@@ -78,6 +79,7 @@ func NewServingClient(parent context.Context, clientId int64, resumeToken, princ
 		cfg:           cfg,
 		outgoingQueue: make(chan value.Map, cfg.outgoingQueueCap),
 		done:          make(chan struct{}),
+		flushC:        make(chan chan struct{}, 1),
 		logger:        logger,
 	}
 	client.ctx, client.cancel = context.WithCancel(parent)
@@ -310,10 +312,23 @@ func (t *servingClient) sender() {
 
 	for {
 
+		// A flush that is asked for is served first, as soon as the write in
+		// progress has ended: its caller is about to close the connection.
+		select {
+		case ack := <-t.flushC:
+			batch = t.drain(batch, &writeFailed)
+			close(ack)
+			continue
+		default:
+		}
+
 		select {
 		case <-t.done:
 			t.logger.Info("stop serving client", zap.Int64("clientId", t.clientId))
 			return
+		case ack := <-t.flushC:
+			batch = t.drain(batch, &writeFailed)
+			close(ack)
 		case resp, ok := <-t.outgoingQueue:
 			if !ok {
 				return
@@ -321,37 +336,84 @@ func (t *servingClient) sender() {
 
 			// Coalesce whatever is already queued — never waiting for more — so
 			// a burst (e.g. stream values) costs one syscall, not one each.
-			batch = append(batch[:0], resp)
-			for drain := true; drain && len(batch) < vrpc.MaxCoalesce; {
-				select {
-				case more := <-t.outgoingQueue:
-					batch = append(batch, more)
-				default:
-					drain = false
-				}
-			}
-
-			conn := t.activeConn.Load()
-			if conn == nil {
-				t.logger.Error("sender no active connection")
-				continue
-			}
-
-			if err := vrpc.WriteBatch(conn.(vrpc.MsgConn), batch); err != nil {
-				// BUG-9 fix: do not re-enqueue (a full queue would deadlock) and
-				// do not stop the only sender; the connection is replaced on
-				// reconnect, after which sends resume.
-				if writeFailed {
-					t.logger.Debug("sender write message", zap.Error(err))
-				} else {
-					writeFailed = true
-					t.logger.Error("sender write message", zap.Error(err))
-				}
-			} else {
-				writeFailed = false
-			}
+			batch = t.queued(append(batch[:0], resp))
+			t.write(batch, &writeFailed)
 		}
 
+	}
+}
+
+// drain writes what is queued at this moment, however many batches it takes.
+// What is queued later is written as always. A failed write ends it: the
+// connection is gone, and with it the reason to write.
+func (t *servingClient) drain(batch []value.Map, writeFailed *bool) []value.Map {
+	for n := len(t.outgoingQueue); n > 0; n -= len(batch) {
+		batch = t.queued(batch[:0])
+		if len(batch) == 0 || !t.write(batch, writeFailed) {
+			break
+		}
+	}
+	return batch
+}
+
+// queued appends to batch the messages already waiting in the outgoing queue,
+// never waiting for more, until the batch holds MaxCoalesce.
+func (t *servingClient) queued(batch []value.Map) []value.Map {
+	for len(batch) < vrpc.MaxCoalesce {
+		select {
+		case more := <-t.outgoingQueue:
+			batch = append(batch, more)
+		default:
+			return batch
+		}
+	}
+	return batch
+}
+
+// write sends one batch on the active connection and reports whether it went
+// out. writeFailed carries the sender's failure state across calls.
+func (t *servingClient) write(batch []value.Map, writeFailed *bool) bool {
+	conn := t.activeConn.Load()
+	if conn == nil {
+		t.logger.Error("sender no active connection")
+		return false
+	}
+	if err := vrpc.WriteBatch(conn.(vrpc.MsgConn), batch); err != nil {
+		// BUG-9 fix: do not re-enqueue (a full queue would deadlock) and do not
+		// stop the only sender; the connection is replaced on reconnect, after
+		// which sends resume.
+		if *writeFailed {
+			t.logger.Debug("sender write message", zap.Error(err))
+		} else {
+			*writeFailed = true
+			t.logger.Error("sender write message", zap.Error(err))
+		}
+		return false
+	}
+	*writeFailed = false
+	return true
+}
+
+// flush has the sender write the messages that are queued for the connection
+// and reports whether it went through them: false when the session closed or
+// ctx ended first, which a peer that does not read brings about, the sender
+// being held in a write. The server calls it before it closes the connection.
+func (t *servingClient) flush(ctx context.Context) bool {
+	ack := make(chan struct{})
+	select {
+	case t.flushC <- ack:
+	case <-t.done:
+		return false
+	case <-ctx.Done():
+		return false
+	}
+	select {
+	case <-ack:
+		return true
+	case <-t.done:
+		return false
+	case <-ctx.Done():
+		return false
 	}
 }
 

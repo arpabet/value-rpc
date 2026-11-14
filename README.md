@@ -299,8 +299,8 @@ cli := valueclient.NewClient("host:9000", "",
 
 Server options: `WithMaxConnections`, `WithMaxConcurrentRequests`,
 `WithMaxConcurrentStreams`, `WithOutgoingQueueCap`, `WithIncomingQueueCap`,
-`WithStreamMaxPending`, `WithHandshakeTimeout`, `WithKeepAlivePeriod`,
-`WithWriteTimeout`, `WithMaxFrameSize`. Client options: `WithSendingCap`,
+`WithStreamMaxPending`, `WithHandshakeTimeout`, `WithCloseFlushTimeout`,
+`WithKeepAlivePeriod`, `WithWriteTimeout`, `WithMaxFrameSize`. Client options: `WithSendingCap`,
 `WithTimeout`, `WithStreamMaxPending`, `WithKeepAlivePeriod`, `WithWriteTimeout`,
 `WithMaxFrameSize`. (The transport-level options — keepalive, write timeout, max
 frame size — apply when a convenience constructor builds the listener/dialer;
@@ -315,6 +315,7 @@ the global at runtime):
 |----------|---------|---------|
 | `valuerpc.MaxFrameSize` | 16 MiB | Max inbound message size; `0` disables (maps to the WebSocket read limit) |
 | `valueserver.HandshakeTimeout` | 10s | Deadline for a client to complete the handshake |
+| `valueserver.CloseFlushTimeout` | 2s | How long `Close` waits for the messages already queued for the connections, the answers of finished calls above all, to be written before it closes them; the wait ends when they are written (`0` closes at once) |
 | `valueserver.KeepAlivePeriod` / `valueclient.KeepAlivePeriod` | 15s | TCP keepalive (ignored on Unix sockets); also the WebSocket ping interval |
 | `valueserver.OutgoingQueueCap` | 4096 | Per‑client server send buffer |
 | `valueserver.IncomingQueueCap` | 4096 | Per‑request inbound stream buffer |

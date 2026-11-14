@@ -7,6 +7,24 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Server.Close` dropped the messages queued for a connection.** `Close`
+  cancelled the handlers, closed every connection and stopped the senders, in
+  that order: an answer a handler had handed over a moment before, still in the
+  session's send queue, went with the socket, and a call the server had finished
+  reached its client as a lost connection. `Close` now stops accepting, has
+  every session's sender write the messages that are queued (a sender serves
+  the request as soon as its write in progress ends), and only then cancels the
+  handlers that are still running and closes the connections. The wait ends
+  when the queues are written and is bounded by `valueserver.CloseFlushTimeout`
+  (2 s; per server `WithCloseFlushTimeout`; `0` closes at once, as before), so
+  a peer that does not read cannot hold a shutdown. Handlers that are still
+  running when `Close` is called are not waited for: they are cancelled as
+  before, now after the queued messages are written, and their calls end with
+  the connection. Tests: `valueserver.TestCloseWritesWhatIsQueued`,
+  `TestCloseDoesNotWaitForAPeerForGood`, `TestSenderFlushWritesWhatIsQueued`.
+
 ### Changed
 
 - **value v1.5.0 wire changes pass through unchanged.** value v1.5.0 adds the

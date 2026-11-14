@@ -51,6 +51,16 @@ var MaxConnections int64 = 0
 // via WithSessionRetention; a negative value disables reaping.
 var SessionRetention = 2 * time.Minute
 
+// CloseFlushTimeout bounds how long Close waits, before it closes the
+// connections, for the messages already queued for them to be written: above
+// all the answers of calls whose handlers have returned. Without that wait a
+// call the server had finished could reach its client as a lost connection,
+// its answer still in the send queue when the socket closed under it. The wait
+// ends as soon as every queue is written, so it costs nothing while no peer is
+// slow; a peer that does not read holds Close for this long at the most. Set
+// to 0 to close at once, as before. Per server: WithCloseFlushTimeout.
+var CloseFlushTimeout = 2 * time.Second
+
 type rpcServer struct {
 	listener valuerpc.Listener
 	shutdown chan struct{}
@@ -222,15 +232,23 @@ func (t *rpcServer) Close() error {
 	t.closeOnce.Do(func() {
 		t.logger.Info("shutdown vRPC server")
 
-		// Signal all in-flight handlers (via their request contexts) that the
-		// server is going away, then stop accepting and unblock Run(). Closing
-		// shutdown under acceptMu orders it against Run's wg.Add so no new handler
-		// is added once we proceed to wg.Wait below.
-		t.cancel()
+		// Stop accepting and unblock Run(). Closing shutdown under acceptMu orders
+		// it against Run's wg.Add so no new handler is added once we proceed to
+		// wg.Wait below.
 		t.acceptMu.Lock()
 		close(t.shutdown)
 		t.acceptMu.Unlock()
 		err = t.listener.Close()
+
+		// Write what is already queued for each connection before anything is
+		// torn down: the answer of a call whose handler has returned must not be
+		// lost with the socket it was about to leave on. Handlers that are still
+		// running are not waited for; they are cancelled right after.
+		t.flushClients()
+
+		// Signal all in-flight handlers (via their request contexts) that the
+		// server is going away.
+		t.cancel()
 
 		// Unblock every live connection's read loop (pre- and post-handshake)
 		// so handleConnection goroutines can exit (BUG-14).
@@ -249,6 +267,37 @@ func (t *rpcServer) Close() error {
 		t.wg.Wait()
 	})
 	return err
+}
+
+// flushMessage is logged (Debug) when Close starts writing the queued messages.
+const flushMessage = "write the queued messages before the connections close"
+
+// flushClients has every session write the messages queued for its connection
+// and returns when they all have, or when the close-flush timeout has passed: a
+// peer that does not read must not hold the shutdown.
+func (t *rpcServer) flushClients() {
+	if t.cfg.closeFlush <= 0 {
+		return
+	}
+	t.logger.Debug(flushMessage, zap.String("server", t.serverName()), zap.Duration("timeout", t.cfg.closeFlush))
+	ctx, cancel := context.WithTimeout(context.Background(), t.cfg.closeFlush)
+	defer cancel()
+	var wg sync.WaitGroup
+	t.clientMap.Range(func(_, v interface{}) bool {
+		cli := v.(*servingClient)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if !cli.flush(ctx) && ctx.Err() != nil {
+				t.logger.Warn("messages queued for a client were not written before the close",
+					zap.String("server", t.serverName()),
+					zap.Int64("clientId", cli.clientId),
+					zap.Duration("timeout", t.cfg.closeFlush))
+			}
+		}()
+		return true
+	})
+	wg.Wait()
 }
 
 func (t *rpcServer) Run() error {

@@ -8,8 +8,8 @@ github.com/shopspring/decimal v1.4.0 h1:bxl37RwXBklmTi0C79JfXCEBD1cqqHt0bbgBAGFp
 github.com/shopspring/decimal v1.4.0/go.mod h1:gawqmDU56v4yIKSwfBSFip1HdCCXN8/+DMd9qYNcwME=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-go.arpabet.com/value v1.5.0 h1:6sZx0FNC7fGwmmoTiWqihD10dG921L0HVVTMm8Z2suU=
-go.arpabet.com/value v1.5.0/go.mod h1:y1KB3Att1HYyv5gXJKpaZkU7zjEY9Sb9pruP5GVuEe0=
+go.arpabet.com/value v1.6.1 h1:qPxGaJV9yDeZm/l4K/aLv8anSQnm0f4hFwax8OQ/cIQ=
+go.arpabet.com/value v1.6.1/go.mod h1:y1KB3Att1HYyv5gXJKpaZkU7zjEY9Sb9pruP5GVuEe0=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
 go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
 go.uber.org/multierr v1.11.0 h1:blXXJkSxSSfBVBlC76pxqeO+LN3aDfLQo+309xJstO0=

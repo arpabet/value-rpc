@@ -44,6 +44,10 @@ type serverConfig struct {
 
 	// session lifecycle
 	sessionRetention time.Duration
+
+	// closeFlush bounds Close's wait for the queued messages to be written
+	// (<= 0: no wait).
+	closeFlush time.Duration
 }
 
 func newServerConfig(opts []ServerOption) serverConfig {
@@ -60,6 +64,7 @@ func newServerConfig(opts []ServerOption) serverConfig {
 		writeTimeout:          DefaultTimeout,
 		maxFrameSize:          valuerpc.MaxFrameSize,
 		sessionRetention:      SessionRetention,
+		closeFlush:            CloseFlushTimeout,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -210,4 +215,12 @@ func WithWebSocketCompression() ServerOption {
 // tabs) can accumulate.
 func WithSessionRetention(d time.Duration) ServerOption {
 	return func(c *serverConfig) { c.sessionRetention = d }
+}
+
+// WithCloseFlushTimeout bounds how long Close waits for the messages already
+// queued for the connections, the answers of finished calls above all, to be
+// written before it closes them (default CloseFlushTimeout). The wait ends as
+// soon as they are written; d <= 0 closes at once, dropping what is queued.
+func WithCloseFlushTimeout(d time.Duration) ServerOption {
+	return func(c *serverConfig) { c.closeFlush = d }
 }
