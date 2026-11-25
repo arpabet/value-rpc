@@ -9,6 +9,27 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **A frame of the JSON wire codec was not always JSON.** The codec writes an
+  envelope with `value.Jsonify`, which quoted text as a Go string literal and
+  wrote a map key with no escape at all. A control character in an argument
+  (`\a`, `\x1b`), a quote or a backslash in a map key, or an infinite double
+  therefore gave a text frame that no JSON reader takes, `ParseJson` on the
+  other side and a browser's `JSON.parse` included: the peer refused the frame
+  and the call, or the whole connection, was lost. value v1.6.2 makes `Jsonify`
+  write JSON for every value (JSON's `\u00NN` for a control character, an
+  escaped key, `null` for an infinite double as for NaN, U+FFFD for a byte that
+  is not UTF-8), and this release requires it. Frames that were JSON before are
+  written as they were, so peers on either version read each other. The
+  MessagePack codec was never affected. Test:
+  `valuerpc.TestJsonEnvelopeIsJsonWhateverTheText`.
+- **The WebSocket subprotocol comments said the msgpack codec offers no
+  subprotocol.** It offers `vrpc.msgpack`, and has since the negotiation was
+  added in v1.5.3: a Go client offers the token of its codec and requires the
+  server to echo it, and a server serves msgpack to a client that offers
+  `vrpc.msgpack` or nothing at all. The comments on `WireCodec.Subprotocol`,
+  `NewWebSocketDialer`, the listener and `WithWireCodecs` now say what the code
+  does, and the error of a dial whose codec was not negotiated no longer
+  suggests the msgpack codec to a client that is using it.
 - **`Server.Close` dropped the messages queued for a connection.** `Close`
   cancelled the handlers, closed every connection and stopped the senders, in
   that order: an answer a handler had handed over a moment before, still in the

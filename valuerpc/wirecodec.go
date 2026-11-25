@@ -26,9 +26,9 @@ type WireCodec interface {
 	// Name identifies the codec and is the subprotocol suffix: "msgpack", "json".
 	Name() string
 	// Subprotocol is the WebSocket subprotocol token a client offers (and the
-	// server echoes) to select this codec, e.g. "vrpc.json". Empty for the
-	// default codec (msgpack), which is selected by offering no subprotocol so
-	// every pre-negotiation client keeps working unchanged.
+	// server echoes) to select this codec: "vrpc.msgpack" or "vrpc.json". A
+	// client that offers no subprotocol at all is served msgpack, so a client
+	// that predates the negotiation keeps working unchanged.
 	Subprotocol() string
 	// TextFrames reports whether messages ride in WebSocket text frames (JSON)
 	// rather than binary frames (msgpack).
@@ -108,9 +108,12 @@ func (jsonCodec) Subprotocol() string { return SubprotocolJson }
 func (jsonCodec) TextFrames() bool    { return true }
 
 func (jsonCodec) Encode(msg value.Map) ([]byte, error) {
-	// value.Jsonify emits canonical JSON (sorted map keys, the "base64," and
-	// "data:application/x-msgpack-ext;" string conventions, NaN -> null). It
-	// returns a string; the extra copy is negligible at browser scale.
+	// value.Jsonify emits JSON with sorted map keys, the "base64," and
+	// "data:application/x-msgpack-ext;" string conventions, and null for a
+	// double that is NaN or infinite. It is JSON for every value since value
+	// v1.6.2: before, a control character in a text or a quote in a map key gave
+	// a frame no JSON reader took. It returns a string; the extra copy is
+	// negligible at browser scale.
 	return []byte(value.Jsonify(msg)), nil
 }
 
