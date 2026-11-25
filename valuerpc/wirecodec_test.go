@@ -103,6 +103,67 @@ func TestJsonRoundTripEnvelope(t *testing.T) {
 	}
 }
 
+// An envelope is JSON whatever text it carries, as a value and as a map key:
+// before value v1.6.2 a control character, a quote in a key or an infinite
+// double gave a frame that no JSON reader took, ParseJson and a browser's
+// JSON.parse included, so one such argument broke the call.
+func TestJsonEnvelopeIsJsonWhateverTheText(t *testing.T) {
+	texts := []string{
+		"bell \a, escape \x1b[0m, vertical tab \v, delete \x7f, null \x00",
+		`a quote " and a backslash \`,
+		"line\nbreak\ttab",
+		"beyond the basic plane and not printable: " + string(rune(0xe0001)),
+	}
+	for _, text := range texts {
+		env := value.EmptyMap(true).
+			Put("t", value.Long(2)).
+			Put("rid", value.Long(1)).
+			Put("fn", value.Utf8("echo")).
+			Put("args", value.EmptyMap(true).Put(text, value.Utf8(text))).
+			Put("md", value.EmptyMap(true).Put("trace", value.Utf8(text)))
+		frame, err := JsonWireCodec.Encode(env)
+		if err != nil {
+			t.Fatalf("encode %q: %v", text, err)
+		}
+		got, err := JsonWireCodec.Decode(frame)
+		if err != nil {
+			t.Fatalf("decode of %s: %v", frame, err)
+		}
+		if !got.Equal(env) {
+			t.Fatalf("envelope round-trip mismatch for %q:\n got %s\nwant %s", text, value.Jsonify(got), value.Jsonify(env))
+		}
+	}
+
+	// A double that is NaN or infinite has no JSON form and travels as null.
+	frame, err := JsonWireCodec.Encode(value.EmptyMap(true).
+		Put("t", value.Long(3)).
+		Put("rid", value.Long(1)).
+		Put("res", value.ImmutableList([]value.Value{value.Double(math.Inf(1)), value.Double(math.Inf(-1)), value.Double(math.NaN())})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := JsonWireCodec.Decode(frame)
+	if err != nil {
+		t.Fatalf("decode of %s: %v", frame, err)
+	}
+	want := value.ImmutableList([]value.Value{value.Null, value.Null, value.Null})
+	if !got.Get("res").Equal(want) {
+		t.Fatalf("got %s, want %s", value.Jsonify(got.Get("res")), value.Jsonify(want))
+	}
+
+	// A byte that is not UTF-8 has no JSON form either: it arrives as U+FFFD.
+	frame, err = JsonWireCodec.Encode(value.EmptyMap(true).Put("val", value.Utf8("a\xffb")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err = JsonWireCodec.Decode(frame); err != nil {
+		t.Fatalf("decode of %s: %v", frame, err)
+	}
+	if text := got.Get("val").String(); text != "a"+string(rune(0xfffd))+"b" {
+		t.Fatalf("got %q", text)
+	}
+}
+
 func TestParseJsonRejectsTrailingAndMalformed(t *testing.T) {
 	for _, in := range []string{`{}{}`, `[1,2] 3`, `{`, `not json`, ``} {
 		if _, err := ParseJson([]byte(in)); err == nil {

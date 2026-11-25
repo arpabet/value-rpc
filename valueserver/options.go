@@ -176,8 +176,8 @@ func WithMaxFrameSize(n int) ServerOption {
 
 // WithWireCodecs restricts the WebSocket wire codecs the server negotiates, in
 // preference order (valuerpc.MsgpackWireCodec, valuerpc.JsonWireCodec). The
-// default (unset) enables both — msgpack for a client that offers no
-// subprotocol (every existing peer), JSON for one offering "vrpc.json". Pass a
+// default (unset) enables both — msgpack for a client that offers
+// "vrpc.msgpack" or no subprotocol at all, JSON for one offering "vrpc.json". Pass a
 // single codec to force a JSON-only or msgpack-only endpoint. Only affects
 // WebSocket servers built by a convenience constructor.
 func WithWireCodecs(codecs ...valuerpc.WireCodec) ServerOption {

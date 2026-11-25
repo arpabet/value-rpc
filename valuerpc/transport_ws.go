@@ -214,9 +214,10 @@ func WithWSCompression() WSOption {
 	return func(o *wsOptions) { o.compression = websocket.CompressionContextTakeover }
 }
 
-// subprotocols returns the offered subprotocol tokens in server preference
-// order, derived from the enabled codecs (msgpack's empty token is omitted from
-// the offer list but is still the default when a client offers nothing).
+// subprotocols returns the subprotocol tokens the server accepts, in its order
+// of preference, derived from the enabled codecs. A client that offers none of
+// them is served the codec WireCodecFor gives for no subprotocol: msgpack when
+// both codecs are enabled.
 func (l *wsListener) subprotocols() []string {
 	codecs := l.codecs
 	if len(codecs) == 0 {
@@ -350,7 +351,7 @@ type wsDialer struct {
 	maxFrameSize int
 	keepAlive    time.Duration
 	dialTimeout  time.Duration
-	codec        WireCodec // nil/msgpack offers no subprotocol; json offers "vrpc.json"
+	codec        WireCodec // nil is msgpack; the codec's subprotocol is offered and must be echoed
 }
 
 // newWSDialer builds a WebSocket dialer. keepAlive is the ping interval (<=0
@@ -366,12 +367,12 @@ func newWSDialer(url string, writeTimeout time.Duration, maxFrameSize int, keepA
 	}
 }
 
-// NewWebSocketDialer builds a WebSocket dialer that opts into a specific wire
-// codec. A msgpack (or nil) codec dials exactly like today (no subprotocol,
-// binary frames). A json codec offers the "vrpc.json" subprotocol and requires
-// the server to echo it — dialing a pre-negotiation server (which echoes none)
-// fails with a clear error rather than sending text frames a binary-only server
-// would reject.
+// NewWebSocketDialer builds a WebSocket dialer for a specific wire codec. The
+// dialer offers the codec's subprotocol — "vrpc.msgpack" for msgpack (or nil;
+// binary frames), "vrpc.json" for json (text frames) — and requires the server
+// to echo it: dialing a server that predates the negotiation (which echoes
+// none) fails with a clear error rather than exchanging frames in a codec the
+// two sides did not agree on.
 func NewWebSocketDialer(url string, writeTimeout time.Duration, maxFrameSize int, keepAlive time.Duration, codec WireCodec) Dialer {
 	return &wsDialer{
 		url:          url,
@@ -403,11 +404,12 @@ func (d *wsDialer) Dial(ctx context.Context) (MsgConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	// When we offered a codec subprotocol, the server must have selected it;
-	// otherwise it predates JSON negotiation and we must not send text frames.
+	// The server must have selected the codec subprotocol we offered; one that
+	// did not predates the negotiation, or does not enable this codec, and the
+	// two sides must not exchange frames in a codec they did not agree on.
 	if sp := codec.Subprotocol(); sp != "" && c.Subprotocol() != sp {
 		_ = c.Close(websocket.StatusProtocolError, "codec not negotiated")
-		return nil, xerrors.Errorf("server did not negotiate wire codec %q (got subprotocol %q); it likely predates JSON support — use the msgpack codec", sp, c.Subprotocol())
+		return nil, xerrors.Errorf("server did not negotiate wire codec %q (got subprotocol %q); it predates the codec negotiation or does not enable this codec", sp, c.Subprotocol())
 	}
 	return newWSMsgConn(c, d.url, d.writeTO, d.maxFrameSize, d.keepAlive, codec), nil
 }
