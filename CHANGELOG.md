@@ -45,6 +45,28 @@ All notable changes to this project are documented here. The format is based on
   before, now after the queued messages are written, and their calls end with
   the connection. Tests: `valueserver.TestCloseWritesWhatIsQueued`,
   `TestCloseDoesNotWaitForAPeerForGood`, `TestSenderFlushWritesWhatIsQueued`.
+- **The QUIC transport did not notice a connection that had ended.** Each
+  request has a stream, and what the stream readers read is handed to the one
+  `ReadMessage`; that call waited for a message, for `Close` and for its read
+  deadline, and not for the QUIC connection. When the connection ended, the
+  stream readers failed and returned, and `ReadMessage` went on waiting. A
+  client learned that its server had closed the connection only when it next
+  wrote: one that makes no call, and waits for the calls of its server, never
+  did, and did not reconnect. A server kept reading for a client that had
+  closed. And a connect the server refused after the QUIC handshake, a client
+  without a certificate at a server that requires one, waited for the answer to
+  its vRPC handshake until the dial timeout was over, thirty seconds by
+  default, and failed with `handshake: i/o timeout`. `ReadMessage` now ends
+  when the connection has ended and the stream readers have handed over what
+  they had read, so that what a peer sent before it closed still arrives:
+  with `io.EOF` when the peer closed as `Close` does, and with the reason
+  otherwise. The refused client now fails at once, with `handshake: quic:
+  connection ended: CRYPTO_ERROR 0x174 (remote): tls: certificate required`.
+  Only `quic/transport.go` changed; the wire is as it was. Tests:
+  `valuequic.TestQUIC_ReadMessageEndsWhenThePeerClosesTheConnection`,
+  `TestQUIC_WhatWasReadBeforeTheEndIsHandedOverFirst`,
+  `TestQUIC_ClientWithoutCertificateIsRefusedAtOnce`,
+  `TestQUIC_IdleClientNoticesALostConnectionAndReconnects`.
 
 ### Changed
 

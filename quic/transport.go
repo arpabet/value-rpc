@@ -150,6 +150,14 @@ type quicMsgConn struct {
 	mu      sync.Mutex
 	streams map[int64]*quicStreamState
 	wg      sync.WaitGroup
+
+	// readers counts the goroutines that may still hand a message to
+	// ReadMessage: the accept loop and the stream readers (guarded by mu).
+	// ended is closed when the QUIC connection is gone and the last of them has
+	// returned, which is when ReadMessage has nothing left to wait for.
+	readers   int
+	ended     chan struct{}
+	endedOnce sync.Once
 }
 
 func newQUICMsgConn(conn *quic.Conn, isClient bool, writeTimeout time.Duration) *quicMsgConn {
@@ -160,11 +168,12 @@ func newQUICMsgConn(conn *quic.Conn, isClient bool, writeTimeout time.Duration) 
 		incoming: make(chan value.Map),
 		done:     make(chan struct{}),
 		streams:  make(map[int64]*quicStreamState),
+		ended:    make(chan struct{}),
 	}
 	// Both sides accept peer-opened streams: the server for the client's
 	// requests, the client for the server's reverse (server-initiated) requests
 	// — vRPC is peer-symmetric, so either end can open a stream toward the other.
-	t.wg.Add(1)
+	t.readerStarts()
 	if isClient {
 		go t.clientAcceptLoop()
 	} else {
@@ -177,7 +186,7 @@ func newQUICMsgConn(conn *quic.Conn, isClient bool, writeTimeout time.Duration) 
 // handshake; its first frame is read synchronously and funneled before any other
 // stream is accepted, so the server's handshake() observes it first.
 func (t *quicMsgConn) serverAcceptLoop() {
-	defer t.wg.Done()
+	defer t.readerReturns()
 
 	s0, err := t.conn.AcceptStream(context.Background())
 	if err != nil {
@@ -189,7 +198,7 @@ func (t *quicMsgConn) serverAcceptLoop() {
 		if !t.funnel(m) {
 			return
 		}
-		t.wg.Add(1)
+		t.readerStarts()
 		go t.streamReader(st0)
 	} else {
 		s0.CancelRead(0)
@@ -201,7 +210,7 @@ func (t *quicMsgConn) serverAcceptLoop() {
 			return
 		}
 		st := &quicStreamState{s: s, br: bufio.NewReader(s)}
-		t.wg.Add(1)
+		t.readerStarts()
 		go t.streamReader(st)
 	}
 }
@@ -210,20 +219,53 @@ func (t *quicMsgConn) serverAcceptLoop() {
 // (reverse) requests. Unlike the server loop it has no handshake-first special
 // case: the client opens the handshake stream itself.
 func (t *quicMsgConn) clientAcceptLoop() {
-	defer t.wg.Done()
+	defer t.readerReturns()
 	for {
 		s, err := t.conn.AcceptStream(context.Background())
 		if err != nil {
 			return
 		}
 		st := &quicStreamState{s: s, br: bufio.NewReader(s)}
-		t.wg.Add(1)
+		t.readerStarts()
 		go t.streamReader(st)
 	}
 }
 
-func (t *quicMsgConn) streamReader(st *quicStreamState) {
+// readerStarts counts one more goroutine that may hand a message to
+// ReadMessage. Call it before starting the goroutine, which defers
+// readerReturns.
+func (t *quicMsgConn) readerStarts() {
+	t.wg.Add(1)
+	t.mu.Lock()
+	t.readers++
+	t.mu.Unlock()
+}
+
+// readerReturns is deferred by the accept loop and by every stream reader.
+//
+// The accept loop lasts as long as the QUIC connection, so the count reaches
+// zero only once the connection is gone (the peer closed it, it timed out, the
+// network failed) or Close was called: every stream has failed its reader by
+// then, and a reader that still held a message has handed it over. Nothing
+// would tell ReadMessage, which waits on the funnel and not on the connection:
+// ended is what does. It is closed after the last message, not at the moment
+// the connection goes, so that what arrived before the end is not lost to it:
+// the refusal a server sends before it closes, for one.
+func (t *quicMsgConn) readerReturns() {
 	defer t.wg.Done()
+	t.mu.Lock()
+	t.readers--
+	last := t.readers == 0
+	t.mu.Unlock()
+	if last {
+		// The readers fail a moment before the connection reports itself gone.
+		<-t.conn.Context().Done()
+		t.endedOnce.Do(func() { close(t.ended) })
+	}
+}
+
+func (t *quicMsgConn) streamReader(st *quicStreamState) {
+	defer t.readerReturns()
 	for {
 		m, err := readFrame(st.br)
 		if err != nil {
@@ -281,9 +323,35 @@ func (t *quicMsgConn) ReadMessage() (value.Map, error) {
 		return m, nil
 	case <-t.done:
 		return nil, io.EOF
+	case <-t.ended:
+		// The QUIC connection is gone and nothing is left to hand over. Without
+		// this the caller would wait for good, or until its read deadline: a
+		// client would not learn that its server went away before it next wrote.
+		select {
+		case <-t.done:
+			return nil, io.EOF // closed here
+		default:
+		}
+		return nil, t.endErr()
 	case <-timeout:
 		return nil, os.ErrDeadlineExceeded
 	}
+}
+
+// endErr says why the QUIC connection ended, as ReadMessage reports it: io.EOF
+// when the peer closed it the way Close does, as a stream transport reports
+// the end of its stream, and the reason otherwise (an idle timeout, a refused
+// certificate, a peer that closed with an error).
+func (t *quicMsgConn) endErr() error {
+	err := context.Cause(t.conn.Context())
+	if err == nil {
+		return io.EOF
+	}
+	var app *quic.ApplicationError
+	if xerrors.As(err, &app) && app.ErrorCode == 0 && app.ErrorMessage == "" {
+		return io.EOF
+	}
+	return xerrors.Errorf("quic: connection ended: %w", err)
 }
 
 func (t *quicMsgConn) WriteMessage(m value.Map) error {
@@ -427,7 +495,7 @@ func (t *quicMsgConn) streamForWrite(rid int64, mt valuerpc.MessageType) (*quicS
 	t.mu.Lock()
 	t.streams[rid] = st
 	t.mu.Unlock()
-	t.wg.Add(1)
+	t.readerStarts()
 	go t.streamReader(st)
 	return st, mt, nil
 }
