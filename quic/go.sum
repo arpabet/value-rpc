@@ -12,10 +12,10 @@ github.com/shopspring/decimal v1.4.0 h1:bxl37RwXBklmTi0C79JfXCEBD1cqqHt0bbgBAGFp
 github.com/shopspring/decimal v1.4.0/go.mod h1:gawqmDU56v4yIKSwfBSFip1HdCCXN8/+DMd9qYNcwME=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-go.arpabet.com/value v1.6.1 h1:qPxGaJV9yDeZm/l4K/aLv8anSQnm0f4hFwax8OQ/cIQ=
-go.arpabet.com/value v1.6.1/go.mod h1:y1KB3Att1HYyv5gXJKpaZkU7zjEY9Sb9pruP5GVuEe0=
-go.arpabet.com/value-rpc v1.6.4 h1:ZqHWhwi3uiBqNHN5lVd5L5UwIhBEtzr6z7+Ocz9NtXo=
-go.arpabet.com/value-rpc v1.6.4/go.mod h1:CX/cdyE2B+LorraIhE0dTZ7Q8/n5whhvR16UycaoaB8=
+go.arpabet.com/value v1.6.2 h1:tkEI9v4CYy43Bzcx32cXmM0EmpOPVGkOTHdlSNCX7i0=
+go.arpabet.com/value v1.6.2/go.mod h1:y1KB3Att1HYyv5gXJKpaZkU7zjEY9Sb9pruP5GVuEe0=
+go.arpabet.com/value-rpc v1.6.5 h1:rJHlceG+WWKTH8EKvviDukd0hWaO8+gIMhikbgODaZY=
+go.arpabet.com/value-rpc v1.6.5/go.mod h1:M573FbAqfv5SYv/ysjKatbuH+Wyv2p28iiV6aVSRZ3M=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
 go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
 go.uber.org/mock v0.5.2 h1:LbtPTcP8A5k9WPXj54PPPbjcI4Y6lhyOZXn+VS7wNko=
