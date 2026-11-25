@@ -7,7 +7,7 @@ toolchain go1.25.13
 require (
 	github.com/quic-go/quic-go v0.60.0
 	go.arpabet.com/value v1.7.0
-	go.arpabet.com/value-rpc v1.6.5
+	go.arpabet.com/value-rpc v1.7.0
 	go.uber.org/zap v1.28.0
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da
 )
