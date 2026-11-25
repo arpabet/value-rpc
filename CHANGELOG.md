@@ -67,6 +67,57 @@ All notable changes to this project are documented here. The format is based on
   `TestQUIC_WhatWasReadBeforeTheEndIsHandedOverFirst`,
   `TestQUIC_ClientWithoutCertificateIsRefusedAtOnce`,
   `TestQUIC_IdleClientNoticesALostConnectionAndReconnects`.
+- **A chat over QUIC stopped after one window when its initiator ended first.**
+  Each request has a QUIC stream, and each side closes its half of it (FIN)
+  with the last message it sends. The side that opened a chat closed its half
+  with its own `StreamEnd`. A chat goes on after that: the responder still
+  streams, until it ends the chat, and the initiator has to grant it credit
+  (`StreamCredit`) for what it sends. The transport drops what is written on a
+  closed half, so those grants were never sent, and the responder stopped for
+  good when the credit it held was spent, after `valuerpc.DefaultMaxPending`
+  values, 4096 by default: a chat that answers its initiator's `StreamEnd` with
+  6,000 values delivered 6,000 of them over TCP and 4,096 over QUIC, and then
+  waited for its context to end. A chat the server opens toward its client
+  stopped the same way. The initiator of a chat now keeps its half open after
+  its `StreamEnd`, and closes it when it reads the message that ends the chat:
+  the `StreamEnd` of the responder, or the `ErrorResponse` it refuses the chat
+  with. So the stream of a chat is freed when the responder ends it, whoever
+  ended first; before, a chat the responder refused left its stream open until
+  the connection closed, and one the responder ended first did so some of the
+  time (with a listener that allows 8 streams, the 9th refused chat in a row
+  waited for its timeout). Only `quic/transport.go` changed. A peer on v1.7.1
+  and one on this version read each other: the stall is gone when the side
+  that opens the chat runs this version. Tests:
+  `valuequic.TestQUIC_ChatInitiatorGrantsCreditAfterItsOwnEnd`,
+  `TestQUIC_ReverseChatInitiatorGrantsCreditAfterItsOwnEnd`,
+  `TestQUIC_ChatStreamsAreFreed`, `TestQUIC_ChatStreamByItsMessages`,
+  `TestQUIC_FinRules`.
+- **A message for a QUIC stream that was freed opened a new stream, or failed
+  the write.** A stream is freed when both halves are closed, and either side
+  may still write a message of that request: the credit for values the consumer
+  of a stream took after the stream had ended, an end or a cancellation that
+  crossed the end the peer sent. The fix above makes this more common, a chat
+  being over for its initiator the moment the responder ends it, and needs it
+  right. The side that had opened the request opened a new stream for such a
+  message, which nothing closed, at either end: a get-stream whose consumer took
+  values after the end left one behind, and with a listener that allows 8
+  streams the 9th get-stream of 64 values in a row waited for its timeout when
+  its consumer was slow, the 13th when it was quick. On the other side the
+  write failed with `quic: no stream for message on request N`. A server's
+  sender logs a failed write and gives up the rest of the batch the message is
+  in, so the answer to another request went with it now and then: with calls
+  made alongside 100 to 200 put-streams whose handler lags, the sender logged
+  the failure in every run, and in about half of the runs one call got no
+  answer. A client, which is that other side for the streams its server opens
+  toward it, takes a failed write for a lost connection: it dropped a
+  connection that was in order and dialed again, 1 to 8 times in 100 such
+  put-streams. Such a message is now dropped, as a write on a closed half
+  always was, and a stream is opened only by the message that opens a request,
+  at the side that owns its id. Tests:
+  `valuequic.TestQUIC_AFrameOfAFreedStreamIsDropped`,
+  `TestQUIC_ARequestIsOpenedByItsOwnerOnly`,
+  `TestQUIC_LateCreditOfAPutStreamCostsNoOtherRequest`,
+  `TestQUIC_LateCreditOfAReversePutStreamKeepsTheConnection`.
 
 ### Changed
 

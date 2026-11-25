@@ -369,6 +369,9 @@ func (t *quicMsgConn) WriteMessage(m value.Map) error {
 
 	st, reqType, err := t.streamForWrite(rid, mt)
 	if err != nil {
+		if err == errLateFrame {
+			return nil
+		}
 		return err
 	}
 
@@ -410,13 +413,25 @@ func (t *quicMsgConn) WriteMessage(m value.Map) error {
 //
 // The initiator's request is NOT terminal: a get-stream initiator still sends
 // StreamCredit and may send CancelRequest, so it FINs only on its own StreamEnd
-// (put/chat) or CancelRequest — otherwise it FINs on reading the terminal
+// (put) or CancelRequest — otherwise it FINs on reading the terminal
 // response (finOnRead). The responder FINs after its terminal response; note a
 // put-stream consumer (responder) keeps sending StreamCredit after StreamReady,
 // so it does NOT FIN on StreamReady — it FINs on reading the producer's
 // StreamEnd (finOnRead), matching the initiator's get-stream behavior.
+//
+// A chat is both at once for its initiator: it streams to the responder, and
+// the responder streams to it. Its own StreamEnd ends only the first: the
+// responder goes on streaming until it ends the chat, and has to be granted
+// credit for what it sends. So the initiator of a chat does NOT FIN on its
+// StreamEnd, or WriteMessage would swallow the StreamCredit it sends after it
+// and the responder would stall for good once the credit it holds is spent. It
+// FINs on reading the response that ends the chat (finOnRead), as the initiator
+// of a get-stream does.
 func finOnWrite(originatedHere bool, mt, reqType valuerpc.MessageType) bool {
 	if originatedHere {
+		if reqType == valuerpc.ChatRequest && mt == valuerpc.StreamEnd {
+			return false
+		}
 		return mt == valuerpc.StreamEnd || mt == valuerpc.CancelRequest
 	}
 	switch mt {
@@ -429,14 +444,16 @@ func finOnWrite(originatedHere bool, mt, reqType valuerpc.MessageType) bool {
 // finOnRead reports whether receiving mt means the reader will send no more on
 // the stream, so it can FIN its write half. The request initiator
 // (originatedHere) FINs after the terminal response of a unary/get/handshake
-// request; the put-stream consumer (responder) FINs after the producer's
-// StreamEnd (it kept sending StreamCredit until then).
+// request, and of a chat: its responder ends a chat with its StreamEnd, whether
+// or not the initiator had sent its own, or with the ErrorResponse it refuses
+// or fails it with. The put-stream consumer (responder) FINs after the
+// producer's StreamEnd (it kept sending StreamCredit until then).
 func finOnRead(mt, reqType valuerpc.MessageType, originatedHere bool) bool {
 	if originatedHere {
 		switch reqType {
 		case valuerpc.FunctionRequest:
 			return mt == valuerpc.FunctionResponse || mt == valuerpc.ErrorResponse
-		case valuerpc.GetStreamRequest:
+		case valuerpc.GetStreamRequest, valuerpc.ChatRequest:
 			return mt == valuerpc.StreamEnd || mt == valuerpc.ErrorResponse
 		case valuerpc.HandshakeRequest:
 			return mt == valuerpc.HandshakeResponse
@@ -450,6 +467,21 @@ func finOnRead(mt, reqType valuerpc.MessageType, originatedHere bool) bool {
 	}
 	return false
 }
+
+// opensRequest reports whether mt is the first message of a request, the one
+// its initiator opens the request's stream with.
+func opensRequest(mt valuerpc.MessageType) bool {
+	switch mt {
+	case valuerpc.HandshakeRequest, valuerpc.FunctionRequest, valuerpc.GetStreamRequest,
+		valuerpc.PutStreamRequest, valuerpc.ChatRequest:
+		return true
+	}
+	return false
+}
+
+// errLateFrame is what streamForWrite answers for a message of a request whose
+// stream has been freed. WriteMessage drops such a message.
+var errLateFrame = xerrors.New("quic: late frame for a request whose stream is freed")
 
 // finWrite FINs (gracefully closes) the write half once, marking local done.
 func (t *quicMsgConn) finWrite(st *quicStreamState) {
@@ -477,14 +509,27 @@ func (t *quicMsgConn) streamForWrite(rid int64, mt valuerpc.MessageType) (*quicS
 	}
 	t.mu.Unlock()
 
-	// No stream yet: open one only if we originate this request id. The client
-	// owns the handshake (0) and its positive request ids; the server owns the
-	// negative (server-initiated / reverse) ids. A frame for an unknown id we do
-	// NOT own is a late frame for an already-freed stream — surface it rather
-	// than open a spurious stream.
+	// No stream for this request id. A stream is opened by the message that
+	// opens a request, and nothing else. Any other message for an id without a
+	// stream is a late frame of a request whose stream has been freed: a
+	// StreamCredit for values the consumer took after the stream had ended, a
+	// StreamEnd or a CancelRequest that crossed the peer's terminal response.
+	// Nobody waits for it and it has nowhere to go, so it is dropped, as a
+	// write on a half that is FIN'd is (WriteMessage). Opening a stream for it
+	// would leave that stream open for good at both ends, since no request
+	// answers on it. Failing the write would cost more than the frame: a client
+	// takes a failed write for a lost connection, and the sender of a server
+	// gives up the rest of the batch the frame is in, the messages of other
+	// requests.
+	if !opensRequest(mt) {
+		return nil, 0, errLateFrame
+	}
+	// A request is opened by the side that owns its id: the client owns the
+	// handshake (0) and its positive request ids; the server owns the negative
+	// (server-initiated / reverse) ids.
 	originator := (t.isClient && rid >= 0) || (!t.isClient && rid < 0)
 	if !originator {
-		return nil, 0, xerrors.Errorf("quic: no stream for message on request %d", rid)
+		return nil, 0, xerrors.Errorf("quic: request %d is not this side's to open", rid)
 	}
 
 	s, err := t.conn.OpenStreamSync(context.Background())
