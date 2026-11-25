@@ -5,7 +5,7 @@ go 1.25.0
 toolchain go1.25.13
 
 require (
-	go.arpabet.com/value v1.6.2
+	go.arpabet.com/value v1.7.0
 	go.arpabet.com/value-rpc v1.6.5
 	go.uber.org/zap v1.28.0
 )
